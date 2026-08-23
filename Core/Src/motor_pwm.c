@@ -182,7 +182,8 @@ int MotorPwm_Init(void)
   if (MotorPwm_ConfigTimer(HRTIM_TIMERINDEX_TIMER_A) != 0) { return -1; }
   if (MotorPwm_ConfigTimer(HRTIM_TIMERINDEX_TIMER_B) != 0) { return -1; }
 
-  /* Start every phase at 0% before any output can be enabled. */
+  /* Compares must be valid before the outputs are configured. SetDuty(0,0,0)
+   * below then clears the set-sources so all three are genuinely dead. */
   if (MotorPwm_ConfigCompare(HRTIM_TIMERINDEX_TIMER_A, HRTIM_COMPAREUNIT_1, PWM_CMP_MIN) != 0) { return -1; }
   if (MotorPwm_ConfigCompare(HRTIM_TIMERINDEX_TIMER_B, HRTIM_COMPAREUNIT_1, PWM_CMP_MIN) != 0) { return -1; }
   if (MotorPwm_ConfigCompare(HRTIM_TIMERINDEX_TIMER_B, HRTIM_COMPAREUNIT_2, PWM_CMP_MIN) != 0) { return -1; }
@@ -195,6 +196,9 @@ int MotorPwm_Init(void)
                             HRTIM_OUTPUTRESET_TIMCMP1) != 0) { return -1; }
   if (MotorPwm_ConfigOutput(HRTIM_TIMERINDEX_TIMER_B, HRTIM_OUTPUT_TB2,
                             HRTIM_OUTPUTRESET_TIMCMP2) != 0) { return -1; }
+
+  /* All three outputs dead before the counters run. */
+  MotorPwm_SetDuty(0, 0, 0);
 
   if (MotorPwm_ConfigAdcTrigger() != 0) { return -1; }
 
@@ -211,21 +215,40 @@ int MotorPwm_Init(void)
   return 0;
 }
 
+/* Apply one phase.
+ *
+ * A commanded 0 must produce a genuinely dead output, and a small compare
+ * cannot do that: below PWM_CMP_MIN the compare is ignored and the output
+ * latches high for the whole period. So 0 clears the set-source instead - the
+ * output is never driven high, and the (still valid) compare guarantees any
+ * currently-high output gets reset once and stays low.
+ *
+ * setxr points at SETx1R or SETx2R for the phase's output. */
+static void MotorPwm_ApplyPhase(volatile uint32_t *setxr, uint32_t timer_idx,
+                                uint32_t unit, uint32_t counts)
+{
+  if (counts == 0U)
+  {
+    *setxr = 0U;                       /* never set -> output stays low */
+    __HAL_HRTIM_SETCOMPARE(&hhrtim1, timer_idx, unit, PWM_CMP_MIN);
+    return;
+  }
+
+  if (counts < PWM_CMP_MIN)     { counts = PWM_CMP_MIN; }
+  if (counts > s_period - 1U)   { counts = s_period - 1U; }
+
+  *setxr = HRTIM_OUTPUTSET_TIMPER;
+  __HAL_HRTIM_SETCOMPARE(&hhrtim1, timer_idx, unit, counts);
+}
+
 void MotorPwm_SetDuty(uint32_t u, uint32_t v, uint32_t w)
 {
-  uint32_t cu = u, cv = v, cw = w;
+  volatile HRTIM_Timerx_TypeDef *ta = &hhrtim1.Instance->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_A];
+  volatile HRTIM_Timerx_TypeDef *tb = &hhrtim1.Instance->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B];
 
-  if (cu < PWM_CMP_MIN) { cu = PWM_CMP_MIN; }
-  if (cv < PWM_CMP_MIN) { cv = PWM_CMP_MIN; }
-  if (cw < PWM_CMP_MIN) { cw = PWM_CMP_MIN; }
-  if (cu > s_period - 1U) { cu = s_period - 1U; }
-  if (cv > s_period - 1U) { cv = s_period - 1U; }
-  if (cw > s_period - 1U) { cw = s_period - 1U; }
-
-  /* Preload registers - latched together at the next period boundary. */
-  __HAL_HRTIM_SETCOMPARE(&hhrtim1, HRTIM_TIMERINDEX_TIMER_B, HRTIM_COMPAREUNIT_2, cu);
-  __HAL_HRTIM_SETCOMPARE(&hhrtim1, HRTIM_TIMERINDEX_TIMER_B, HRTIM_COMPAREUNIT_1, cv);
-  __HAL_HRTIM_SETCOMPARE(&hhrtim1, HRTIM_TIMERINDEX_TIMER_A, HRTIM_COMPAREUNIT_1, cw);
+  MotorPwm_ApplyPhase(&tb->SETx2R, HRTIM_TIMERINDEX_TIMER_B, HRTIM_COMPAREUNIT_2, u);
+  MotorPwm_ApplyPhase(&tb->SETx1R, HRTIM_TIMERINDEX_TIMER_B, HRTIM_COMPAREUNIT_1, v);
+  MotorPwm_ApplyPhase(&ta->SETx2R, HRTIM_TIMERINDEX_TIMER_A, HRTIM_COMPAREUNIT_1, w);
 }
 
 void MotorPwm_SetDutyPermille(uint32_t u, uint32_t v, uint32_t w)

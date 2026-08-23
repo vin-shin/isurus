@@ -38,9 +38,17 @@ extern "C" {
 #define PWM_FREQ_HZ         20000U
 #define PWM_HRTIM_MUL       8U
 
-/* HRTIM compare registers must be >= 3. A count of 3 is ~2.9 ns, which is
- * below the UCC21330's 5 ns input deglitch filter, so it reads as a true 0%. */
-#define PWM_CMP_MIN         3U
+/* Minimum usable compare value.
+ *
+ * HRTIM will not act on a compare below one full fHRTIM clock period, which at
+ * PRESCALERRATIO_MUL8 is 8 counter LSBs. Measured on hardware: CMP <= 7 is
+ * silently ignored, so the output is set at the period rollover and NEVER
+ * reset - a commanded 0% comes out as a stuck 100%. That is the worst possible
+ * failure direction for a motor bridge, so this carries 2x margin.
+ *
+ * True 0% does not use a small compare at all - MotorPwm_SetDuty clears the
+ * output's set-source instead, so it can never go high. See that function. */
+#define PWM_CMP_MIN         16U
 
 /* Gate driver enable, PC5, common to all three UCC21330s.
  *
