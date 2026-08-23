@@ -671,13 +671,21 @@ a push-pull output and **driven to the disabled state before the pin is switched
 to an output**, so bringing the pin up cannot emit even a momentary enable pulse.
 `MotorPwm_GateInit()` is the first thing `MotorPwm_Init()` does.
 
-> **⚠️ Verify the polarity before trusting it.** `GATE_EN_ACTIVE_HIGH` defaults
-> to 1 (PC5 high = drivers enabled), which is how the board describes the net.
-> But the UCC21330's own DIS pin is active-HIGH-**disable**, so that only holds
-> if something inverts the net between PC5 and the driver. **If PC5 runs
-> straight to DIS the sense is reversed and this default would enable the power
-> stage at boot.** Measure DIS at a driver with PC5 low, then high. If low means
-> enabled, set `GATE_EN_ACTIVE_HIGH` to 0 in `motor_pwm.h`.
+> **⚠️ PC5 is an active-LOW enable — `GATE_EN_ACTIVE_HIGH` is 0.**
+> PC5 is tied **directly to the drivers' DIS pins**; there is no inverter in
+> this path, unlike the PWM path which does have one. DIS is active-HIGH
+> *disable*, so:
+>
+> ```
+> PC5 HIGH -> DIS high -> outputs disabled   <- safe state, and the boot state
+> PC5 LOW  -> DIS low  -> outputs ENABLED
+> ```
+>
+> This bit an earlier version of this firmware. The schematic net is named like
+> an enable, so `GATE_EN_ACTIVE_HIGH` was initially 1 and the board booted with
+> all three drivers **live** while the code believed they were off. The net name
+> is the misleading part — do not "tidy" this back to 1. Verified after the fix:
+> `PC5 = 1` at boot with `OENR = 0x0000`.
 
 `MotorPwm_SafeShutdown()` drops the gate line first, then the HRTIM outputs —
 that order matters, because only the gate line actually turns FETs off.
