@@ -44,14 +44,16 @@ extern "C" {
 
 /* Gate driver enable, PC5, common to all three UCC21330s.
  *
- * !! VERIFY THIS POLARITY ON HARDWARE BEFORE TRUSTING IT !!
- * The board calls PC5 an "enable", i.e. high = drivers on, which is what this
- * default assumes. But the UCC21330's own DIS pin is active-HIGH-*disable*, so
- * that only holds if the net is inverted somewhere between PC5 and the driver.
- * If PC5 runs straight to DIS the sense is reversed and this default would
- * enable the power stage at boot. Measure DIS at a driver with PC5 driven low
- * and then high; if low == enabled, set this to 0. */
-#define GATE_EN_ACTIVE_HIGH 1
+ * PC5 is tied DIRECTLY to the drivers' DIS pins - there is no inverter in this
+ * path (unlike the PWM path, which does have one). The UCC21330's DIS pin is
+ * active-HIGH-*disable*, so:
+ *
+ *     PC5 HIGH -> DIS high -> outputs disabled   <- safe state
+ *     PC5 LOW  -> DIS low  -> outputs ENABLED
+ *
+ * Hence this is an active-LOW enable. Do not "tidy" it to 1 because the
+ * schematic net is called an enable; the net name is the misleading part. */
+#define GATE_EN_ACTIVE_HIGH 0
 #define GATE_EN_PORT        GPIOC
 #define GATE_EN_PIN         GPIO_PIN_5
 
