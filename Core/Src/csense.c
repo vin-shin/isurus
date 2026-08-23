@@ -261,11 +261,22 @@ static int CSense_ArmTriggered(ADC_HandleTypeDef *hadc, uint32_t channel)
   /* See the note in CSense_Adc5Init - PRESERVED freezes DR under continuous
    * overrun, which is exactly what a 20 kHz trigger produces here. */
   hadc->Init.Overrun              = ADC_OVR_DATA_OVERWRITTEN;
+  /* 8x hardware oversampling, one trigger producing one averaged result.
+   * A single sample lands at an arbitrary point in several amps of PWM ripple;
+   * averaging 8 conversions across a short window around the trigger gives a
+   * far better estimate of the actual phase current. RightBitShift 3 keeps the
+   * result 12-bit so all the existing scaling still applies. */
+  hadc->Init.OversamplingMode              = ENABLE;
+  hadc->Init.Oversampling.Ratio            = ADC_OVERSAMPLING_RATIO_8;
+  hadc->Init.Oversampling.RightBitShift    = ADC_RIGHTBITSHIFT_3;
+  hadc->Init.Oversampling.TriggeredMode    = ADC_TRIGGEREDMODE_SINGLE_TRIGGER;
+  hadc->Init.Oversampling.OversamplingStopReset = ADC_REGOVERSAMPLING_CONTINUED_MODE;
+
   if (HAL_ADC_Init(hadc) != HAL_OK) { return -1; }
 
   sConfig.Channel      = channel;
   sConfig.Rank         = ADC_REGULAR_RANK_1;
-  sConfig.SamplingTime = ADC_SAMPLETIME_24CYCLES_5;
+  sConfig.SamplingTime = ADC_SAMPLETIME_6CYCLES_5;   /* 8 of these fit easily */
   sConfig.SingleDiff   = ADC_SINGLE_ENDED;
   sConfig.OffsetNumber = ADC_OFFSET_NONE;
   sConfig.Offset       = 0;

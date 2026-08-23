@@ -27,11 +27,21 @@ extern "C" {
 #define FOC_POLE_PAIRS      20U
 #define FOC_ENC_COUNTS      32768U
 
-/* Current control gains. Plant is a phase winding: R = 85 mohm, L = 54.3 uH,
- * so the electrical time constant is L/R = 639 us - about 13 PWM periods at
- * 20 kHz. Start conservative; these are tuned on hardware. */
-#define FOC_KP_DEFAULT      0.08f
-#define FOC_KI_DEFAULT      60.0f
+/* Current control gains, sized from the plant rather than guessed.
+ *
+ * Duty is normalised, so the plant from duty deviation u to phase current is
+ *     I/u = Vbus / (R + sL)
+ * with Vbus ~ 18.6 V, R = 85 mohm, L = 54.3 uH.
+ *
+ * Placing the closed-loop bandwidth at 1 kHz with pole-zero cancellation:
+ *     kp = w * L / Vbus = 6283 * 54.3e-6 / 18.6 = 0.018
+ *     ki = w * R / Vbus = 6283 * 0.085  / 18.6 = 29
+ *
+ * The first attempt used kp = 0.08, which meant a 1 A error commanded 1.49 V
+ * across an 85 mohm winding - a demand for 17 A. Loop gain of ~17 oscillates
+ * no matter how clean the current feedback is. */
+#define FOC_KP_DEFAULT      0.018f
+#define FOC_KI_DEFAULT      29.0f
 
 /* Modulation ceiling, as a fraction of the available bus voltage. */
 #define FOC_VMAX_DEFAULT    0.10f
