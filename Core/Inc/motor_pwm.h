@@ -109,6 +109,12 @@ void MotorPwm_GateEnable(void);
 void MotorPwm_GateDisable(void);
 uint32_t MotorPwm_GateIsEnabled(void);
 
+/* Kill the power stage using direct register writes only - no HAL, no
+ * interrupts, no assumptions about system state. Safe to call from a fault
+ * handler or any other broken context. Asserts DIS on PC5 and disables every
+ * HRTIM output. */
+void MotorPwm_EmergencyStop(void);
+
 /* Drop the gate drivers AND the HRTIM outputs, in that order. The gate line is
  * the only true all-off on this board - see HARDWARE_NOTES section 7. */
 void MotorPwm_SafeShutdown(void);

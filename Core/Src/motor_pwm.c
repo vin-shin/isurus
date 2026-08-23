@@ -62,6 +62,21 @@ uint32_t MotorPwm_GateIsEnabled(void)
   return s_gate_en;
 }
 
+void MotorPwm_EmergencyStop(void)
+{
+  /* DIS high = all three drivers off. BSRR is a single atomic write and needs
+   * no read-modify-write, so this works even with a corrupted stack. */
+  GATE_EN_PORT->BSRR = GATE_EN_PIN;
+
+  /* Disconnect every HRTIM output. Writing ODISR is also a single store.
+   * HRTIM is hardware and keeps switching through a halted CPU, so a fault
+   * handler that only spins would leave the bridge live. */
+  HRTIM1->sCommonRegs.ODISR = 0x3FFFU;
+
+  s_gate_en    = 0;
+  s_outputs_en = 0;
+}
+
 void MotorPwm_SafeShutdown(void)
 {
   /* Gate drivers first: that is the only action which actually turns every
