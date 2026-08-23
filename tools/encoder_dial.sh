@@ -26,6 +26,9 @@ ADDR="$("$NM" "$ELF" | awk '$3 == "g_enc" { print "0x" $1 }')"
 [ -n "$ADDR" ] || { echo "Symbol 'g_enc' not found in $ELF - rebuild?" >&2; exit 1; }
 CSADDR="$("$NM" "$ELF" | awk '$3 == "g_cs" { print "0x" $1 }')"
 [ -n "$CSADDR" ] || { echo "Symbol 'g_cs' not found in $ELF - rebuild?" >&2; exit 1; }
+FADDR="$("$NM" "$ELF" | awk '$3 == "g_faulted" { print "0x" $1 }')"
+TADDR="$("$NM" "$ELF" | awk '$3 == "g_oc_trips" { print "0x" $1 }')"
+PADDR="$("$NM" "$ELF" | awk '$3 == "g_oc_peak" { print "0x" $1 }')"
 
 CFG="$(mktemp)"
 # Restore the cursor whatever happens - Ctrl-C included. Deliberately not
@@ -205,7 +208,17 @@ while {1} {
 
     # Frame: home, draw, clear to end of screen.
     set out "\${ESC}\[H"
-    append out "\${ESC}\[1;97m  encoder A1333 / SPI1\${ESC}\[0m   \${ESC}\[90mctrl-c to quit\${ESC}\[0m\r\n\r\n"
+    append out "\${ESC}\[1;97m  encoder A1333 / SPI1\${ESC}\[0m   \${ESC}\[90mctrl-c to quit\${ESC}\[0m\r\n"
+    set flt  [read_memory $FADDR 32 1]
+    set trips [read_memory $TADDR 32 1]
+    set opk  [read_memory $PADDR 32 1]
+    if {\$opk > 0x7FFFFFFF} { set opk [expr {\$opk - 0x100000000}] }
+    if {\$flt} {
+        append out [format "  \${ESC}\[1;101;97m OVERCURRENT TRIP - DRIVE LATCHED OFF \${ESC}\[0m \${ESC}\[1;91mpeak %d mA, %d trip(s)\${ESC}\[0m\r\n" \$opk \$trips]
+    } else {
+        append out [format "  \${ESC}\[1;92m* running\${ESC}\[0m   \${ESC}\[90mpeak %d mA, %d trip(s)\${ESC}\[0m\r\n" \$opk \$trips]
+    }
+    append out "\r\n"
     append out [render \$g]
     append out "\r\n"
     append out [format "   %sangle%s %s%7.2f deg%s    %sraw%s %5d    %srx2%s 0x%04X\r\n" \\

@@ -94,8 +94,22 @@ typedef struct {
  * fault inputs on this board. 20 reads is roughly 750 Hz. */
 #define CS_READ_EVERY       20U
 
-/* Trip the power stage above this on either phase. */
-#define OC_TRIP_MA          3000
+/* Trip the power stage above this on either phase.
+ *
+ * Steady-state peak at the usual 3% modulation is ~2200 mA, so 3000 left only
+ * 27% headroom and nuisance-tripped on any small load disturbance. 4000 keeps
+ * real protection (only ~700 mA is needed to actually turn the motor) while
+ * leaving room for normal transients. */
+#define OC_TRIP_MA          4000
+
+/* After a trip, wait this long then re-arm and try again. */
+#define OC_RETRY_MS         3000U
+
+/* Consecutive retries before giving up and staying latched. Retrying forever
+ * into a genuine short is how hardware dies, so this has to be bounded. The
+ * counter resets once the drive has run clean for OC_CLEAN_MS. */
+#define OC_MAX_RETRIES      5U
+#define OC_CLEAN_MS         5000U
 
 /* USER CODE END PD */
 
@@ -126,7 +140,12 @@ volatile BenchCmd_t g_cmd = {0};
 volatile OpenLoopState_t g_ol = {0};
 volatile uint32_t g_oc_trips  = 0;   /* overcurrent trip count */
 volatile int32_t  g_oc_peak   = 0;   /* worst |I| seen, mA     */
-volatile uint32_t g_faulted   = 0;   /* latched: needs clear_fault */
+volatile uint32_t g_faulted   = 0;   /* latched: needs clear_fault or retry */
+volatile uint32_t g_oc_retries = 0;  /* consecutive auto-retries            */
+volatile uint32_t g_oc_gaveup  = 0;  /* 1 = retry budget exhausted          */
+
+static uint32_t s_fault_tick = 0;
+static uint32_t s_clean_tick = 0;
 
 static uint32_t s_ol_tick = 0;
 
@@ -319,10 +338,44 @@ int main(void)
       {
         MotorPwm_EmergencyStop();
         OpenLoop_Stop((OpenLoopState_t *)&g_ol);
-        g_faulted = 1U;
+        g_faulted    = 1U;
         g_oc_trips++;
-        g_cmd.ol_enable = 0U;
-        g_cmd.gate_en   = 0U;
+        s_fault_tick = HAL_GetTick();
+        /* g_cmd.ol_enable / gate_en are deliberately left alone - they record
+         * what the operator asked for, and the retry below needs to know. */
+      }
+      else if ((HAL_GetTick() - s_clean_tick) >= OC_CLEAN_MS)
+      {
+        /* Run clean for long enough and the retry budget is restored. */
+        g_oc_retries = 0U;
+        g_oc_gaveup  = 0U;
+        s_clean_tick = HAL_GetTick();
+      }
+    }
+    else
+    {
+      /* Latched. Re-arm after OC_RETRY_MS, but only while the operator still
+       * has the drive commanded on, and only within the retry budget. */
+      if (((HAL_GetTick() - s_fault_tick) >= OC_RETRY_MS) &&
+          (g_cmd.ol_enable != 0U) && (g_cmd.gate_en != 0U))
+      {
+        if (g_oc_retries < OC_MAX_RETRIES)
+        {
+          g_oc_retries++;
+          g_oc_peak    = 0;
+          g_faulted    = 0U;
+          s_clean_tick = HAL_GetTick();
+
+          MotorPwm_SetDuty(0, 0, 0);
+          MotorPwm_EnableOutputs();
+          MotorPwm_GateEnable();
+          OpenLoop_Start((OpenLoopState_t *)&g_ol, g_cmd.ol_freq_x100,
+                         g_cmd.ol_mod, g_cmd.ol_align_ms, g_cmd.ol_ramp_ms);
+        }
+        else
+        {
+          g_oc_gaveup = 1U;
+        }
       }
     }
 
@@ -346,8 +399,11 @@ int main(void)
       if (g_cmd.clear_fault != 0U)
       {
         g_cmd.clear_fault = 0U;
-        g_faulted = 0U;
-        g_oc_peak = 0;
+        g_faulted    = 0U;
+        g_oc_peak    = 0;
+        g_oc_retries = 0U;
+        g_oc_gaveup  = 0U;
+        s_clean_tick = HAL_GetTick();
       }
 
       if (g_cmd.ol_start != 0U)
