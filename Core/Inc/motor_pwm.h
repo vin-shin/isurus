@@ -122,6 +122,10 @@ void MotorPwm_SafeShutdown(void);
 /* Move the HRTIM->ADC trigger within the PWM period, in counts. */
 void MotorPwm_SetAdcTriggerPoint(uint32_t counts);
 
+/* PWM period in counts. Valid immediately after MotorPwm_Init, unlike the
+ * telemetry struct which is only populated once the main loop runs. */
+uint32_t MotorPwm_GetPeriod(void);
+
 /* Fill in a telemetry snapshot for SWD readout. */
 void MotorPwm_GetTelem(MotorPwmTelem_t *t);
 

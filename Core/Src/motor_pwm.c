@@ -323,6 +323,11 @@ static int MotorPwm_ConfigAdcTrigger(void)
   return 0;
 }
 
+uint32_t MotorPwm_GetPeriod(void)
+{
+  return s_period;
+}
+
 void MotorPwm_GetTelem(MotorPwmTelem_t *t)
 {
   t->period     = s_period;

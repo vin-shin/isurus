@@ -31,6 +31,7 @@
 #include "encoder.h"
 #include "csense.h"
 #include "motor_pwm.h"
+#include "openloop.h"
 #include <stdio.h>
 #include <stdarg.h>
 #include <string.h>
@@ -65,6 +66,10 @@ typedef struct {
   uint32_t duty_w;
   uint32_t outputs_en;  /* 1 = enable the HRTIM outputs      */
   uint32_t gate_en;     /* 1 = enable the gate drivers (PC5) */
+  uint32_t ol_enable;   /* 1 = run the open-loop rotating vector */
+  uint32_t ol_freq_x100;/* electrical frequency, Hz * 100        */
+  uint32_t ol_mod;      /* modulation index, per-mille           */
+  uint32_t clear_fault; /* write 1 to clear an overcurrent latch */
 } BenchCmd_t;
 /* USER CODE END PTD */
 
@@ -81,7 +86,13 @@ typedef struct {
 #define HEARTBEAT_MS        1000U
 
 /* Sample the current sensors every N encoder reads. */
-#define CS_READ_EVERY       500U
+/* Sample the current sensors every N encoder reads. Fast, because this is the
+ * only overcurrent protection there is - nothing is wired to HRTIM's hardware
+ * fault inputs on this board. 20 reads is roughly 750 Hz. */
+#define CS_READ_EVERY       20U
+
+/* Trip the power stage above this on either phase. */
+#define OC_TRIP_MA          3000
 
 /* USER CODE END PD */
 
@@ -108,6 +119,13 @@ volatile int32_t g_cs_trig_rc = 0;
 
 /* All-off at boot. Nothing here changes until something writes apply = 1. */
 volatile BenchCmd_t g_cmd = {0};
+
+volatile OpenLoopState_t g_ol = {0};
+volatile uint32_t g_oc_trips  = 0;   /* overcurrent trip count */
+volatile int32_t  g_oc_peak   = 0;   /* worst |I| seen, mA     */
+volatile uint32_t g_faulted   = 0;   /* latched: needs clear_fault */
+
+static uint32_t s_ol_tick = 0;
 
 static uint32_t s_rate_t0     = 0;  /* window start for the rate counter */
 static uint32_t s_rate_reads0 = 0;
@@ -142,6 +160,8 @@ static void Telem_Printf(const char *fmt, ...)
 
   HAL_UART_Transmit(&huart1, (uint8_t *)buf, (uint16_t)len, HAL_MAX_DELAY);
 }
+
+static inline int32_t g_enc_abs(int32_t v) { return (v < 0) ? -v : v; }
 
 /* USER CODE END 0 */
 
@@ -202,6 +222,7 @@ int main(void)
    * outputs are NOT enabled - nothing is commanded to the gate drivers. */
   g_pwm_init_rc = MotorPwm_Init();
   MotorPwm_SetDutyPermille(0, 0, 0);
+  OpenLoop_Init((OpenLoopState_t *)&g_ol, MotorPwm_GetPeriod());
 
   /* Now that the HRTIM ADC trigger exists, move current sensing onto it so
    * both phases are sampled at the same point in every PWM period. */
@@ -280,10 +301,58 @@ int main(void)
       MotorPwm_GetTelem((MotorPwmTelem_t *)&g_pwm);
     }
 
+    /* Overcurrent trip. Software-only and therefore slow, but it is the only
+     * protection present: nothing is wired to HRTIM's hardware fault inputs.
+     * Latches until clear_fault is written. */
+    if (g_faulted == 0U)
+    {
+      int32_t iu = g_enc_abs(g_cs.u_ma);
+      int32_t iw = g_enc_abs(g_cs.w_ma);
+      int32_t ip = (iu > iw) ? iu : iw;
+
+      if (ip > g_oc_peak) { g_oc_peak = ip; }
+
+      if (ip > OC_TRIP_MA)
+      {
+        MotorPwm_EmergencyStop();
+        OpenLoop_Stop((OpenLoopState_t *)&g_ol);
+        g_faulted = 1U;
+        g_oc_trips++;
+        g_cmd.ol_enable = 0U;
+        g_cmd.gate_en   = 0U;
+      }
+    }
+
+    /* Open-loop rotating vector, stepped at exactly OL_UPDATE_HZ off SysTick
+     * so the commanded frequency does not depend on loop timing. */
+    if ((g_faulted == 0U) && (g_cmd.ol_enable != 0U))
+    {
+      uint32_t t = HAL_GetTick();
+      if (t != s_ol_tick)
+      {
+        s_ol_tick = t;
+        OpenLoop_Update((OpenLoopState_t *)&g_ol);
+      }
+    }
+
     /* Bench commands from the debugger. */
     if (g_cmd.apply != 0U)
     {
       g_cmd.apply = 0U;
+
+      if (g_cmd.clear_fault != 0U)
+      {
+        g_cmd.clear_fault = 0U;
+        g_faulted = 0U;
+        g_oc_peak = 0;
+      }
+
+      OpenLoop_SetCommand((OpenLoopState_t *)&g_ol,
+                          g_cmd.ol_freq_x100, g_cmd.ol_mod);
+      if (g_cmd.ol_enable == 0U)
+      {
+        OpenLoop_Stop((OpenLoopState_t *)&g_ol);
+      }
 
       if (g_cmd.gate_en == 0U)
       {
@@ -291,7 +360,10 @@ int main(void)
         MotorPwm_GateDisable();
       }
 
-      MotorPwm_SetDutyPermille(g_cmd.duty_u, g_cmd.duty_v, g_cmd.duty_w);
+      if (g_cmd.ol_enable == 0U)
+      {
+        MotorPwm_SetDutyPermille(g_cmd.duty_u, g_cmd.duty_v, g_cmd.duty_w);
+      }
 
       if (g_cmd.outputs_en != 0U)
       {
