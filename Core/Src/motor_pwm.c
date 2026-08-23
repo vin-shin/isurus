@@ -323,6 +323,31 @@ static int MotorPwm_ConfigAdcTrigger(void)
   return 0;
 }
 
+void MotorPwm_SetDutyNorm(float u, float v, float w)
+{
+  MotorPwm_SetDuty((uint32_t)(u * (float)s_period),
+                   (uint32_t)(v * (float)s_period),
+                   (uint32_t)(w * (float)s_period));
+}
+
+/* Timer A repetition event fires once per PWM period. With RepetitionCounter
+ * at 0 that is 20 kHz, and it is phase-locked to the same timebase driving the
+ * ADC trigger - so the control loop always runs at the same point in the
+ * switching period. */
+void MotorPwm_EnableControlIsr(void)
+{
+  HRTIM1_TIMA->TIMxICR  = HRTIM_TIMICR_REPC;   /* clear stale flag */
+  HRTIM1_TIMA->TIMxDIER = HRTIM_TIMDIER_REPIE;
+  HAL_NVIC_SetPriority(HRTIM1_TIMA_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(HRTIM1_TIMA_IRQn);
+}
+
+void MotorPwm_DisableControlIsr(void)
+{
+  HRTIM1_TIMA->TIMxDIER = 0U;
+  HAL_NVIC_DisableIRQ(HRTIM1_TIMA_IRQn);
+}
+
 uint32_t MotorPwm_GetPeriod(void)
 {
   return s_period;

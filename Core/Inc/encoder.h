@@ -38,6 +38,11 @@ void Encoder_GetDebugData(uint16_t *rx1, uint16_t *rx2);
  * this stays usable from an ISR and needs no float-enabled printf. */
 uint32_t Encoder_RawToDegX100(uint16_t raw_counts);
 
+/* Direct-register angle read for the control ISR. The HAL path costs most of
+ * a PWM period, which is unaffordable at 20 kHz. No error reporting: on a
+ * timeout it returns the previous good value. */
+uint16_t Encoder_ReadAngleFast(void);
+
 /* ---- A1333 register access -------------------------------------------- *
  *
  * SPI frame is  bit15=0 | bit14=W1R0 | bits13:8=address | bits7:0=data,

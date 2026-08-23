@@ -48,6 +48,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     ${CMAKE_SOURCE_DIR}/Core/Src/csense.c
     ${CMAKE_SOURCE_DIR}/Core/Src/motor_pwm.c
     ${CMAKE_SOURCE_DIR}/Core/Src/openloop.c
+    ${CMAKE_SOURCE_DIR}/Core/Src/foc.c
 )
 
 # Add include paths

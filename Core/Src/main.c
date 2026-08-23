@@ -32,6 +32,7 @@
 #include "csense.h"
 #include "motor_pwm.h"
 #include "openloop.h"
+#include "foc.h"
 #include <stdio.h>
 #include <stdarg.h>
 #include <string.h>
@@ -142,6 +143,7 @@ volatile int32_t g_cs_trig_rc = 0;
 volatile BenchCmd_t g_cmd = {0};
 
 volatile OpenLoopState_t g_ol = {0};
+volatile FocState_t      g_foc = {0};
 volatile uint32_t g_oc_trips  = 0;   /* overcurrent trip count */
 volatile int32_t  g_oc_peak   = 0;   /* worst |I| seen, mA     */
 volatile uint32_t g_faulted   = 0;   /* latched: needs clear_fault or retry */
@@ -194,6 +196,38 @@ static void Telem_Printf(const char *fmt, ...)
 }
 
 static inline int32_t g_enc_abs(int32_t v) { return (v < 0) ? -v : v; }
+
+/* Control ISR - HRTIM Timer A repetition, 20 kHz, phase-locked to the PWM.
+ *
+ * Everything time-critical lives here: fresh current from the HRTIM-triggered
+ * ADCs, a fast encoder read, the FOC step, and the duty update. It runs only
+ * when g_foc.enabled is set, so the open-loop path is untouched otherwise. */
+void HRTIM1_TIMA_IRQHandler(void)
+{
+  uint32_t t0 = DWT->CYCCNT;
+
+  HRTIM1_TIMA->TIMxICR = HRTIM_TIMICR_REPC;
+
+  if (g_foc.enabled != 0U)
+  {
+    /* Conversions were triggered earlier this period, so DR is fresh. */
+    uint32_t u_raw = hadc5.Instance->DR;
+    uint32_t w_raw = hadc2.Instance->DR;
+
+    int32_t iu = CSense_RawToMa(u_raw, g_cs.u_zero);
+    int32_t iw = CSense_RawToMa(w_raw, g_cs.w_zero);
+
+    uint16_t enc = Encoder_ReadAngleFast();
+
+    FOC_Update((FocState_t *)&g_foc, iu, iw, enc);
+
+    MotorPwm_SetDutyNorm(g_foc.duty_u, g_foc.duty_v, g_foc.duty_w);
+  }
+
+  uint32_t dt = DWT->CYCCNT - t0;
+  g_foc.isr_cycles = dt;
+  if (dt > g_foc.isr_max) { g_foc.isr_max = dt; }
+}
 
 /* USER CODE END 0 */
 
@@ -255,6 +289,14 @@ int main(void)
   g_pwm_init_rc = MotorPwm_Init();
   MotorPwm_SetDutyPermille(0, 0, 0);
   OpenLoop_Init((OpenLoopState_t *)&g_ol, MotorPwm_GetPeriod());
+  FOC_Init((FocState_t *)&g_foc);
+
+  /* DWT cycle counter, used to time the control ISR. */
+  CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+  DWT->CYCCNT = 0;
+  DWT->CTRL  |= DWT_CTRL_CYCCNTENA_Msk;
+
+  MotorPwm_EnableControlIsr();
 
   /* Now that the HRTIM ADC trigger exists, move current sensing onto it so
    * both phases are sampled at the same point in every PWM period. */

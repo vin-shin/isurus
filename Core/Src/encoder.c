@@ -91,6 +91,46 @@ uint32_t Encoder_RawToDegX100(uint16_t raw_counts)
     return ((uint32_t)(raw_counts & 0x7FFFU) * 36000U) / 32768U;
 }
 
+/* Direct-register 16-bit transfer. HAL_SPI_TransmitReceive carries far too
+ * much overhead for a 50 us budget. */
+static inline uint16_t Spi1Xfer16Fast(uint16_t tx)
+{
+    uint32_t guard = 2000U;
+
+    while (((SPI1->SR & SPI_SR_TXE) == 0U) && (--guard != 0U)) { }
+    *(volatile uint16_t *)&SPI1->DR = tx;
+
+    guard = 2000U;
+    while (((SPI1->SR & SPI_SR_RXNE) == 0U) && (--guard != 0U)) { }
+    return *(volatile uint16_t *)&SPI1->DR;
+}
+
+uint16_t Encoder_ReadAngleFast(void)
+{
+    uint32_t guard;
+
+    /* Frame 1: issue the ANG15 command. */
+    ENC_CS_PORT->BSRR = (uint32_t)ENC_CS_PIN << 16;
+    (void)Spi1Xfer16Fast(A1333_ANG15_CMD);
+    guard = 2000U;
+    while (((SPI1->SR & SPI_SR_BSY) != 0U) && (--guard != 0U)) { }
+    ENC_CS_PORT->BSRR = (uint32_t)ENC_CS_PIN;
+
+    /* >350 ns of CS idle, per the A1333. */
+    for (volatile uint32_t d = 0; d < 12U; d++) { }
+
+    /* Frame 2: clock the answer back. */
+    ENC_CS_PORT->BSRR = (uint32_t)ENC_CS_PIN << 16;
+    uint16_t rx = Spi1Xfer16Fast(A1333_NOP_CMD);
+    guard = 2000U;
+    while (((SPI1->SR & SPI_SR_BSY) != 0U) && (--guard != 0U)) { }
+    ENC_CS_PORT->BSRR = (uint32_t)ENC_CS_PIN;
+
+    if (rx != 0xFFFFU) { s_last_good = (uint16_t)(rx & 0x7FFFU); }
+
+    return s_last_good;
+}
+
 /* ===================== A1333 register access ============================ *
  *
  * Frame: bit15=0, bit14=W1R0, bits13:8=address, bits7:0=data.

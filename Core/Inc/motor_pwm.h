@@ -122,6 +122,13 @@ void MotorPwm_SafeShutdown(void);
 /* Move the HRTIM->ADC trigger within the PWM period, in counts. */
 void MotorPwm_SetAdcTriggerPoint(uint32_t counts);
 
+/* Enable/disable the HRTIM period interrupt that drives the control loop. */
+void MotorPwm_EnableControlIsr(void);
+void MotorPwm_DisableControlIsr(void);
+
+/* Set duties from normalised 0..1 values (what FOC produces). */
+void MotorPwm_SetDutyNorm(float u, float v, float w);
+
 /* PWM period in counts. Valid immediately after MotorPwm_Init, unlike the
  * telemetry struct which is only populated once the main loop runs. */
 uint32_t MotorPwm_GetPeriod(void);

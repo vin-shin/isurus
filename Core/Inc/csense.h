@@ -21,6 +21,9 @@ extern "C" {
 #endif
 
 #include <stdint.h>
+#include "main.h"
+
+extern ADC_HandleTypeDef hadc5;
 
 /* CT4022-A40BSN8: 40 A bidirectional, ratiometric on the 3V3 rail.
  * Sensitivity 33 mV/A, so zero current sits at VDDA/2 ~ 1650 mV and full
