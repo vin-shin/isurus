@@ -299,8 +299,8 @@ symbol addresses:
 ninja -C build/Debug
 ```
 
-**Live ASCII dial.** `tools/encoder_dial.sh [interval_ms]` draws the angle as a
-needle on a circle and runs until Ctrl-C:
+**Live ASCII dial** (`hw-verification` branch only). `tools/encoder_dial.sh
+[interval_ms]` draws the angle as a needle on a circle and runs until Ctrl-C:
 
 ```
                         90
@@ -386,6 +386,12 @@ nothing; the angle is carried as hundredths of a degree in `g_enc_deg_x100`.
 ---
 
 ## 5. Debug LED brightness — PB1 via TIM3_CH4
+
+> **This lives on the `hw-verification` branch, not `main`.** `led_pwm.c` and
+> `tools/encoder_dial.sh` are bring-up instrumentation; `main` keeps PB1 free
+> for the control firmware. The section is kept here so the findings (the AF
+> mapping proof, the CIE curve) are not lost.
+
 
 `Core/Src/led_pwm.c` drives the debug LED's brightness from the encoder angle:
 **0° = off, 360° = full**, linear. PB1 is taken over from the plain push-pull

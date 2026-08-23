@@ -29,7 +29,6 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "encoder.h"
-#include "led_pwm.h"
 #include "csense.h"
 #include "motor_pwm.h"
 #include <stdio.h>
@@ -50,7 +49,6 @@ typedef struct {
   uint32_t errors;    /* SPI timeouts / failures               */
   uint32_t rate_hz;   /* measured encoder reads per second     */
   uint32_t frames;    /* rx1 in low half, rx2 in high half     */
-  uint32_t duty;      /* LED PWM compare, 0..LED_PWM_ARR+1     */
 } EncTelem_t;
 /* USER CODE END PTD */
 
@@ -175,7 +173,6 @@ int main(void)
   // __enable_irq();
   // HAL_SYSTICK_Config(SystemCoreClock / 1000U);
   Encoder_Init();
-  LedPwm_Init();
 
   /* Current sense. Zero-offset capture happens here, so the motor must be
    * de-energised and at rest at this point - which it is: nothing drives the
@@ -231,9 +228,6 @@ int main(void)
     g_enc.deg_x100 = Encoder_RawToDegX100(raw);
     g_enc.frames   = ((uint32_t)rx2 << 16) | (uint32_t)rx1;
 
-    /* LED brightness tracks the angle: 0 deg dark, 360 deg full. */
-    g_enc.duty = LedPwm_SetFromAngle(g_enc.deg_x100);
-
     uint32_t now = HAL_GetTick();
 
     /* Latch the measured sample rate once per second. */
@@ -248,14 +242,13 @@ int main(void)
     {
       s_print_div = 0;
       Telem_Printf("angle %3lu.%02lu deg  raw %5lu  rx1 %04lX rx2 %04lX  "
-                   "%lu Hz  duty %4lu  err %lu\r\n",
+                   "%lu Hz  err %lu\r\n",
                    (unsigned long)(g_enc.deg_x100 / 100U),
                    (unsigned long)(g_enc.deg_x100 % 100U),
                    (unsigned long)g_enc.raw,
                    (unsigned long)rx1,
                    (unsigned long)rx2,
                    (unsigned long)g_enc.rate_hz,
-                   (unsigned long)g_enc.duty,
                    (unsigned long)g_enc.errors);
     }
 

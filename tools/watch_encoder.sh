@@ -39,20 +39,19 @@ source [find target/stm32g4x.cfg]
 reset_config none
 adapter speed 4000
 init
-echo "   deg      raw     rx1     rx2      reads  err     Hz  duty"
+echo "   deg      raw     rx1     rx2      reads  err     Hz"
 for {set i 0} {\$i < $SAMPLES} {incr i} {
-    set d [read_memory $ADDR 32 7]
+    set d [read_memory $ADDR 32 6]
     set raw    [lindex \$d 0]
     set degx   [lindex \$d 1]
     set reads  [lindex \$d 2]
     set errs   [lindex \$d 3]
     set rate   [lindex \$d 4]
     set frames [lindex \$d 5]
-    set duty   [lindex \$d 6]
-    echo [format "%7.2f  %7d  0x%04X  0x%04X  %9d  %3d  %5d  %4d" \\
+    echo [format "%7.2f  %7d  0x%04X  0x%04X  %9d  %3d  %5d" \\
           [expr {\$degx/100.0}] \$raw \\
           [expr {\$frames & 0xFFFF}] [expr {(\$frames >> 16) & 0xFFFF}] \\
-          \$reads \$errs \$rate \$duty]
+          \$reads \$errs \$rate]
     sleep $INTERVAL
 }
 exit
