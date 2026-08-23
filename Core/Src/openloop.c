@@ -78,6 +78,40 @@ void OpenLoop_Init(OpenLoopState_t *s, uint32_t pwm_period)
   s->duty_v       = 0;
   s->duty_w       = 0;
   s->updates      = 0;
+  s->mode         = OL_IDLE;
+  s->align_left   = 0;
+  s->freq_now_x100 = 0;
+  s->freq_tgt_x100 = 0;
+  s->ramp_x100    = 0;
+}
+
+static uint32_t OpenLoop_IncFor(uint32_t freq_x100)
+{
+  return (uint32_t)(((uint64_t)freq_x100 << 32) /
+                    ((uint64_t)OL_UPDATE_HZ * 100ULL));
+}
+
+void OpenLoop_Start(OpenLoopState_t *s, uint32_t freq_x100,
+                    uint32_t mod_permille, uint32_t align_ms,
+                    uint32_t ramp_ms)
+{
+  if (mod_permille > OL_MOD_MAX_PERMILLE)
+  {
+    mod_permille = OL_MOD_MAX_PERMILLE;
+  }
+
+  s->mod_permille  = mod_permille;
+  s->phase         = 0;              /* align to electrical zero */
+  s->freq_now_x100 = 0;
+  s->freq_tgt_x100 = freq_x100;
+  s->inc           = 0;
+  s->align_left    = (align_ms * OL_UPDATE_HZ) / 1000U;
+
+  /* Frequency step per update so the ramp lands on target after ramp_ms. */
+  uint32_t steps = (ramp_ms * OL_UPDATE_HZ) / 1000U;
+  s->ramp_x100 = (steps > 0U) ? ((freq_x100 + steps - 1U) / steps) : freq_x100;
+
+  s->mode = OL_ALIGN;
 }
 
 void OpenLoop_SetCommand(OpenLoopState_t *s, uint32_t freq_x100,
@@ -99,7 +133,30 @@ void OpenLoop_SetCommand(OpenLoopState_t *s, uint32_t freq_x100,
 
 void OpenLoop_Update(OpenLoopState_t *s)
 {
-  s->phase += s->inc;
+  if (s->mode == OL_ALIGN)
+  {
+    /* Hold the vector still at electrical zero; the rotor is being dragged to
+     * a known angle. Do not advance the phase. */
+    if (s->align_left > 0U) { s->align_left--; }
+    if (s->align_left == 0U) { s->mode = OL_RUN; }
+  }
+  else if (s->mode == OL_RUN)
+  {
+    if (s->freq_now_x100 < s->freq_tgt_x100)
+    {
+      s->freq_now_x100 += s->ramp_x100;
+      if (s->freq_now_x100 > s->freq_tgt_x100)
+      {
+        s->freq_now_x100 = s->freq_tgt_x100;
+      }
+    }
+    s->inc = OpenLoop_IncFor(s->freq_now_x100);
+    s->phase += s->inc;
+  }
+  else
+  {
+    s->phase += s->inc;   /* plain SetCommand behaviour */
+  }
 
   /* Amplitude in counts. half * 500/1000 max = quarter period of swing each
    * way about the 50% midpoint. */
@@ -135,6 +192,10 @@ void OpenLoop_Stop(OpenLoopState_t *s)
   s->duty_u       = 0;
   s->duty_v       = 0;
   s->duty_w       = 0;
+  s->mode         = OL_IDLE;
+  s->align_left   = 0;
+  s->freq_now_x100 = 0;
+  s->freq_tgt_x100 = 0;
 
   MotorPwm_SetDuty(0, 0, 0);
 }

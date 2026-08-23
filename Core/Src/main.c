@@ -70,6 +70,9 @@ typedef struct {
   uint32_t ol_freq_x100;/* electrical frequency, Hz * 100        */
   uint32_t ol_mod;      /* modulation index, per-mille           */
   uint32_t clear_fault; /* write 1 to clear an overcurrent latch */
+  uint32_t ol_start;    /* write 1 to run align-then-ramp start   */
+  uint32_t ol_align_ms; /* DC alignment hold, ms                  */
+  uint32_t ol_ramp_ms;  /* 0 -> target frequency ramp time, ms    */
 } BenchCmd_t;
 /* USER CODE END PTD */
 
@@ -347,8 +350,17 @@ int main(void)
         g_oc_peak = 0;
       }
 
-      OpenLoop_SetCommand((OpenLoopState_t *)&g_ol,
-                          g_cmd.ol_freq_x100, g_cmd.ol_mod);
+      if (g_cmd.ol_start != 0U)
+      {
+        g_cmd.ol_start = 0U;
+        OpenLoop_Start((OpenLoopState_t *)&g_ol, g_cmd.ol_freq_x100,
+                       g_cmd.ol_mod, g_cmd.ol_align_ms, g_cmd.ol_ramp_ms);
+      }
+      else
+      {
+        OpenLoop_SetCommand((OpenLoopState_t *)&g_ol,
+                            g_cmd.ol_freq_x100, g_cmd.ol_mod);
+      }
       if (g_cmd.ol_enable == 0U)
       {
         OpenLoop_Stop((OpenLoopState_t *)&g_ol);

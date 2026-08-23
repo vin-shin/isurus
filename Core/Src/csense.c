@@ -51,7 +51,11 @@ static int CSense_Adc5Init(void)
   hadc5.Init.ExternalTrigConv      = ADC_SOFTWARE_START;
   hadc5.Init.ExternalTrigConvEdge  = ADC_EXTERNALTRIGCONVEDGE_NONE;
   hadc5.Init.DMAContinuousRequests = DISABLE;
-  hadc5.Init.Overrun               = ADC_OVR_DATA_PRESERVED;
+  /* MUST be OVERWRITTEN, not PRESERVED. The HRTIM triggers conversions at
+   * 20 kHz while this is polled far slower, so overrun is continuous. With
+   * DATA_PRESERVED the ADC discards every new conversion and DR stays frozen
+   * on the first sample forever - which reads as a perfectly dead sensor. */
+  hadc5.Init.Overrun               = ADC_OVR_DATA_OVERWRITTEN;
   hadc5.Init.OversamplingMode      = DISABLE;
   if (HAL_ADC_Init(&hadc5) != HAL_OK)
   {
@@ -121,6 +125,11 @@ static int CSense_SampleOnce(ADC_HandleTypeDef *hadc, uint32_t *out)
      * next end-of-conversion. Reading DR clears EOC. At 20 kHz a fresh sample
      * is never more than 50 us away, so this loop is short. */
     uint32_t guard = 2000000U;
+
+    /* Overrun is expected and harmless in OVERWRITTEN mode - DR always holds
+     * the most recent conversion. Clear the flag so it does not accumulate. */
+    __HAL_ADC_CLEAR_FLAG(hadc, ADC_FLAG_OVR);
+
     while (__HAL_ADC_GET_FLAG(hadc, ADC_FLAG_EOC) == 0U)
     {
       if (--guard == 0U) { return -1; }
@@ -249,6 +258,9 @@ static int CSense_ArmTriggered(ADC_HandleTypeDef *hadc, uint32_t channel)
 
   hadc->Init.ExternalTrigConv     = ADC_EXTERNALTRIG_HRTIM_TRG1;
   hadc->Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_RISING;
+  /* See the note in CSense_Adc5Init - PRESERVED freezes DR under continuous
+   * overrun, which is exactly what a 20 kHz trigger produces here. */
+  hadc->Init.Overrun              = ADC_OVR_DATA_OVERWRITTEN;
   if (HAL_ADC_Init(hadc) != HAL_OK) { return -1; }
 
   sConfig.Channel      = channel;
