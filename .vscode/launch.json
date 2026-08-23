@@ -1,0 +1,22 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+    {
+        "name": "Debug with OpenOCD",
+        "request": "launch",
+        "cwd": "${workspaceFolder}",
+        "executable": "${workspaceFolder}/build/Debug/makolongfin2.elf",
+        "type": "cortex-debug",
+        "device": "STM32G474RE",
+        "servertype": "openocd",
+        "configFiles": [
+            "interface/stlink.cfg",
+            "target/stm32g4x.cfg"
+        ],
+        "searchDir": [],
+        "preLaunchTask": "CMake: build",
+        "showDevDebugOutput": "none",
+        "svdPath": "${workspaceFolder}/.vscode/STM32G474.svd" // optional
+    }
+]
+}

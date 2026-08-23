@@ -1,0 +1,42 @@
+# --- Build output -----------------------------------------------------------
+build/
+
+# CMake
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+compile_commands.json
+
+# Ninja
+.ninja_deps
+.ninja_log
+
+# Compiler / linker artifacts
+*.o
+*.d
+*.a
+*.elf
+*.map
+*.bin
+*.hex
+*.list
+
+# --- STM32CubeMX ------------------------------------------------------------
+# Internal CubeMX state; regenerated from the .ioc. The .ioc itself IS tracked.
+.mxproject
+*.ioc.bak
+
+# --- Stray personal media --------------------------------------------------
+# Photos/videos/PDFs have ended up in .vscode/ before; keep them out of the repo.
+.vscode/*.gif
+.vscode/*.mov
+.vscode/*.mp4
+.vscode/*.png
+.vscode/*.jpg
+.vscode/*.pdf
+
+# --- Editor / OS -----------------------------------------------------------
+.DS_Store
+Thumbs.db
+*.swp
+*~
