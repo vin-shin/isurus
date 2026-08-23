@@ -159,6 +159,7 @@ set GW 46
 set GH 11
 set hist_u {}
 set hist_w {}
+set hist_v {}
 
 # Hide cursor, clear screen once.
 puts -nonewline "\${ESC}\[?25l\${ESC}\[2J"
@@ -235,20 +236,23 @@ while {1} {
     proc s32 {v} { if {\$v > 0x7FFFFFFF} { return [expr {\$v - 0x100000000}] } ; return \$v }
     set iu [s32 [lindex \$cs 4]]
     set iw [s32 [lindex \$cs 5]]
-    append out [format "   \${ESC}\[90mI_U\${ESC}\[0m %s%6d mA\${ESC}\[0m   \${ESC}\[90mI_W\${ESC}\[0m %s%6d mA\${ESC}\[0m   \${ESC}\[90merr\${ESC}\[0m %d
-" \
+    set iv [expr {-(\$iu + \$iw)}]
+    append out [format "   \${ESC}\[90mI_U\${ESC}\[0m %s%6d\${ESC}\[0m  \${ESC}\[90mI_V\${ESC}\[0m %s%6d\${ESC}\[0m  \${ESC}\[90mI_W\${ESC}\[0m %s%6d\${ESC}\[0m mA   \${ESC}\[90merr\${ESC}\[0m %d\r\n" \
                 [expr {abs(\$iu) > 1000 ? "\${ESC}\[1;91m" : "\${ESC}\[1;92m"}] \$iu \
+                [expr {abs(\$iv) > 1000 ? "\${ESC}\[1;91m" : "\${ESC}\[1;92m"}] \$iv \
                 [expr {abs(\$iw) > 1000 ? "\${ESC}\[1;91m" : "\${ESC}\[1;92m"}] \$iw \
                 [lindex \$cs 9]]
     # --- scrolling I_U / I_W waveform ---
     lappend hist_u \$iu
     lappend hist_w \$iw
+    lappend hist_v \$iv
     if {[llength \$hist_u] > \$GW} { set hist_u [lrange \$hist_u end-[expr {\$GW-1}] end] }
     if {[llength \$hist_w] > \$GW} { set hist_w [lrange \$hist_w end-[expr {\$GW-1}] end] }
+    if {[llength \$hist_v] > \$GW} { set hist_v [lrange \$hist_v end-[expr {\$GW-1}] end] }
 
     # Autoscale to the largest excursion on screen, rounded up to 500 mA.
     set scale 500
-    foreach v [concat \$hist_u \$hist_w] { if {abs(\$v) > \$scale} { set scale [expr {abs(\$v)}] } }
+    foreach v [concat \$hist_u \$hist_w \$hist_v] { if {abs(\$v) > \$scale} { set scale [expr {abs(\$v)}] } }
     set scale [expr {((\$scale/500)+1)*500}]
 
     set gg {}
@@ -275,7 +279,14 @@ while {1} {
         if {\$r < 0} { set r 0 }
         if {\$r >= \$GH} { set r [expr {\$GH-1}] }
         set grow [lindex \$gg \$r]
-        if {[lindex \$grow \$col] eq "o"} { lset grow \$col "8" } else { lset grow \$col "*" }
+        if {[lindex \$grow \$col] ne " " && [lindex \$grow \$col] ne "."} { lset grow \$col "8" } else { lset grow \$col "*" }
+        lset gg \$r \$grow
+        set v [lindex \$hist_v \$c]
+        set r [expr {((\$scale - \$v) * (\$GH-1)) / (2*\$scale)}]
+        if {\$r < 0} { set r 0 }
+        if {\$r >= \$GH} { set r [expr {\$GH-1}] }
+        set grow [lindex \$gg \$r]
+        if {[lindex \$grow \$col] ne " " && [lindex \$grow \$col] ne "."} { lset grow \$col "8" } else { lset grow \$col "+" }
         lset gg \$r \$grow
     }
 
@@ -291,13 +302,14 @@ while {1} {
             set cc "0;90"
             if {\$ch eq "o"} { set cc "1;96" }
             if {\$ch eq "*"} { set cc "1;95" }
+            if {\$ch eq "+"} { set cc "1;92" }
             if {\$ch eq "8"} { set cc "1;93" }
             if {\$cc ne \$cur} { append out "\${ESC}\[\${cc}m" ; set cur \$cc }
             append out \$ch
         }
         append out "\${ESC}\[0m\r\n"
     }
-    append out "        \${ESC}\[1;96mo I_U\${ESC}\[0m  \${ESC}\[1;95m* I_W\${ESC}\[0m  \${ESC}\[1;93m8 both\${ESC}\[0m  \${ESC}\[90mmA, autoscaled\${ESC}\[0m\r\n"
+    append out "        \${ESC}\[1;96mo I_U\${ESC}\[0m  \${ESC}\[1;92m+ I_V\${ESC}\[0m\${ESC}\[90m(calc)\${ESC}\[0m  \${ESC}\[1;95m* I_W\${ESC}\[0m  \${ESC}\[1;93m8 overlap\${ESC}\[0m  \${ESC}\[90mmA\${ESC}\[0m\r\n"
     append out "\${ESC}\[J"
     puts -nonewline \$out
     flush stdout
