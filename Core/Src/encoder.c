@@ -29,7 +29,7 @@ void Encoder_Init(void)
 }
 
 /* One 16-bit full-duplex frame with CS asserted around it. */
-static HAL_StatusTypeDef Encoder_Frame(uint16_t tx, uint16_t *rx)
+HAL_StatusTypeDef Encoder_Frame(uint16_t tx, uint16_t *rx)
 {
     HAL_StatusTypeDef st;
 
@@ -43,7 +43,7 @@ static HAL_StatusTypeDef Encoder_Frame(uint16_t tx, uint16_t *rx)
 
 /* The A1333 needs CS to stay idle >350 ns between the command frame and the
  * response frame. At 128 MHz this loop is comfortably longer than that. */
-static inline void Encoder_CsIdleDelay(void)
+void Encoder_CsIdleDelay(void)
 {
     volatile uint32_t d = 20;
     while (d--) {}
@@ -89,4 +89,163 @@ uint32_t Encoder_RawToDegX100(uint16_t raw_counts)
 {
     /* 32767 * 36000 fits in a uint32_t, so this needs no 64-bit math. */
     return ((uint32_t)(raw_counts & 0x7FFFU) * 36000U) / 32768U;
+}
+
+/* ===================== A1333 register access ============================ *
+ *
+ * Frame: bit15=0, bit14=W1R0, bits13:8=address, bits7:0=data.
+ * Reads are pipelined - the response to a command arrives in the NEXT frame,
+ * which is why every read below costs two transfers.
+ */
+
+#define A1333_WRITE_BIT     (1U << 14)
+
+/* Direct register addresses (byte-addressed; 16-bit regs span addr:addr+1). */
+#define A1333_REG_EWA       0x03U   /* extended write address, low byte */
+#define A1333_REG_EWDH      0x04U   /* write data, upper 16 bits        */
+#define A1333_REG_EWDL      0x06U   /* write data, lower 16 bits        */
+#define A1333_REG_EWCS      0x08U   /* EXW[15] start                    */
+#define A1333_REG_EWCS_ST   0x09U   /* WDN[0] done                      */
+#define A1333_REG_ERA       0x0BU   /* extended read address, low byte  */
+#define A1333_REG_ERCS      0x0CU   /* EXR[15] start                    */
+#define A1333_REG_ERCS_ST   0x0DU   /* RDN[0] done                      */
+#define A1333_REG_ERDH      0x0EU   /* read data, upper 16 bits         */
+#define A1333_REG_ERDL      0x10U   /* read data, lower 16 bits         */
+#define A1333_REG_IKEY      0x3CU   /* keycode                          */
+
+#define A1333_ZERO_OFFSET_MASK  0x0FFFU   /* ANG bits [11:0] */
+
+/* EEPROM writes take ~24 ms; shadow completes in one clock. */
+#define A1333_WRITE_POLL_MAX    200U
+
+Encoder_Status_t Encoder_RegWrite(uint8_t addr, uint8_t data)
+{
+  uint16_t rx = 0;
+  uint16_t cmd = (uint16_t)(A1333_WRITE_BIT |
+                            ((uint16_t)(addr & 0x3FU) << 8) |
+                            (uint16_t)data);
+
+  if (Encoder_Frame(cmd, &rx) != HAL_OK) { return ENC_ERR_SPI; }
+  Encoder_CsIdleDelay();
+
+  return ENC_OK;
+}
+
+Encoder_Status_t Encoder_RegRead(uint8_t addr, uint16_t *out)
+{
+  uint16_t rx = 0;
+  uint16_t cmd = (uint16_t)(((uint16_t)(addr & 0x3FU) << 8));
+
+  /* Frame 1 issues the read; frame 2 clocks the answer back. */
+  if (Encoder_Frame(cmd, &rx) != HAL_OK) { return ENC_ERR_SPI; }
+  Encoder_CsIdleDelay();
+  if (Encoder_Frame(0x0000U, &rx) != HAL_OK) { return ENC_ERR_SPI; }
+  Encoder_CsIdleDelay();
+
+  *out = rx;
+  return ENC_OK;
+}
+
+Encoder_Status_t Encoder_Unlock(void)
+{
+  /* KeyCode 0x0027811F77, entered as five separate byte writes into the
+   * keycode field. Unlock persists until the part is powered down. */
+  static const uint8_t key[5] = { 0x00U, 0x27U, 0x81U, 0x1FU, 0x77U };
+
+  for (uint32_t i = 0; i < 5U; i++)
+  {
+    if (Encoder_RegWrite(A1333_REG_IKEY, key[i]) != ENC_OK)
+    {
+      return ENC_ERR_SPI;
+    }
+  }
+
+  return ENC_OK;
+}
+
+Encoder_Status_t Encoder_ExtRead(uint8_t ext_addr, uint32_t *out)
+{
+  uint16_t hi = 0, lo = 0, st = 0;
+
+  if (Encoder_RegWrite(A1333_REG_ERA, ext_addr) != ENC_OK) { return ENC_ERR_SPI; }
+  if (Encoder_RegWrite(A1333_REG_ERCS, 0x80U)   != ENC_OK) { return ENC_ERR_SPI; }
+
+  for (uint32_t i = 0; i < A1333_WRITE_POLL_MAX; i++)
+  {
+    if (Encoder_RegRead(A1333_REG_ERCS_ST, &st) != ENC_OK) { return ENC_ERR_SPI; }
+    if ((st & 0x0001U) != 0U) { break; }          /* RDN */
+    HAL_Delay(1);
+  }
+
+  if (Encoder_RegRead(A1333_REG_ERDH, &hi) != ENC_OK) { return ENC_ERR_SPI; }
+  if (Encoder_RegRead(A1333_REG_ERDL, &lo) != ENC_OK) { return ENC_ERR_SPI; }
+
+  *out = ((uint32_t)hi << 16) | (uint32_t)lo;
+  return ENC_OK;
+}
+
+Encoder_Status_t Encoder_ExtWrite(uint8_t ext_addr, uint32_t data)
+{
+  uint16_t st = 0;
+
+  if (Encoder_RegWrite(A1333_REG_EWA,      ext_addr)                  != ENC_OK) { return ENC_ERR_SPI; }
+  if (Encoder_RegWrite(A1333_REG_EWDH,     (uint8_t)(data >> 24))     != ENC_OK) { return ENC_ERR_SPI; }
+  if (Encoder_RegWrite(A1333_REG_EWDH + 1U,(uint8_t)(data >> 16))     != ENC_OK) { return ENC_ERR_SPI; }
+  if (Encoder_RegWrite(A1333_REG_EWDL,     (uint8_t)(data >> 8))      != ENC_OK) { return ENC_ERR_SPI; }
+  if (Encoder_RegWrite(A1333_REG_EWDL + 1U,(uint8_t)(data))           != ENC_OK) { return ENC_ERR_SPI; }
+  if (Encoder_RegWrite(A1333_REG_EWCS,     0x80U)                     != ENC_OK) { return ENC_ERR_SPI; }
+
+  for (uint32_t i = 0; i < A1333_WRITE_POLL_MAX; i++)
+  {
+    if (Encoder_RegRead(A1333_REG_EWCS_ST, &st) != ENC_OK) { return ENC_ERR_SPI; }
+    if ((st & 0x0001U) != 0U) { return ENC_OK; }  /* WDN */
+    HAL_Delay(1);
+  }
+
+  return ENC_ERR_SPI;   /* never reported done */
+}
+
+Encoder_Status_t Encoder_GetZeroOffset(uint16_t *offset12, uint8_t from_eeprom)
+{
+  uint32_t ang = 0;
+  uint8_t  addr = from_eeprom ? A1333_EE_ANG : A1333_SHADOW_ANG;
+
+  if (Encoder_ExtRead(addr, &ang) != ENC_OK) { return ENC_ERR_SPI; }
+
+  *offset12 = (uint16_t)(ang & A1333_ZERO_OFFSET_MASK);
+  return ENC_OK;
+}
+
+Encoder_Status_t Encoder_SetZeroOffset(uint16_t offset12, uint8_t to_eeprom)
+{
+  uint32_t ang  = 0;
+  uint8_t  addr = to_eeprom ? A1333_EE_ANG : A1333_SHADOW_ANG;
+
+  /* Read-modify-write: ORATE, RD, RO and HYSTERESIS share this register and
+   * must survive untouched. */
+  if (Encoder_ExtRead(addr, &ang) != ENC_OK) { return ENC_ERR_SPI; }
+
+  ang &= ~(uint32_t)A1333_ZERO_OFFSET_MASK;
+  ang |= (uint32_t)(offset12 & A1333_ZERO_OFFSET_MASK);
+
+  if (Encoder_Unlock() != ENC_OK) { return ENC_ERR_SPI; }
+
+  return Encoder_ExtWrite(addr, ang);
+}
+
+Encoder_Status_t Encoder_ZeroHere(uint16_t *offset12, uint8_t to_eeprom)
+{
+  uint16_t raw = 0;
+
+  if (Encoder_ReadAngle(&raw) != ENC_OK) { return ENC_ERR_SPI; }
+
+  /* ZERO_OFFSET is 12-bit while the angle we read is 15-bit, so the reading
+   * is scaled down by 8. Verify this empirically before trusting it: write a
+   * known offset and measure how far the reported angle actually moves. */
+  uint16_t off = (uint16_t)((raw >> 3) & A1333_ZERO_OFFSET_MASK);
+
+  if (Encoder_SetZeroOffset(off, to_eeprom) != ENC_OK) { return ENC_ERR_SPI; }
+
+  *offset12 = off;
+  return ENC_OK;
 }

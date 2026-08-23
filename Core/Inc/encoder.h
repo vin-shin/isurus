@@ -38,6 +38,46 @@ void Encoder_GetDebugData(uint16_t *rx1, uint16_t *rx2);
  * this stays usable from an ISR and needs no float-enabled printf. */
 uint32_t Encoder_RawToDegX100(uint16_t raw_counts);
 
+/* ---- A1333 register access -------------------------------------------- *
+ *
+ * SPI frame is  bit15=0 | bit14=W1R0 | bits13:8=address | bits7:0=data,
+ * and reads are pipelined: the response to a command arrives in the NEXT
+ * frame. All of this is 16-bit mode 3, same as the angle read.
+ *
+ * ZERO_OFFSET lives in bits [11:0] of the ANG register, which is reachable
+ * two ways:
+ *   EEPROM  0x1C  - permanent, but rated for only ~100 write cycles and
+ *                   takes ~24 ms per write
+ *   SHADOW  0x5C  - volatile (lost at power-off), immediate, unlimited
+ *
+ * Always trial a value in SHADOW first. Only commit to EEPROM once the
+ * number is final; the write budget is small and non-renewable.
+ */
+
+#define A1333_EE_ANG        0x1CU   /* EEPROM ANG register  */
+#define A1333_SHADOW_ANG    0x5CU   /* Shadow ANG register  */
+
+/* Single-byte direct register write / 16-bit direct register read. */
+Encoder_Status_t Encoder_RegWrite(uint8_t addr, uint8_t data);
+Encoder_Status_t Encoder_RegRead(uint8_t addr, uint16_t *out);
+
+/* Writes are refused until the keycode is entered. Lasts until power-off. */
+Encoder_Status_t Encoder_Unlock(void);
+
+/* Extended (EEPROM / shadow) 32-bit access. */
+Encoder_Status_t Encoder_ExtRead(uint8_t ext_addr, uint32_t *out);
+Encoder_Status_t Encoder_ExtWrite(uint8_t ext_addr, uint32_t data);
+
+/* Set ZERO_OFFSET (12-bit) in shadow or EEPROM, preserving the other fields
+ * of the ANG register. Angle_out = Angle_RAW - ZERO_OFFSET. */
+Encoder_Status_t Encoder_SetZeroOffset(uint16_t offset12, uint8_t to_eeprom);
+Encoder_Status_t Encoder_GetZeroOffset(uint16_t *offset12, uint8_t from_eeprom);
+
+/* Zero the encoder at the current rotor position: reads the angle now and
+ * programs it as the offset, so this position becomes 0 deg. Writes SHADOW
+ * unless to_eeprom is set. Returns the offset written via offset12. */
+Encoder_Status_t Encoder_ZeroHere(uint16_t *offset12, uint8_t to_eeprom);
+
 #ifdef __cplusplus
 }
 #endif

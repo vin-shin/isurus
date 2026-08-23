@@ -73,6 +73,10 @@ typedef struct {
   uint32_t ol_start;    /* write 1 to run align-then-ramp start   */
   uint32_t ol_align_ms; /* DC alignment hold, ms                  */
   uint32_t ol_ramp_ms;  /* 0 -> target frequency ramp time, ms    */
+  uint32_t enc_cmd;     /* 1=read ANG regs, 2=zero->shadow,
+                           3=zero->EEPROM (uses a write cycle!),
+                           4=write enc_arg as ZERO_OFFSET->shadow */
+  uint32_t enc_arg;     /* raw 12-bit offset for enc_cmd 4        */
 } BenchCmd_t;
 /* USER CODE END PTD */
 
@@ -143,6 +147,12 @@ volatile int32_t  g_oc_peak   = 0;   /* worst |I| seen, mA     */
 volatile uint32_t g_faulted   = 0;   /* latched: needs clear_fault or retry */
 volatile uint32_t g_oc_retries = 0;  /* consecutive auto-retries            */
 volatile uint32_t g_oc_gaveup  = 0;  /* 1 = retry budget exhausted          */
+
+/* A1333 zero-calibration results, read over SWD. */
+volatile uint32_t g_enc_shadow_ang = 0;
+volatile uint32_t g_enc_ee_ang     = 0;
+volatile uint32_t g_enc_zero_off   = 0;
+volatile int32_t  g_enc_cmd_rc     = -1;
 
 static uint32_t s_fault_tick = 0;
 static uint32_t s_clean_tick = 0;
@@ -388,6 +398,50 @@ int main(void)
       {
         s_ol_tick = t;
         OpenLoop_Update((OpenLoopState_t *)&g_ol);
+      }
+    }
+
+    /* A1333 register access. Runs from the main loop so it shares the SPI
+     * with the angle reads; the loop simply pauses while it runs. */
+    if (g_cmd.enc_cmd != 0U)
+    {
+      uint32_t c = g_cmd.enc_cmd;
+      g_cmd.enc_cmd = 0U;
+
+      uint32_t sh = 0, ee = 0;
+      uint16_t off = 0;
+
+      if (c == 1U)
+      {
+        /* Read-only: proves the extended-access framing without spending an
+         * EEPROM write cycle. */
+        Encoder_Status_t a = Encoder_ExtRead(A1333_SHADOW_ANG, &sh);
+        Encoder_Status_t b = Encoder_ExtRead(A1333_EE_ANG,     &ee);
+        g_enc_shadow_ang = sh;
+        g_enc_ee_ang     = ee;
+        g_enc_cmd_rc     = ((a == ENC_OK) && (b == ENC_OK)) ? 0 : -1;
+      }
+      else if (c == 4U)
+      {
+        /* Write an explicit offset to SHADOW only. Used to measure how far a
+         * known ZERO_OFFSET actually moves the reported angle, which settles
+         * the 12-bit-offset vs 15-bit-angle scaling. Shadow is volatile and
+         * unlimited, so this costs nothing. */
+        Encoder_Status_t a = Encoder_SetZeroOffset((uint16_t)g_cmd.enc_arg, 0U);
+        g_enc_cmd_rc = (a == ENC_OK) ? 0 : -1;
+        (void)Encoder_ExtRead(A1333_SHADOW_ANG, &sh);
+        g_enc_shadow_ang = sh;
+      }
+      else if ((c == 2U) || (c == 3U))
+      {
+        /* c == 3 burns one of ~100 EEPROM write cycles. */
+        Encoder_Status_t a = Encoder_ZeroHere(&off, (c == 3U) ? 1U : 0U);
+        g_enc_zero_off = off;
+        g_enc_cmd_rc   = (a == ENC_OK) ? 0 : -1;
+        (void)Encoder_ExtRead(A1333_SHADOW_ANG, &sh);
+        (void)Encoder_ExtRead(A1333_EE_ANG,     &ee);
+        g_enc_shadow_ang = sh;
+        g_enc_ee_ang     = ee;
       }
     }
 
