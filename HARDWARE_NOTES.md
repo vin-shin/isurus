@@ -664,6 +664,50 @@ reads as a true 0%.
 `MotorPwm_EnableOutputs()` is the only thing that connects HRTIM to the pins,
 and nothing calls it at boot.
 
+### ⚠️ HRTIM ignores compares below one fHRTIM period — 0% became 100%
+
+HRTIM will not act on a compare value smaller than one full `fHRTIM` clock
+period, which at `PRESCALERRATIO_MUL8` is **8 counter LSBs**. A compare below
+that is silently ignored: the output is still set at the period rollover and
+then **never reset**, so it latches high for the entire period.
+
+An early version used `PWM_CMP_MIN = 3` for "0%". The result was that a
+commanded **0% duty came out as a stuck 100%** — full high-side on, the worst
+possible failure direction for a bridge. It was invisible on the U phase
+(running at 25%, well above the threshold) and only appeared once V and W were
+commanded to zero.
+
+Measured on this part, sweeping Timer B CMP1R and sampling PA10:
+
+| CMP | PA10 high | |
+|---|---|---|
+| 3 | 100% | ignored -> stuck on |
+| 6 | 100% | ignored -> stuck on |
+| **7** | **100%** | last failing value |
+| **8** | **0%** | first working value |
+| 12…512 | tracks duty | correct |
+
+Two fixes, both in `motor_pwm.c`:
+
+- `PWM_CMP_MIN` is **16** (2x the measured minimum, for margin).
+- **True 0% never uses a small compare.** `MotorPwm_SetDuty` clears the output's
+  set-source (`SETx1R`/`SETx2R` = 0) so the output can never be driven high, and
+  leaves a valid compare in place so any currently-high output is reset once and
+  stays low. A non-zero duty puts `HRTIM_OUTPUTSET_TIMPER` back.
+
+Verified after the fix — 0% is genuinely 0%, and duty is linear:
+
+```
+   cmd%   PA11(U)   PA10(V)   PA9(W)
+      0       0%        0%        0%
+    250      24%        0%        0%
+    750      75%        0%        0%
+   1000     100%        0%        0%
+```
+
+The general lesson: **on a motor bridge, always confirm that a commanded zero
+actually produces zero at the pin.** A duty that looks right in the middle of
+the range says nothing about the endpoints.
 ### Gate driver enable — PC5
 
 `PC5` drives the DIS/enable net common to all three drivers. It is configured as
