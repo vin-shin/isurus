@@ -50,6 +50,22 @@ typedef struct {
   uint32_t rate_hz;   /* measured encoder reads per second     */
   uint32_t frames;    /* rx1 in low half, rx2 in high half     */
 } EncTelem_t;
+
+/* Bench command block, written over SWD so the power stage can be driven while
+ * someone holds a scope probe - no reflash between steps.
+ *
+ * Everything defaults to off. Write the duty/enable fields first, then write
+ * `apply` = 1; the main loop latches them and clears `apply`. Ordering is
+ * enforced in the loop: on the way up duty -> outputs -> gates, on the way
+ * down gates -> outputs, because only the gate line actually turns FETs off. */
+typedef struct {
+  uint32_t apply;       /* write 1 to latch the fields below */
+  uint32_t duty_u;      /* per-mille, 0..1000                */
+  uint32_t duty_v;
+  uint32_t duty_w;
+  uint32_t outputs_en;  /* 1 = enable the HRTIM outputs      */
+  uint32_t gate_en;     /* 1 = enable the gate drivers (PC5) */
+} BenchCmd_t;
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -89,6 +105,9 @@ volatile int32_t g_cs_init_rc = 0;
 volatile MotorPwmTelem_t g_pwm = {0};
 volatile int32_t g_pwm_init_rc = 0;
 volatile int32_t g_cs_trig_rc = 0;
+
+/* All-off at boot. Nothing here changes until something writes apply = 1. */
+volatile BenchCmd_t g_cmd = {0};
 
 static uint32_t s_rate_t0     = 0;  /* window start for the rate counter */
 static uint32_t s_rate_reads0 = 0;
@@ -259,6 +278,36 @@ int main(void)
       s_cs_div = 0;
       (void)CSense_Read((CSenseTelem_t *)&g_cs);
       MotorPwm_GetTelem((MotorPwmTelem_t *)&g_pwm);
+    }
+
+    /* Bench commands from the debugger. */
+    if (g_cmd.apply != 0U)
+    {
+      g_cmd.apply = 0U;
+
+      if (g_cmd.gate_en == 0U)
+      {
+        /* Gates first on the way down - the only true all-off. */
+        MotorPwm_GateDisable();
+      }
+
+      MotorPwm_SetDutyPermille(g_cmd.duty_u, g_cmd.duty_v, g_cmd.duty_w);
+
+      if (g_cmd.outputs_en != 0U)
+      {
+        MotorPwm_EnableOutputs();
+      }
+      else
+      {
+        MotorPwm_DisableOutputs();
+      }
+
+      if (g_cmd.gate_en != 0U)
+      {
+        /* Gates last on the way up, so the PWM is already correct before the
+         * drivers are allowed to act on it. */
+        MotorPwm_GateEnable();
+      }
     }
 
     /* Heartbeat so a stalled loop is visible without a debugger attached.
