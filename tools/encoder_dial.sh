@@ -151,6 +151,12 @@ proc render {g} {
     return \$out
 }
 
+# Scrolling current-waveform graph.
+set GW 46
+set GH 11
+set hist_u {}
+set hist_w {}
+
 # Hide cursor, clear screen once.
 puts -nonewline "\${ESC}\[?25l\${ESC}\[2J"
 
@@ -221,6 +227,64 @@ while {1} {
                 [expr {abs(\$iu) > 1000 ? "\${ESC}\[1;91m" : "\${ESC}\[1;92m"}] \$iu \
                 [expr {abs(\$iw) > 1000 ? "\${ESC}\[1;91m" : "\${ESC}\[1;92m"}] \$iw \
                 [lindex \$cs 9]]
+    # --- scrolling I_U / I_W waveform ---
+    lappend hist_u \$iu
+    lappend hist_w \$iw
+    if {[llength \$hist_u] > \$GW} { set hist_u [lrange \$hist_u end-[expr {\$GW-1}] end] }
+    if {[llength \$hist_w] > \$GW} { set hist_w [lrange \$hist_w end-[expr {\$GW-1}] end] }
+
+    # Autoscale to the largest excursion on screen, rounded up to 500 mA.
+    set scale 500
+    foreach v [concat \$hist_u \$hist_w] { if {abs(\$v) > \$scale} { set scale [expr {abs(\$v)}] } }
+    set scale [expr {((\$scale/500)+1)*500}]
+
+    set gg {}
+    for {set r 0} {\$r < \$GH} {incr r} {
+        set grow {}
+        for {set c 0} {\$c < \$GW} {incr c} { lappend grow " " }
+        lappend gg \$grow
+    }
+    set zr [expr {(\$GH-1)/2}]
+    set grow [lindex \$gg \$zr]
+    for {set c 0} {\$c < \$GW} {incr c} { lset grow \$c "." }
+    lset gg \$zr \$grow
+
+    set n [llength \$hist_u]
+    for {set c 0} {\$c < \$n} {incr c} {
+        set col [expr {\$GW - \$n + \$c}]
+        set v [lindex \$hist_u \$c]
+        set r [expr {((\$scale - \$v) * (\$GH-1)) / (2*\$scale)}]
+        if {\$r < 0} { set r 0 }
+        if {\$r >= \$GH} { set r [expr {\$GH-1}] }
+        set grow [lindex \$gg \$r]; lset grow \$col "o"; lset gg \$r \$grow
+        set v [lindex \$hist_w \$c]
+        set r [expr {((\$scale - \$v) * (\$GH-1)) / (2*\$scale)}]
+        if {\$r < 0} { set r 0 }
+        if {\$r >= \$GH} { set r [expr {\$GH-1}] }
+        set grow [lindex \$gg \$r]
+        if {[lindex \$grow \$col] eq "o"} { lset grow \$col "8" } else { lset grow \$col "*" }
+        lset gg \$r \$grow
+    }
+
+    append out "\r\n"
+    for {set r 0} {\$r < \$GH} {incr r} {
+        if {\$r == 0} { set lbl [format "%+5d" \$scale] } elseif {\$r == \$zr} { set lbl "    0" } elseif {\$r == \$GH-1} { set lbl [format "%+5d" [expr {-\$scale}]] } else { set lbl "     " }
+        append out "  \${ESC}\[90m\$lbl\${ESC}\[0m "
+        set grow [lindex \$gg \$r]
+        set cur ""
+        for {set c 0} {\$c < \$GW} {incr c} {
+            set ch [lindex \$grow \$c]
+            if {\$ch eq " "} { append out " " ; continue }
+            set cc "0;90"
+            if {\$ch eq "o"} { set cc "1;96" }
+            if {\$ch eq "*"} { set cc "1;95" }
+            if {\$ch eq "8"} { set cc "1;93" }
+            if {\$cc ne \$cur} { append out "\${ESC}\[\${cc}m" ; set cur \$cc }
+            append out \$ch
+        }
+        append out "\${ESC}\[0m\r\n"
+    }
+    append out "        \${ESC}\[1;96mo I_U\${ESC}\[0m  \${ESC}\[1;95m* I_W\${ESC}\[0m  \${ESC}\[1;93m8 both\${ESC}\[0m  \${ESC}\[90mmA, autoscaled\${ESC}\[0m\r\n"
     append out "\${ESC}\[J"
     puts -nonewline \$out
     flush stdout

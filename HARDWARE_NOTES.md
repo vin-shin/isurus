@@ -299,8 +299,9 @@ symbol addresses:
 ninja -C build/Debug
 ```
 
-**Live ASCII dial** (`hw-verification` branch only). `tools/encoder_dial.sh
-[interval_ms]` draws the angle as a needle on a circle and runs until Ctrl-C:
+**Live ASCII dial.** `tools/encoder_dial.sh [interval_ms]` draws the angle as a
+needle on a circle, with live I_U / I_W and a scrolling current waveform under
+it, and runs until Ctrl-C:
 
 ```
                         90
