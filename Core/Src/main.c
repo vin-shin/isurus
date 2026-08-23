@@ -76,7 +76,7 @@ typedef struct {
   uint32_t enc_cmd;     /* 1=read ANG regs, 2=zero->shadow,
                            3=zero->EEPROM (uses a write cycle!),
                            4=write enc_arg as ZERO_OFFSET->shadow */
-  uint32_t enc_arg;     /* raw 12-bit offset for enc_cmd 4        */
+  uint32_t enc_arg;     /* raw 12-bit offset for enc_cmd 4 / 5    */
 } BenchCmd_t;
 /* USER CODE END PTD */
 
@@ -431,6 +431,19 @@ int main(void)
         g_enc_cmd_rc = (a == ENC_OK) ? 0 : -1;
         (void)Encoder_ExtRead(A1333_SHADOW_ANG, &sh);
         g_enc_shadow_ang = sh;
+      }
+      else if (c == 5U)
+      {
+        /* Commit an explicit, already-validated offset to EEPROM. Deliberately
+         * separate from ZeroHere: ZeroHere reads the CURRENT angle, which is
+         * already offset-corrected, so re-running it would double-apply. This
+         * writes a known-good number instead. Spends one of ~100 cycles. */
+        Encoder_Status_t a = Encoder_SetZeroOffset((uint16_t)g_cmd.enc_arg, 1U);
+        g_enc_cmd_rc = (a == ENC_OK) ? 0 : -1;
+        (void)Encoder_ExtRead(A1333_SHADOW_ANG, &sh);
+        (void)Encoder_ExtRead(A1333_EE_ANG,     &ee);
+        g_enc_shadow_ang = sh;
+        g_enc_ee_ang     = ee;
       }
       else if ((c == 2U) || (c == 3U))
       {

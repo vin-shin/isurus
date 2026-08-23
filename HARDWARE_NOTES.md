@@ -780,7 +780,73 @@ matters for torque ripple.
 
 ---
 
-## 8. Debugging heuristic worth remembering
+## 8. Motor parameters and encoder zero calibration
+
+Parameters carried over from `makoshortfin/Core/Inc/config.h`:
+
+```
+MOTOR_POLE_PAIRS            20
+MOTOR_PHASE_RESISTANCE_OHM  0.085      (0.17 ohm phase-to-phase / 2)
+MOTOR_PHASE_INDUCTANCE_H    54.3 uH
+MOTOR_RATED_CURRENT_A       100
+```
+
+**Both key numbers were independently confirmed on this board**, which is worth
+recording because each was measured before the config file was consulted:
+
+- **Phase resistance.** Current scales linearly at ~73 mA per 0.1% modulation,
+  implying ~0.13 ohm — the same order as the documented 85 mohm, measured purely
+  from the current-vs-modulation sweep.
+- **Pole pairs.** Stepping a DC vector through 720 degrees electrical moved the
+  rotor 35.76 degrees mechanical, giving **20.13 pole pairs**. Expected 36.00
+  for exactly 20, so 0.67% error — inside cogging hysteresis.
+
+Do **not** measure pole pairs from a spinning open-loop rotor. That gave ~32,
+because with no current control the rotor slips rather than locking to the
+field. Stepped DC alignments are static, so slip cannot corrupt them.
+
+### Encoder zero, programmed into the sensor
+
+The A1333 applies `Angle_out = Angle_RAW - ZERO_OFFSET` internally, so the
+electrical-angle offset lives in the sensor rather than in firmware:
+
+```
+electrical_angle = (encoder_angle * 20) mod 360
+```
+
+No software offset constant, no per-boot calibration, and it survives power
+cycles.
+
+| | |
+|---|---|
+| Register | `ANG`, bits [11:0] |
+| EEPROM | `0x1C` — permanent, **~100 write cycles**, ~24 ms per write |
+| Shadow | `0x5C` — volatile, immediate, unlimited |
+| Unlock | KeyCode `0x0027811F77`, five separate byte writes to `0x3C` |
+| Programmed value | **3032** |
+
+**Always trial in shadow first.** The write budget is small and does not renew.
+
+Scaling was measured, not assumed: writing 1024 shifted the reported angle
+90.01 degrees and 2048 shifted it 180.05, so `ZERO_OFFSET` is 12 bits across
+360 degrees and `offset = raw15 >> 3`. Granularity is 0.088 degrees.
+
+Two independent checks that the calibration is good:
+
+- After programming, the rotor held at electrical zero read **0.00 +/- 0.07
+  degrees**, i.e. within one offset LSB.
+- Electrical zeros must land on multiples of 18 degrees mechanical for 20 pole
+  pairs. A later alignment settled at **305.87** against a predicted
+  **306.00** — 0.13 degrees out.
+
+> **`Encoder_ZeroHere` must not be run twice.** It reads the *current* angle,
+> which is already offset-corrected, so a second call double-applies. To change
+> a programmed offset, either zero the offset first and re-align, or write a
+> known value directly (`enc_cmd 5`).
+
+---
+
+## 9. Debugging heuristic worth remembering
 
 **If a Cortex-M appears to restart rather than hang, suspect boot configuration before
 application code.**
