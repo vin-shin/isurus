@@ -321,22 +321,33 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-    /* Sample the encoder flat out — no delay. Everything else in this loop is
-     * rate-limited off HAL_GetTick so it cannot throttle the read. */
+    /* SPI1 has exactly one owner at a time. Once the control ISR is running it
+     * reads the encoder every PWM period, so the main loop must not touch the
+     * bus: concurrent transfers corrupt each other and, worse, corrupt the
+     * angle the Park transform depends on. Take the ISR's value instead. */
     uint16_t raw = 0;
-    Encoder_Status_t st = Encoder_ReadAngle(&raw);
+    uint16_t rx1 = 0, rx2 = 0;
 
-    if (st == ENC_OK)
+    if (g_foc.enabled != 0U)
     {
+      raw = g_foc.enc_raw;
       g_enc.reads++;
     }
     else
     {
-      g_enc.errors++;
-    }
+      Encoder_Status_t st = Encoder_ReadAngle(&raw);
 
-    uint16_t rx1 = 0, rx2 = 0;
-    Encoder_GetDebugData(&rx1, &rx2);
+      if (st == ENC_OK)
+      {
+        g_enc.reads++;
+      }
+      else
+      {
+        g_enc.errors++;
+      }
+
+      Encoder_GetDebugData(&rx1, &rx2);
+    }
 
     g_enc.raw      = raw;
     g_enc.deg_x100 = Encoder_RawToDegX100(raw);

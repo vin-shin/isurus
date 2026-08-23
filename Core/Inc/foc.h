@@ -46,6 +46,19 @@ extern "C" {
 /* Modulation ceiling, as a fraction of the available bus voltage. */
 #define FOC_VMAX_DEFAULT    0.10f
 
+/* Fixed 90 degree electrical correction, in encoder counts (32768 = 360 deg).
+ *
+ * This is a convention difference, not a calibration error. openloop.c - which
+ * held the rotor during the A1333 zero calibration - builds phases as
+ * sin(theta), so at theta=0 it applies a vector at -90 deg in alpha/beta.
+ * FOC's inverse Clarke uses vu = valpha, so its electrical zero is at 0 deg.
+ *
+ * Confirmed by sweeping the offset at a fixed 1 A command: 0 and 180 deg
+ * produced no rotation at all (pure d-axis force), while 90 and 270 deg gave
+ * +3.4 and -3.5 revolutions in 3 s. That 0/180-null, 90/270-peak pattern is
+ * the signature of exactly this misalignment. */
+#define FOC_ELEC_OFFSET_DEFAULT   8192
+
 typedef struct {
   /* Commands */
   float    id_ref;        /* A, normally 0 for a surface-magnet motor */
@@ -66,6 +79,14 @@ typedef struct {
   float    kp, ki, vmax;
 
   /* Angle */
+  /* Electrical offset in encoder counts (32768 = 360 deg electrical).
+   * The A1333 ZERO_OFFSET aligns the encoder to whatever vector was applied
+   * during calibration, but openloop.c builds phases as sin(theta) while FOC's
+   * inverse Clarke uses vu = valpha (a cosine convention). Those differ by 90
+   * degrees, so a correction belongs here until the calibration is redone
+   * against a FOC-convention vector. 8192 counts = 90 deg electrical. */
+  int32_t  elec_offset;
+
   uint16_t enc_raw;
   uint16_t elec_counts;   /* 0..32767 electrical                      */
   float    sin_e, cos_e;

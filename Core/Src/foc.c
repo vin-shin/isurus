@@ -25,7 +25,8 @@ void FOC_Init(FocState_t *f)
   f->kp      = FOC_KP_DEFAULT;
   f->ki      = FOC_KI_DEFAULT;
   f->vmax    = FOC_VMAX_DEFAULT;
-  f->enabled = 0U;
+  f->enabled     = 0U;
+  f->elec_offset = FOC_ELEC_OFFSET_DEFAULT;
   f->updates = 0U;
   f->isr_max = 0U;
   FOC_Reset(f);
@@ -46,9 +47,15 @@ void FOC_Update(FocState_t *f, int32_t iu_ma, int32_t iw_ma, uint16_t enc_raw)
   /* ---- electrical angle -------------------------------------------- */
   /* Encoder zero IS electrical zero (programmed into the A1333), so this
    * needs no offset term - just the pole-pair multiply, wrapped. */
-  f->enc_raw     = enc_raw;
-  f->elec_counts = (uint16_t)(((uint32_t)(enc_raw & 0x7FFFU) * FOC_POLE_PAIRS)
-                              % FOC_ENC_COUNTS);
+  f->enc_raw = enc_raw;
+  {
+    int32_t e = (int32_t)(((uint32_t)(enc_raw & 0x7FFFU) * FOC_POLE_PAIRS)
+                          % FOC_ENC_COUNTS);
+    e += f->elec_offset;
+    e %= (int32_t)FOC_ENC_COUNTS;
+    if (e < 0) { e += (int32_t)FOC_ENC_COUNTS; }
+    f->elec_counts = (uint16_t)e;
+  }
 
   float theta = (float)f->elec_counts * (6.28318530718f / (float)FOC_ENC_COUNTS);
   f->sin_e = sinf(theta);
