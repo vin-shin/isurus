@@ -140,6 +140,11 @@ void FOC_Update(FocState_t *f, int32_t iu_ma, int32_t iw_ma, uint16_t enc_raw)
   f->duty_u_pm = (int32_t)(f->duty_u * 1000.0f);
   f->duty_v_pm = (int32_t)(f->duty_v * 1000.0f);
   f->duty_w_pm = (int32_t)(f->duty_w * 1000.0f);
+  f->iq_ref_ma = (int32_t)(f->iq_ref * 1000.0f);
+  f->id_ref_ma = (int32_t)(f->id_ref * 1000.0f);
+  f->elec_deg_x10 = (int32_t)(((uint32_t)f->elec_counts * 3600U) / FOC_ENC_COUNTS);
+  f->vmax_pm   = (int32_t)(f->vmax * 1000.0f);
+  f->vmag_pm   = (int32_t)(sqrtf(f->vd * f->vd + f->vq * f->vq) * 1000.0f);
 
   f->updates++;
 }

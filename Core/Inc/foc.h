@@ -108,6 +108,10 @@ typedef struct {
   int32_t  iu_ma, iw_ma;
   int32_t  vd_mv, vq_mv;         /* as per-mille of bus, x1000 */
   int32_t  duty_u_pm, duty_v_pm, duty_w_pm;
+  int32_t  iq_ref_ma, id_ref_ma;
+  int32_t  elec_deg_x10;      /* electrical angle, tenths of a degree */
+  int32_t  vmax_pm;           /* modulation ceiling, per-mille        */
+  int32_t  vmag_pm;           /* applied vector magnitude, per-mille  */
 } FocState_t;
 
 void FOC_Init(FocState_t *f);
