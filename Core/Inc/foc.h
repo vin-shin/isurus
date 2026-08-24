@@ -43,8 +43,14 @@ extern "C" {
 #define FOC_KP_DEFAULT      0.018f
 #define FOC_KI_DEFAULT      29.0f
 
-/* Modulation ceiling, as a fraction of the available bus voltage. */
-#define FOC_VMAX_DEFAULT    0.10f
+/* Modulation ceiling, as a fraction of the available bus voltage.
+ *
+ * This caps how much voltage the loop may apply, which in turn caps speed:
+ * back-EMF rises with rpm and the loop saturates once it can no longer push
+ * current against it. It does NOT set the current - the PI does that - so
+ * raising it is safe as long as the current loop is behaving.
+ * 0.10 limited the motor to ~68 rpm. */
+#define FOC_VMAX_DEFAULT    0.25f
 
 /* Fixed 90 degree electrical correction, in encoder counts (32768 = 360 deg).
  *

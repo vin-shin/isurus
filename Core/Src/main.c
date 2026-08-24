@@ -105,7 +105,7 @@ typedef struct {
  * 27% headroom and nuisance-tripped on any small load disturbance. 4000 keeps
  * real protection (only ~700 mA is needed to actually turn the motor) while
  * leaving room for normal transients. */
-#define OC_TRIP_MA          4000
+#define OC_TRIP_MA          15000
 
 /* After a trip, wait this long then re-arm and try again. */
 #define OC_RETRY_MS         3000U

@@ -69,15 +69,8 @@ void FOC_Update(FocState_t *f, int32_t iu_ma, int32_t iw_ma, uint16_t enc_raw)
   float ed = f->id_ref - f->id;
   float eq = f->iq_ref - f->iq;
 
-  /* Integrate first, then clamp the total. Clamping the integrator against
-   * the same limit as the output is what stops windup during saturation. */
   f->id_integ += ed * f->ki * (1.0f / 20000.0f);
   f->iq_integ += eq * f->ki * (1.0f / 20000.0f);
-
-  if (f->id_integ >  f->vmax) { f->id_integ =  f->vmax; }
-  if (f->id_integ < -f->vmax) { f->id_integ = -f->vmax; }
-  if (f->iq_integ >  f->vmax) { f->iq_integ =  f->vmax; }
-  if (f->iq_integ < -f->vmax) { f->iq_integ = -f->vmax; }
 
   f->vd = ed * f->kp + f->id_integ;
   f->vq = eq * f->kp + f->iq_integ;
@@ -89,6 +82,15 @@ void FOC_Update(FocState_t *f, int32_t iu_ma, int32_t iw_ma, uint16_t enc_raw)
   if (vmag > f->vmax)
   {
     float k = f->vmax / vmag;
+
+    /* Back-calculation anti-windup. Clamping each integrator to +/-vmax
+     * separately is not enough: two axes each at the limit reach 1.41*vmax
+     * combined, so they keep winding past anything the output can deliver and
+     * the loop stops responding. Scaling them by the same factor that limits
+     * the vector holds the integrators at exactly what is achievable. */
+    f->id_integ *= k;
+    f->iq_integ *= k;
+
     f->vd *= k;
     f->vq *= k;
   }
