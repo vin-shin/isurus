@@ -31,17 +31,17 @@ extern "C" {
  *
  * Duty is normalised, so the plant from duty deviation u to phase current is
  *     I/u = Vbus / (R + sL)
- * with Vbus ~ 18.6 V, R = 85 mohm, L = 54.3 uH.
+ * with Vbus = 15.55 V (measured at the supply), R = 85 mohm, L = 54.3 uH.
  *
  * Placing the closed-loop bandwidth at 1 kHz with pole-zero cancellation:
- *     kp = w * L / Vbus = 6283 * 54.3e-6 / 18.6 = 0.018
- *     ki = w * R / Vbus = 6283 * 0.085  / 18.6 = 29
+ *     kp = w * L / Vbus = 6283 * 54.3e-6 / 15.55 = 0.022
+ *     ki = w * R / Vbus = 6283 * 0.085  / 15.55 = 34
  *
  * The first attempt used kp = 0.08, which meant a 1 A error commanded 1.49 V
  * across an 85 mohm winding - a demand for 17 A. Loop gain of ~17 oscillates
  * no matter how clean the current feedback is. */
-#define FOC_KP_DEFAULT      0.018f
-#define FOC_KI_DEFAULT      29.0f
+#define FOC_KP_DEFAULT      0.022f
+#define FOC_KI_DEFAULT      34.0f
 
 /* Modulation ceiling, as a fraction of the available bus voltage.
  *
@@ -52,18 +52,18 @@ extern "C" {
  * 0.10 limited the motor to ~68 rpm. */
 #define FOC_VMAX_DEFAULT    0.25f
 
-/* Fixed 90 degree electrical correction, in encoder counts (32768 = 360 deg).
+/* Electrical offset in encoder counts (32768 = 360 deg electrical).
  *
- * This is a convention difference, not a calibration error. openloop.c - which
- * held the rotor during the A1333 zero calibration - builds phases as
- * sin(theta), so at theta=0 it applies a vector at -90 deg in alpha/beta.
- * FOC's inverse Clarke uses vu = valpha, so its electrical zero is at 0 deg.
+ * Should be ZERO. openloop.c now builds phases as cos(theta), matching foc.c's
+ * inverse Clarke (vu = valpha), so "electrical zero" means the same thing in
+ * both modules - and the A1333 ZERO_OFFSET was recalibrated against a
+ * FOC-convention vector, putting the alignment in the sensor itself.
  *
- * Confirmed by sweeping the offset at a fixed 1 A command: 0 and 180 deg
- * produced no rotation at all (pure d-axis force), while 90 and 270 deg gave
- * +3.4 and -3.5 revolutions in 3 s. That 0/180-null, 90/270-peak pattern is
- * the signature of exactly this misalignment. */
-#define FOC_ELEC_OFFSET_DEFAULT   8192
+ * It was 8192 (90 deg) before that: openloop used sin(theta) and therefore
+ * held the rotor 90 degrees away during the original calibration, so FOC's iq
+ * produced pure d-axis force and the motor would not turn at any current.
+ * Kept as a tunable in case the convention ever drifts again. */
+#define FOC_ELEC_OFFSET_DEFAULT   0
 
 typedef struct {
   /* Commands */

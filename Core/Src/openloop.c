@@ -54,6 +54,16 @@ static uint32_t s_half   = 0;
 /* Phase offsets for a balanced three-phase set: 0, -120, +120 degrees. */
 #define OL_PHASE_120  ((uint32_t)(4294967296.0 / 3.0))
 
+/* Quarter turn. Phases are built as cos(theta), i.e. sin(theta + 90), so that
+ * electrical zero means the same thing here as it does in foc.c.
+ *
+ * foc.c's inverse Clarke uses vu = valpha, so at electrical zero with vd > 0
+ * it applies u = +1, v = -0.5, w = -0.5. A sin() convention would instead give
+ * u = 0, v = -0.866, w = +0.866 - a vector 90 degrees away. Since this module
+ * holds the rotor during the A1333 zero calibration, that mismatch put the
+ * encoder zero 90 degrees off and made FOC's iq produce pure d-axis force. */
+#define OL_PHASE_90   ((uint32_t)(4294967296.0 / 4.0))
+
 /* Interpolated sine. phase is the full uint32 electrical angle. */
 static int32_t OpenLoop_Sin(uint32_t phase)
 {
@@ -162,9 +172,9 @@ void OpenLoop_Update(OpenLoopState_t *s)
    * way about the 50% midpoint. */
   int32_t amp = (int32_t)((s_half * s->mod_permille) / 1000U);
 
-  int32_t su = OpenLoop_Sin(s->phase);
-  int32_t sv = OpenLoop_Sin(s->phase - OL_PHASE_120);
-  int32_t sw = OpenLoop_Sin(s->phase + OL_PHASE_120);
+  int32_t su = OpenLoop_Sin(s->phase + OL_PHASE_90);
+  int32_t sv = OpenLoop_Sin(s->phase + OL_PHASE_90 - OL_PHASE_120);
+  int32_t sw = OpenLoop_Sin(s->phase + OL_PHASE_90 + OL_PHASE_120);
 
   /* amp * sin_q15 peaks around 25600 * 32767 = 8.4e8, inside an int32_t. */
   int32_t du = (int32_t)s_half + ((amp * su) >> 15);
