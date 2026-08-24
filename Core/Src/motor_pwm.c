@@ -148,12 +148,12 @@ static int MotorPwm_ConfigTimer(uint32_t timer_idx)
 /* Edge-aligned PWM: the output is set at the period rollover and cleared at
  * the compare match, so duty = compare / period. */
 static int MotorPwm_ConfigOutput(uint32_t timer_idx, uint32_t output,
-                                 uint32_t reset_src)
+                                 uint32_t set_src, uint32_t reset_src)
 {
   HRTIM_OutputCfgTypeDef pOutputCfg = {0};
 
   pOutputCfg.Polarity              = HRTIM_OUTPUTPOLARITY_HIGH;
-  pOutputCfg.SetSource             = HRTIM_OUTPUTSET_TIMPER;
+  pOutputCfg.SetSource             = set_src;
   pOutputCfg.ResetSource           = reset_src;
   pOutputCfg.IdleMode              = HRTIM_OUTPUTIDLEMODE_NONE;
   pOutputCfg.IdleLevel             = HRTIM_OUTPUTIDLELEVEL_INACTIVE;
@@ -205,12 +205,12 @@ int MotorPwm_Init(void)
 
   /* W on Timer A output 2, driven from compare unit 1. */
   if (MotorPwm_ConfigOutput(HRTIM_TIMERINDEX_TIMER_A, HRTIM_OUTPUT_TA2,
-                            HRTIM_OUTPUTRESET_TIMCMP1) != 0) { return -1; }
+                            HRTIM_OUTPUTSET_TIMCMP1, HRTIM_OUTPUTRESET_TIMCMP3) != 0) { return -1; }
   /* V and U share Timer B, on compare units 1 and 2 respectively. */
   if (MotorPwm_ConfigOutput(HRTIM_TIMERINDEX_TIMER_B, HRTIM_OUTPUT_TB1,
-                            HRTIM_OUTPUTRESET_TIMCMP1) != 0) { return -1; }
+                            HRTIM_OUTPUTSET_TIMCMP1, HRTIM_OUTPUTRESET_TIMCMP3) != 0) { return -1; }
   if (MotorPwm_ConfigOutput(HRTIM_TIMERINDEX_TIMER_B, HRTIM_OUTPUT_TB2,
-                            HRTIM_OUTPUTRESET_TIMCMP2) != 0) { return -1; }
+                            HRTIM_OUTPUTSET_TIMCMP2, HRTIM_OUTPUTRESET_TIMCMP4) != 0) { return -1; }
 
   /* All three outputs dead before the counters run. */
   MotorPwm_SetDuty(0, 0, 0);
@@ -240,20 +240,42 @@ int MotorPwm_Init(void)
  *
  * setxr points at SETx1R or SETx2R for the phase's output. */
 static void MotorPwm_ApplyPhase(volatile uint32_t *setxr, uint32_t timer_idx,
-                                uint32_t unit, uint32_t counts)
+                                uint32_t set_unit, uint32_t reset_unit,
+                                uint32_t set_src, uint32_t counts)
 {
+  /* Center-aligned in plain UP counting: place the pulse symmetrically about
+   * the period midpoint using two compares.
+   *
+   *     SET on CMPa = PER/2 - counts/2
+   *     RESET on CMPb = PER/2 + counts/2
+   *
+   * The HIGH pulse is centred on PER/2 and the zero vector straddles the
+   * period boundary, which is where the ADC samples - the point at which the
+   * ripple current equals its average. Up-down mode is not needed for this.
+   * (Technique taken from the minifocer implementation.) */
+  uint32_t centre = s_period / 2U;
+
   if (counts == 0U)
   {
     *setxr = 0U;                       /* never set -> output stays low */
-    __HAL_HRTIM_SETCOMPARE(&hhrtim1, timer_idx, unit, PWM_CMP_MIN);
+    __HAL_HRTIM_SETCOMPARE(&hhrtim1, timer_idx, set_unit,   centre);
+    __HAL_HRTIM_SETCOMPARE(&hhrtim1, timer_idx, reset_unit, centre + 1U);
     return;
   }
 
-  if (counts < PWM_CMP_MIN)     { counts = PWM_CMP_MIN; }
-  if (counts > s_period - 1U)   { counts = s_period - 1U; }
+  if (counts > s_period - 2U) { counts = s_period - 2U; }
 
-  *setxr = HRTIM_OUTPUTSET_TIMPER;
-  __HAL_HRTIM_SETCOMPARE(&hhrtim1, timer_idx, unit, counts);
+  uint32_t half = counts / 2U;
+  uint32_t ca   = centre - half;
+  uint32_t cb   = centre + half;
+
+  if (ca < PWM_CMP_MIN)     { ca = PWM_CMP_MIN; }
+  if (cb > s_period - 1U)   { cb = s_period - 1U; }
+  if (cb <= ca)             { cb = ca + 1U; }
+
+  *setxr = set_src;
+  __HAL_HRTIM_SETCOMPARE(&hhrtim1, timer_idx, set_unit,   ca);
+  __HAL_HRTIM_SETCOMPARE(&hhrtim1, timer_idx, reset_unit, cb);
 }
 
 void MotorPwm_SetDuty(uint32_t u, uint32_t v, uint32_t w)
@@ -261,9 +283,18 @@ void MotorPwm_SetDuty(uint32_t u, uint32_t v, uint32_t w)
   volatile HRTIM_Timerx_TypeDef *ta = &hhrtim1.Instance->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_A];
   volatile HRTIM_Timerx_TypeDef *tb = &hhrtim1.Instance->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B];
 
-  MotorPwm_ApplyPhase(&tb->SETx2R, HRTIM_TIMERINDEX_TIMER_B, HRTIM_COMPAREUNIT_2, u);
-  MotorPwm_ApplyPhase(&tb->SETx1R, HRTIM_TIMERINDEX_TIMER_B, HRTIM_COMPAREUNIT_1, v);
-  MotorPwm_ApplyPhase(&ta->SETx2R, HRTIM_TIMERINDEX_TIMER_A, HRTIM_COMPAREUNIT_1, w);
+  /* U: Timer B out2, CMP2 set / CMP4 reset.
+   * V: Timer B out1, CMP1 set / CMP3 reset.
+   * W: Timer A out2, CMP1 set / CMP3 reset. */
+  MotorPwm_ApplyPhase(&tb->SETx2R, HRTIM_TIMERINDEX_TIMER_B,
+                      HRTIM_COMPAREUNIT_2, HRTIM_COMPAREUNIT_4,
+                      HRTIM_OUTPUTSET_TIMCMP2, u);
+  MotorPwm_ApplyPhase(&tb->SETx1R, HRTIM_TIMERINDEX_TIMER_B,
+                      HRTIM_COMPAREUNIT_1, HRTIM_COMPAREUNIT_3,
+                      HRTIM_OUTPUTSET_TIMCMP1, v);
+  MotorPwm_ApplyPhase(&ta->SETx2R, HRTIM_TIMERINDEX_TIMER_A,
+                      HRTIM_COMPAREUNIT_1, HRTIM_COMPAREUNIT_3,
+                      HRTIM_OUTPUTSET_TIMCMP1, w);
 }
 
 void MotorPwm_SetDutyPermille(uint32_t u, uint32_t v, uint32_t w)
@@ -296,10 +327,12 @@ void MotorPwm_SetAdcTriggerPoint(uint32_t counts)
   if (counts < PWM_CMP_MIN)      { counts = PWM_CMP_MIN; }
   if (counts > s_period - 1U)    { counts = s_period - 1U; }
 
+  /* COMPARE UNIT 4. Not 3 - CMP1 and CMP3 on Timer A are W's centred pulse
+   * edges, and writing either from here would corrupt the W duty. */
   s_adc_trig_pos = counts;
   pCompareCfg.CompareValue = counts;
   (void)HAL_HRTIM_WaveformCompareConfig(&hhrtim1, HRTIM_TIMERINDEX_TIMER_A,
-                                        HRTIM_COMPAREUNIT_3, &pCompareCfg);
+                                        HRTIM_COMPAREUNIT_4, &pCompareCfg);
 }
 
 /* Timer A compare unit 3 drives HRTIM ADC trigger 1. Both ADC2 (W) and ADC5
@@ -310,10 +343,13 @@ static int MotorPwm_ConfigAdcTrigger(void)
 {
   HRTIM_ADCTriggerCfgTypeDef pADCTriggerCfg = {0};
 
+  /* Trigger EARLY enough that the conversion has finished before the control
+   * ISR reads DR at the period event - see PWM_ADC_TRIG_PERMILLE. CMP4 is used
+   * because Timer A's CMP1/CMP3 now carry W's centred pulse edges. */
   MotorPwm_SetAdcTriggerPoint((s_period * PWM_ADC_TRIG_PERMILLE) / 1000U);
 
   pADCTriggerCfg.UpdateSource = HRTIM_ADCTRIGGERUPDATE_TIMER_A;
-  pADCTriggerCfg.Trigger      = HRTIM_ADCTRIGGEREVENT13_TIMERA_CMP3;
+  pADCTriggerCfg.Trigger      = HRTIM_ADCTRIGGEREVENT13_TIMERA_CMP4;
   if (HAL_HRTIM_ADCTriggerConfig(&hhrtim1, HRTIM_ADCTRIGGER_1,
                                  &pADCTriggerCfg) != HAL_OK)
   {

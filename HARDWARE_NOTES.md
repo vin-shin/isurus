@@ -496,6 +496,14 @@ Sensors: CT4022-A40BSN8 TMR, **40 A bidirectional**, ratiometric on 3V3,
 **33 mV/A**. Zero current sits at VDDA/2 (~1650 mV); full scale is
 1650 ± 1320 mV, so the sensor deliberately does not use the whole ADC range.
 
+**These are correctly sized — do not "upgrade" them.** It is tempting to compare
+±40 A against the 220 A FETs and conclude the sensors are the weak link. That is
+the wrong comparison: the *motor* is rated **22 A continuous**, and it is the
+motor that sets the working current. ±40 A gives ~1.8x headroom over continuous
+with room for transients, while keeping 24.4 mA/LSB resolution. Re-scaling to
+match the FETs would throw away resolution to measure current this machine can
+never usefully draw.
+
 ### The signal path is not what it looks like
 
 Neither sensor reaches an ADC pin directly. Both go through an **internal OPAMP
@@ -780,6 +788,82 @@ matters for torque ripple.
 
 ---
 
+### Centre-aligned PWM without up-down mode
+
+Centre-aligned does **not** require HRTIM's up-down counting mode. Stay in plain
+UP mode and place the pulse symmetrically about the period midpoint using two
+compare units:
+
+```
+SET   on CMPa = PER/2 - counts/2
+RESET on CMPb = PER/2 + counts/2
+```
+
+The high pulse is then centred on `PER/2` and the zero vector straddles the
+period boundary. Compare allocation, four units per timer:
+
+| Phase | Timer / output | set | reset |
+|-------|----------------|-----|-------|
+| U | B, TB2 | CMP2 | CMP4 |
+| V | B, TB1 | CMP1 | CMP3 |
+| W | A, TA2 | CMP1 | CMP3 |
+| ADC trigger | A | CMP4 | — |
+
+Three attempts to derive up-down mode's output semantics from inference all
+failed. The technique above came from reading a working implementation
+(`documents/minifocer`, LL-based) which is in `LL_HRTIM_COUNTING_MODE_UP` with
+`OUTPUTSET_TIMCMP1` / `OUTPUTRESET_TIMCMP3`. Up-down mode was never needed.
+
+### The ADC trigger is a deadline
+
+The control ISR fires on the Timer A period event and reads the ADC data
+register on its first instruction. **The conversion must already be finished.**
+8x oversampling at 6.5-cycle sampling on a PCLK/4 clock is 8 x 19 = 152 ADC
+cycles, about 4.75 us, so the trigger needs at least that much lead:
+`PWM_ADC_TRIG_PERMILLE = 900` gives 5 us of a 50 us period.
+
+Moving the trigger to the period event to "sample in the zero vector" breaks
+this: the trigger becomes simultaneous with the ISR, so DR is stale by a period
+or racing the new conversion.
+
+**This failure is nearly invisible to a static test.** Holding a constant
+current, a delayed copy of a constant is the same constant - the bench readings
+were linear and low-noise and looked perfect. It only appears once the loop has
+to respond to change: iq tracked ~12% of command and ripple grew with vmax.
+Validate feedback *timing* with a moving quantity, never a static one.
+
+Zero-vector sampling is not required on this board anyway. The CT4022s are
+in-line TMR phase sensors, not shunts, so they read phase current in every
+switching state; the zero vector only matters for landing on the ripple average.
+
+### Speed is limited by the supply, and that looks like instability
+
+Measured with centre-aligned PWM, `vmax = 0.60`, 15.3 V bus, motor unloaded:
+
+| `iq_ref` | speed | \|v\| | measured iq |
+|--------|-------|------|-------------|
+| +0.5 A | 761 rpm | 29% | 510 mA |
+| +1.0 A | 1558 rpm | 59% (at vmax) | 491 mA |
+| +2.0 A | 1600 rpm | 59% (at vmax) | 487 mA |
+| -1.0 A | -1563 rpm | 58% | -559 mA |
+| -2.0 A | -1570 rpm | 59% | -567 mA |
+
+An **unloaded** motor accelerates until back-EMF consumes the voltage budget.
+Past that point `|v|` pins at `vmax`, speed stops rising, and measured iq falls
+to whatever friction demands - so raising `iq_ref` changes nothing. This is not
+a tuning problem and no amount of gain fixes it; it is the supply.
+
+Consequences for testing:
+- **Test the current loop with `id`, not `iq`.** d-axis current produces no
+  torque, so the rotor holds still and the loop is measured without the
+  mechanics running away. On the d axis this controller tracks to within 1%:
+  0.5/1/2/3 A commanded reads 503/1005/1997/3028 mA, ripple 78-116 mA (~4 LSB),
+  with iq staying inside +/-11 mA.
+- **Speed deltas alias.** Sampling mechanical angle over SWD and unwrapping at
+  +/-180 deg gives nonsense once the motor turns faster than half a revolution
+  per sample. Sample continuously and accumulate.
+
+
 ## 8. Motor parameters and encoder zero calibration
 
 Parameters carried over from `makoshortfin/Core/Inc/config.h`:
@@ -788,8 +872,38 @@ Parameters carried over from `makoshortfin/Core/Inc/config.h`:
 MOTOR_POLE_PAIRS            20
 MOTOR_PHASE_RESISTANCE_OHM  0.085      (0.17 ohm phase-to-phase / 2)
 MOTOR_PHASE_INDUCTANCE_H    54.3 uH
-MOTOR_RATED_CURRENT_A       100
+MOTOR_RATED_CURRENT_A       100      <- inherited, NOT this motor
 ```
+
+### Actual ratings of the motor on this bench
+
+```
+Max continuous current      22 A
+Battery                     12S LiPo  (~44.4 V nominal, 50.4 V full)
+```
+
+The 100 A figure above came across with the rest of `makoshortfin/config.h` and
+does not describe this machine. **22 A continuous is the number that matters**;
+it is what sizes the current sensors (section 6) and it sits above the bench
+overcurrent trip `OC_TRIP_MA = 15000`, so that trip is a bench safety margin,
+not a hardware limit.
+
+### The bench supply is a third of the motor's design voltage
+
+The supply is **15.55 V** against a ~44 V design point, so this motor is running
+at about **1/3 of its rated voltage**. Two consequences that look like firmware
+bugs but are not:
+
+- **Speed saturates early.** Back-EMF scales with speed, so the available
+  ~15.55 V runs out at roughly 1/3 of the motor's rated RPM. The loop hitting
+  its ceiling at modest speed is arithmetic, not instability.
+- **Applied voltage is tiny.** At `vmax = 0.25` the applied vector is about
+  3.9 V of a ~44 V design point — under 9%. Commanding a few amps of iq is
+  asking for a large fraction of available voltage but a small fraction of the
+  motor's capability.
+
+None of this is a defect. It does mean speed headroom on this bench is limited
+by the supply, and raising `vmax` buys speed only until back-EMF catches up.
 
 **Both key numbers were independently confirmed on this board**, which is worth
 recording because each was measured before the config file was consulted:

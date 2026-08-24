@@ -66,8 +66,25 @@ extern "C" {
 #define GATE_EN_PIN         GPIO_PIN_5
 
 /* Where in the PWM period the ADC is triggered, as a fraction of the period.
- * Default sits late in the period, after the duty edges have settled, away
- * from switching noise. Tune on a scope. */
+ *
+ * This is a DEADLINE, not a preference. The control ISR fires at the period
+ * event and reads the ADC data register on its first instruction, so the
+ * conversion must already be complete by then. With 8x oversampling at 6.5
+ * cycle sampling on a PCLK/4 ADC clock, one reading costs 8 x 19 = 152 ADC
+ * cycles, about 4.75 us. 900 per-mille leaves 10% of a 50 us period = 5 us of
+ * lead, which just covers it.
+ *
+ * Do NOT move this to the period event to "sample in the zero vector". That
+ * makes the trigger simultaneous with the ISR, so DR is stale by a period or
+ * racing the new conversion. It reads perfectly in a static test - a delayed
+ * copy of a constant is the same constant - and destabilises the current loop
+ * the moment anything moves. That exact mistake cost a debugging session; the
+ * symptom was iq tracking ~12% of command with ripple growing as vmax rose.
+ *
+ * Sampling in the zero vector is not required here anyway: the CT4022s are
+ * in-line TMR phase sensors, not shunts, so they read phase current in every
+ * switching state. The zero vector only matters for landing on the ripple
+ * average, which 900 per-mille approximates well for duty up to ~0.8. */
 #define PWM_ADC_TRIG_PERMILLE  900U
 
 typedef struct {
