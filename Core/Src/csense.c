@@ -297,6 +297,61 @@ int CSense_UseHrtimTrigger(void)
   return 0;
 }
 
+/* Retarget ADC1 from VREFINT to the bus divider on PF0 (ADC1_IN10). */
+int CSense_StartVbus(void)
+{
+  ADC_ChannelConfTypeDef sConfig = {0};
+
+  GPIO_InitTypeDef gpio = {0};
+
+  if (HAL_ADC_Stop(&hadc1) != HAL_OK) { return -1; }
+
+  /* PF0 is not in the .ioc, so nothing has configured it. Analog mode. */
+  __HAL_RCC_GPIOF_CLK_ENABLE();
+  gpio.Pin  = GPIO_PIN_0;
+  gpio.Mode = GPIO_MODE_ANALOG;
+  gpio.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(GPIOF, &gpio);
+
+  sConfig.Channel      = ADC_CHANNEL_10;
+  sConfig.Rank         = ADC_REGULAR_RANK_1;
+  /* The 1k/100pF filter is 100 ns; a long sample window costs nothing here and
+   * the divider's source impedance is 9.5k, which is not trivial. */
+  sConfig.SamplingTime = ADC_SAMPLETIME_247CYCLES_5;
+  sConfig.SingleDiff   = ADC_SINGLE_ENDED;
+  sConfig.OffsetNumber = ADC_OFFSET_NONE;
+  sConfig.Offset       = 0;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK) { return -1; }
+
+  return 0;
+}
+
+int CSense_ReadVbus(CSenseTelem_t *t)
+{
+  uint32_t v = 0;
+
+  /* Explicit software conversion. CSense_SampleOnce keys off a single global
+   * s_triggered flag, but only ADC2 and ADC5 are armed on the HRTIM trigger -
+   * ADC1 is still software-started, so going through that path would wait for
+   * an end-of-conversion that never arrives. */
+  if (HAL_ADC_Start(&hadc1) != HAL_OK) { t->errors++; return -1; }
+  if (HAL_ADC_PollForConversion(&hadc1, CS_CONV_TIMEOUT_MS) != HAL_OK)
+  {
+    (void)HAL_ADC_Stop(&hadc1);
+    t->errors++;
+    return -1;
+  }
+  v = HAL_ADC_GetValue(&hadc1);
+  (void)HAL_ADC_Stop(&hadc1);
+
+  t->vbus_raw = v;
+  /* Divider output in mV, scaled back up by (190k+10k)/10k. */
+  t->vbus_mv  = ((v * s_vdda_mv) / (uint32_t)CS_ADC_FULL_SCALE)
+                * CS_VBUS_DIV_NUM / CS_VBUS_DIV_DEN;
+
+  return 0;
+}
+
 int32_t CSense_RawToMv(uint32_t raw)
 {
   return (int32_t)((raw * s_vdda_mv) / (uint32_t)CS_ADC_FULL_SCALE);

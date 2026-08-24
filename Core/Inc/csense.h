@@ -52,6 +52,8 @@ typedef struct {
   uint32_t errors;     /* conversion timeouts                   */
   uint32_t vrefint_raw;/* raw VREFINT code, ADC1                */
   uint32_t vdda_mv;    /* measured VDDA / VREF+ in mV           */
+  uint32_t vbus_raw;   /* raw ADC1 code, PF0                    */
+  uint32_t vbus_mv;    /* DC bus voltage in mV                  */
 } CSenseTelem_t;
 
 /* Brings up OPAMP3/OPAMP5, ADC2/ADC5, runs ADC self-calibration, then
@@ -73,6 +75,15 @@ int CSense_Read(CSenseTelem_t *t);
 /* Raw code -> sensor output voltage in mV, using the measured VDDA rather
  * than the nominal 3300 mV. Falls back to nominal before VDDA is known. */
 int32_t CSense_RawToMv(uint32_t raw);
+
+/* DC bus sense: PF0 = ADC1_IN10, behind a 190k/10k divider (so Vbus/20) with
+ * a 1k/100pF RC filter. ADC1 is retargeted to it after VDDA is measured at
+ * startup, since VREFINT is only needed once. */
+#define CS_VBUS_DIV_NUM     200U    /* (190k + 10k) */
+#define CS_VBUS_DIV_DEN     10U
+
+int CSense_StartVbus(void);
+int CSense_ReadVbus(CSenseTelem_t *t);
 
 /* Measure VDDA via the internal reference and its factory calibration.
  * Result also lands in t->vdda_mv / t->vrefint_raw. */

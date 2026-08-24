@@ -155,6 +155,10 @@ volatile uint32_t g_enc_shadow_ang = 0;
 volatile uint32_t g_enc_ee_ang     = 0;
 volatile uint32_t g_enc_zero_off   = 0;
 volatile int32_t  g_enc_cmd_rc     = -1;
+volatile int32_t  g_vbus_start_rc   = -99;
+volatile int32_t  g_vbus_read_rc    = -99;
+volatile uint32_t g_adc1_state      = 0;
+volatile uint32_t g_adc1_err        = 0;
 
 static uint32_t s_fault_tick = 0;
 static uint32_t s_clean_tick = 0;
@@ -302,6 +306,9 @@ int main(void)
    * both phases are sampled at the same point in every PWM period. */
   g_cs_trig_rc = CSense_UseHrtimTrigger();
 
+  /* VDDA has been measured, so ADC1 is free for the bus divider. */
+  g_vbus_start_rc = CSense_StartVbus();
+
   /* Re-zero on the triggered path. The offset captured during software-start
    * sampling is a fraction of an LSB off once conversions are locked to a
    * fixed point in the PWM period. Still safe to do: outputs are disabled and
@@ -383,6 +390,9 @@ int main(void)
     {
       s_cs_div = 0;
       (void)CSense_Read((CSenseTelem_t *)&g_cs);
+      g_vbus_read_rc = CSense_ReadVbus((CSenseTelem_t *)&g_cs);
+      g_adc1_state   = HAL_ADC_GetState(&hadc1);
+      g_adc1_err     = HAL_ADC_GetError(&hadc1);
       MotorPwm_GetTelem((MotorPwmTelem_t *)&g_pwm);
     }
 
