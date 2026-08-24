@@ -52,15 +52,64 @@ CSA=$(printf "0x%x" $CS)
 ENCA=$(printf "0x%x" $ENC)
 FLTA=$(printf "0x%x" $FLT)
 IQA=$(printf "0x%x" $((FOC+4)))
+IDA=$(printf "0x%x" $((FOC+0)))
+CMDA=$(printf "0x%x" $(sym g_cmd))
 
 CFG="$(mktemp)"
+SAFECFG="$(mktemp)"
 OCD_PID=""
+ARMED=0          # 1 once --demo has energised the power stage
+CLEANED=0        # cleanup is trapped on INT *and* EXIT; only let it run once
+
+# Killing OpenOCD does NOT stop the motor - the firmware keeps running whatever
+# was last commanded. So once the render process is gone we reattach with a
+# second short OpenOCD pass whose only job is to put the power stage back in a
+# safe state. Without this, Ctrl-C during a demo leaves the motor spinning with
+# no way to stop it short of a power cycle.
+cat > "$SAFECFG" <<EOF
+source [find interface/stlink.cfg]
+transport select hla_swd
+source [find target/stm32g4x.cfg]
+reset_config none
+adapter speed 4000
+init
+mww $IQA 0
+mww $IDA 0
+mww $ENA 0
+mww [expr {$CMDA+20}] 0
+mww [expr {$CMDA+16}] 0
+mww $CMDA 1
+shutdown
+EOF
+
 cleanup() {
-  if [ -n "$OCD_PID" ]; then kill "$OCD_PID" 2>/dev/null || true; fi
+  # Ctrl-C fires INT and then EXIT. Re-running the reattach would find the
+  # stage already safe, fail to take the ST-Link, and print a false alarm.
+  [ "$CLEANED" = "1" ] && return
+  CLEANED=1
+  if [ -n "$OCD_PID" ]; then
+    kill "$OCD_PID" 2>/dev/null || true
+    wait "$OCD_PID" 2>/dev/null || true
+  fi
+  if [ "$ARMED" = "1" ]; then
+    sleep 1        # let the ST-Link be released before reattaching
+    echo "stopping motor..." >&2
+    if openocd -s "${OPENOCD_SCRIPTS:-C:/msys64/mingw64/share/openocd/scripts}" -d0 -f "$SAFECFG" >/dev/null 2>&1; then
+      echo "power stage safe." >&2
+    else
+      echo "!! COULD NOT REATTACH - POWER DOWN THE BOARD MANUALLY !!" >&2
+    fi
+  fi
   printf '\033[?25h\033[0m\n'
-  rm -f "$CFG"
+  rm -f "$CFG" "$SAFECFG"
 }
 trap cleanup EXIT INT TERM
+
+if [ "$DEMO" = "1" ]; then
+  ARMED=1
+  echo "--demo energises the power stage and spins the motor. Ctrl-C stops it."
+  sleep 1
+fi
 
 cat > "$CFG" <<EOF
 source [find interface/stlink.cfg]
@@ -174,6 +223,26 @@ set demo_seq {
 set demo_i 0
 set demo_left 0
 set demo_lbl ""
+
+# --demo only sets iq_ref, which does nothing on a disabled bridge. Bring the
+# stage up in the order main.c enforces - duty, then outputs, then gates - then
+# clear any latched fault and hand control to FOC.
+if {$DEMO} {
+    mww [expr {$CMDA+4}] 0
+    mww [expr {$CMDA+8}] 0
+    mww [expr {$CMDA+12}] 0
+    mww [expr {$CMDA+16}] 1
+    mww $CMDA 1
+    sleep 200
+    mww [expr {$CMDA+20}] 1
+    mww $CMDA 1
+    sleep 200
+    mww $FLTA 0
+    mww $IDA 0
+    mww $IQA 0
+    mww $ENA 1
+    sleep 200
+}
 
 puts -nonewline "\${ESC}\[?25l\${ESC}\[2J"
 
