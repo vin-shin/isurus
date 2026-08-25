@@ -46,25 +46,14 @@ correct at 917 Hz electrical rather than the ~280 Hz this bench reaches today.
 
 # What is left
 
-Everything not listed here is done — see the closed branches and the comments
-in `foc.h`, `drive.h`, `led.h` and `HARDWARE_NOTES.md` sections 10–12 for what
-was found and why the numbers are what they are.
+Everything not listed below is done and merged. The dependent stack that used
+to live in branches — 1a through 3, plus phase 4 and the phase 6 build work —
+landed on `mako-longfin` through PRs #1–#5, so there are no phase branches left
+to go looking for. See the comments in `foc.h`, `drive.h`, `led.h` and
+`HARDWARE_NOTES.md` sections 10–12 for what was found and why the numbers are
+what they are.
 
-## A. Merge the branch stack
-
-Phase 0 is on `mako-longfin` (the trunk, formerly `main`). The rest is a
-dependent stack, none of it reviewed:
-
-    phase1a-delay-comp → phase1b-decoupling → phase1c-bandwidth
-      → phase2-fault-path → foc-decouple-fix
-      → phase3-sensor-plausibility → phase6-build
-
-`phase6-build` is the tip and carries everything after phase 2 — the decouple
-regression fix, phase 3, phase 4, the build/CI work, the host harness, the LED
-front panel and the plotting tools. Split it if the PRs need to be reviewable
-one phase at a time.
-
-## B. Finish 1b — the decoupling is implemented and disabled
+## A. Finish 1b — the decoupling is implemented and disabled
 
 `f->decouple` defaults to 0. It works when the parameters are right: in
 simulation, peak |id| through an iq step is 121 mA off against 8 mA on, and on
@@ -92,7 +81,7 @@ vs 1375 mA and looked like a pass, because the motor never reached the speed
 where this bites. The bar is: d-axis disturbance down **and** peak current on a
 full `foc_dash --demo` cycle no worse than with the flag off.
 
-## C. Phase 5 — torque interface and field weakening (not started)
+## B. Phase 5 — torque interface and field weakening (not started)
 
 The interface is currently `iq_ref` in milliamps. The HV inverter's interface is
 a torque request from the VCU.
@@ -113,7 +102,7 @@ Note that field weakening will interact with the anti-windup and the vector
 limit, which is exactly where the last two control changes went wrong. Put it
 through the host harness before the motor.
 
-## D. Finish Phase 6 — the harness only covers `foc.c`
+## C. Finish Phase 6 — the harness only covers `foc.c`
 
 Done: warnings-as-errors, a real Release build, CI, and a host harness for
 `foc.c` with seven tests and a mutant check.
@@ -138,7 +127,7 @@ Left:
 - **`tools/viz.py live` has never run against a board.** Read-only by
   construction; the plumbing is untested.
 
-## E. Hardware requirements for the next board spin
+## D. Hardware requirements for the next board spin
 
 Neither is firmware's to fix. Both are written up in full.
 
@@ -157,7 +146,7 @@ Also outstanding and not firmware: **the A1333 frame CRC needs the datasheet.**
 The encoder is checked for gross failure only — dead link, impossible motion —
 and should not be described as verified.
 
-## F. Motor characterisation for the HV build
+## E. Motor characterisation for the HV build
 
 The conclusion of the bandwidth derivation in `foc.h`, and the largest open
 risk. At 30 kHz the EMRAX current loop is delay-limited to 1.8× f_e; the
@@ -176,7 +165,7 @@ motor-test-rig task. It decides whether the HV current loop works.
 Do not spend thermal budget buying switching frequency for control margin: it
 buys 1.2× versus 1.8× of f_e against a requirement of 5×.
 
-## G. Loose ends worth closing
+## F. Loose ends worth closing
 
 - **`g_cmd` can arm the bridge behind the state machine's back.** That is how
   `foc_dash` works, and it means `g_drive.state` can disagree with the
