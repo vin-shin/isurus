@@ -6,6 +6,7 @@
   */
 
 #include "position.h"
+#include "haptic.h"
 #include <math.h>
 #include "fastmath.h"
 
@@ -15,6 +16,11 @@
 #define RAD_PER_DEG_X10   (3.14159265359f / 1800.0f)
 #define DEG_TO_RAD        (3.14159265359f / 180.0f)
 #define POS_DT            (1.0f / POS_RATE_HZ)
+
+/* Set by main.c. The haptic parameters live in their own object so this
+ * module's struct layout - which the tools address by byte offset - does not
+ * have to grow every time a new feel is added. */
+void *g_haptic_ptr = 0;
 
 static float clampf(float v, float lim)
 {
@@ -114,6 +120,18 @@ float Position_Step(PosState_t *p, uint16_t enc_raw)
   {
     p->zero_here = 0U;
     Position_ZeroHere(p);
+  }
+
+  /* ---- haptics, EVERY tick --------------------------------------------- *
+   *
+   * Evaluated here rather than in the decimated block below because it is the
+   * one mode whose quality depends on update rate: a detent is a torque edge
+   * and the hand feels its timing directly. It is cheap enough to afford -
+   * a few multiplies and a polynomial sine, no loop state. */
+  if ((p->enabled != 0U) && (p->mode == MOTION_MODE_HAPTIC))
+  {
+    p->iq_raw = Haptic_Torque((HapticState_t *)g_haptic_ptr, p->pos_counts,
+                              (float)p->vel_dps);
   }
 
   /* ---- output smoothing, EVERY tick ------------------------------------ *
@@ -224,6 +242,16 @@ float Position_Step(PosState_t *p, uint16_t enc_raw)
     p->iq_raw     = 0.0f;
     p->target_rad = p->pos_rad;
     p->target_vel = 0.0f;
+    p->target_acc = 0.0f;
+  }
+  else if (p->mode == MOTION_MODE_HAPTIC)
+  {
+    /* Already computed at full rate above; nothing to do at this rate except
+     * hold the position loop's state ready for a switch back. */
+    p->integ      = 0.0f;
+    p->vel_integ  = 0.0f;
+    p->target_rad = p->pos_rad;
+    p->target_vel = p->vel_rads;
     p->target_acc = 0.0f;
   }
   else if (p->mode == MOTION_MODE_TORQUE)

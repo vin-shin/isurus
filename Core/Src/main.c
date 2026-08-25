@@ -35,6 +35,7 @@
 #include "foc.h"
 #include "position.h"
 #include "can.h"
+#include "haptic.h"
 #include <stdio.h>
 #include <stdarg.h>
 #include <string.h>
@@ -147,6 +148,7 @@ volatile BenchCmd_t g_cmd = {0};
 volatile OpenLoopState_t g_ol = {0};
 volatile FocState_t      g_foc = {0};
 volatile PosState_t      g_pos = {0};
+volatile HapticState_t   g_haptic = {0};
 
 /* ---- CAN ---------------------------------------------------------------- *
  *
@@ -348,6 +350,8 @@ int main(void)
   OpenLoop_Init((OpenLoopState_t *)&g_ol, MotorPwm_GetPeriod());
   FOC_Init((FocState_t *)&g_foc);
   Position_Init((PosState_t *)&g_pos);
+  Haptic_Init((HapticState_t *)&g_haptic);
+  g_haptic_ptr = (void *)&g_haptic;
   (void)Can_Init(0U);
   Can_GetTelem((CanTelem_t *)&g_can);
 

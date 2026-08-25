@@ -209,6 +209,14 @@ extern "C" {
 #define MOTION_MODE_TORQUE    1U
 #define MOTION_MODE_VELOCITY  2U
 #define MOTION_MODE_POSITION  3U
+/*   MODE_HAPTIC    torque as a function of shaft position and velocity, to
+ *                  render a physical feel - detents, endstops, springs. See
+ *                  haptic.h. Unlike every mode above it closes no loop of its
+ *                  own; the operator's hand is the feedback path. It is also
+ *                  the only mode evaluated at the full 20 kHz ISR rate rather
+ *                  than at POS_RATE_HZ, because a detent edge rendered a
+ *                  millisecond late stops feeling like an edge. */
+#define MOTION_MODE_HAPTIC    4U
 
 /* Velocity loop gains, in A per rad/s and A per (rad/s)*s.
  *
@@ -289,6 +297,9 @@ typedef struct {
   float    iq_raw;         /* A, PID output           */
   float    iq_out;         /* A, smoothed, what ships */
 } PosState_t;
+
+/* main.c points this at the HapticState_t before enabling the loop. */
+extern void *g_haptic_ptr;
 
 void Position_Init(PosState_t *p);
 
