@@ -431,6 +431,13 @@ void HRTIM1_TIMA_IRQHandler(void)
 
   uint32_t dt = DWT->CYCCNT - t0;
   g_foc.isr_cycles = dt;
+  /* cppcheck's value flow folds the two reads of DWT->CYCCNT into one value,
+   * concludes dt is always 0, and then reads this as "unsigned < 0". CYCCNT is
+   * a volatile 32-bit hardware cycle counter and the two reads are a whole ISR
+   * apart - about 21 us, or 2700 counts at 128 MHz. Suppressed here rather
+   * than with --suppress on the command line: unsignedLessThanZero is a check
+   * worth keeping, it is only wrong about this register. */
+  /* cppcheck-suppress unsignedLessThanZero */
   if (dt > g_foc.isr_max) { g_foc.isr_max = dt; }
 }
 
