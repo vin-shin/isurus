@@ -208,14 +208,27 @@ extern "C" {
  *                              u16 bus millivolts
  *                              i16 following error, tenths of a degree
  *                              u16 iq_max milliamps
+ *  0x12  TELEM_DRIVE        8  u8  drive state, DriveState_t
+ *                              u8  latched fault cause, DriveFault_t
+ *                              u8  self-test failure cause, DriveFault_t
+ *                              u8  reserved, 0
+ *                              u16 fault count since boot
+ *                              u16 milliseconds in the present state
  *
- *  Both are published at CAN_TELEM_HZ. Velocity and current are 16-bit
+ *  TELEM_DRIVE carries what CAN_FLAG_FAULTED cannot: a single "faulted" bit
+ *  says something tripped, and the thing a pit crew needs is WHICH. State and
+ *  cause are one byte each rather than packed into the flags byte, which is
+ *  full, and because an enum that grows is easier to extend than a bitfield
+ *  that has to be re-cut.
+ *
+ *  All three are published at CAN_TELEM_HZ. Velocity and current are 16-bit
  *  because +/-32767 covers every value this drive can reach - 32767 deg/s is
  *  91 rev/s and 32 A is far beyond the bridge - and it keeps each message to
  *  one frame.
  */
 #define CAN_MSG_TELEM_MOTION    0x10U
 #define CAN_MSG_TELEM_STATE     0x11U
+#define CAN_MSG_TELEM_DRIVE     0x12U
 
 #define CAN_TELEM_HZ            50U
 

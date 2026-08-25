@@ -38,6 +38,7 @@
 #include "haptic.h"
 #include "limits.h"
 #include "trace.h"
+#include "drive.h"
 #include <stdio.h>
 #include <stdarg.h>
 #include <string.h>
@@ -112,14 +113,11 @@ typedef struct {
  * leaving room for normal transients. */
 #define OC_TRIP_MA          15000
 
-/* After a trip, wait this long then re-arm and try again. */
-#define OC_RETRY_MS         3000U
-
-/* Consecutive retries before giving up and staying latched. Retrying forever
- * into a genuine short is how hardware dies, so this has to be bounded. The
- * counter resets once the drive has run clean for OC_CLEAN_MS. */
-#define OC_MAX_RETRIES      5U
-#define OC_CLEAN_MS         5000U
+/* There is deliberately no automatic retry after a trip any more. FAULT
+ * latches and is left only by an explicit clear, which re-runs the self-test
+ * - see drive.h. The OC_RETRY_MS / OC_MAX_RETRIES / OC_CLEAN_MS budget that
+ * used to live here re-armed the bridge by itself, which is a fine bench
+ * convenience and the wrong behaviour to carry to a car. */
 
 /* USER CODE END PD */
 
@@ -209,8 +207,6 @@ volatile uint32_t g_isr_ctrl_cyc = 0, g_isr_ctrl_max = 0;
 volatile uint32_t g_oc_trips  = 0;   /* overcurrent trip count */
 volatile int32_t  g_oc_peak   = 0;   /* worst |I| seen, mA     */
 volatile uint32_t g_faulted   = 0;   /* latched: needs clear_fault or retry */
-volatile uint32_t g_oc_retries = 0;  /* consecutive auto-retries            */
-volatile uint32_t g_oc_gaveup  = 0;  /* 1 = retry budget exhausted          */
 
 /* A1333 zero-calibration results, read over SWD. */
 volatile uint32_t g_enc_shadow_ang = 0;
@@ -222,8 +218,6 @@ volatile int32_t  g_vbus_read_rc    = -99;
 volatile uint32_t g_adc1_state      = 0;
 volatile uint32_t g_adc1_err        = 0;
 
-static uint32_t s_fault_tick = 0;
-static uint32_t s_clean_tick = 0;
 
 static uint32_t s_ol_tick = 0;
 
@@ -359,6 +353,11 @@ void HRTIM1_TIMA_IRQHandler(void)
     if (g_isr_ctrl_cyc > g_isr_ctrl_max) { g_isr_ctrl_max = g_isr_ctrl_cyc; }
   }
 
+  /* Feed at the END of the handler, not the start. Feeding on entry would
+   * prove only that the interrupt fires; feeding here proves the tick ran to
+   * completion, which is the property the bridge actually depends on. */
+  Drive_WatchdogFeed();
+
   uint32_t dt = DWT->CYCCNT - t0;
   g_foc.isr_cycles = dt;
   if (dt > g_foc.isr_max) { g_foc.isr_max = dt; }
@@ -437,6 +436,24 @@ int main(void)
   DWT->CTRL  |= DWT_CTRL_CYCCNTENA_Msk;
 
   MotorPwm_EnableControlIsr();
+
+  /* Drive state machine last, after every peripheral it tests is up. It
+   * starts in INIT and the first Drive_Step from the main loop moves it to
+   * SELFTEST, so the checks run against a settled system rather than against
+   * peripherals that are still initialising. */
+  Drive_Init();
+
+  /* Watchdog last of all. It is fed from the control ISR, so it must not be
+   * armed until that ISR is actually running - MotorPwm_EnableControlIsr is
+   * just above. Arming it any earlier resets the board during init. */
+  if (Drive_WatchdogTripped() != 0U)
+  {
+    /* The previous run died with a starved or over-fast control loop. Come up
+     * latched rather than quietly carrying on: whatever stopped the ISR is
+     * still there until someone looks. */
+    Drive_Fault(DRIVE_FAULT_WATCHDOG);
+  }
+  Drive_WatchdogStart();
 
   /* Now that the HRTIM ADC trigger exists, move current sensing onto it so
    * both phases are sampled at the same point in every PWM period. */
@@ -537,16 +554,11 @@ int main(void)
        * This bounds the MOTOR. The board's own ceiling (FET Vds, bulk cap,
        * gate drive) is not recorded anywhere and has not been verified. */
       if ((g_vbus_read_rc == 0) && (g_cs.vbus_mv > LIM_VBUS_MAX_MV) &&
-          (g_faulted == 0U))
+          (g_drive.state != (uint32_t)DRIVE_FAULT))
       {
-        MotorPwm_EmergencyStop();
-        g_pos.enabled = 0U;
-        g_pos.mode    = MOTION_MODE_IDLE;
-        g_foc.enabled = 0U;
-        g_foc.iq_ref  = 0.0f;
-        g_faulted     = 1U;
+        g_pos.mode = MOTION_MODE_IDLE;
         g_ov_trips++;
-        s_fault_tick  = HAL_GetTick();
+        Drive_Fault(DRIVE_FAULT_OVERVOLTAGE);
       }
 
       /* Keep the current-loop gains matched to the bus that is actually
@@ -562,10 +574,19 @@ int main(void)
       MotorPwm_GetTelem((MotorPwmTelem_t *)&g_pwm);
     }
 
-    /* Overcurrent trip. Software-only and therefore slow, but it is the only
-     * protection present: nothing is wired to HRTIM's hardware fault inputs.
-     * Latches until clear_fault is written. */
-    if (g_faulted == 0U)
+    /* Overcurrent trip. Software-only and therefore slow, but it is the
+     * only protection present: nothing is wired to HRTIM's hardware fault
+     * inputs on this board - see HARDWARE_NOTES section 10 for what that
+     * costs and what the next board spin needs.
+     *
+     * The trip now goes through Drive_Fault, which means it LATCHES. The
+     * previous code re-armed the bridge OC_RETRY_MS after a trip, up to
+     * OC_MAX_RETRIES times, while the operator still had the drive commanded
+     * on. That is a fine bench convenience and an unacceptable thing to carry
+     * to an HV car: retrying into a genuine short is how hardware dies, and
+     * the rules require a latched shutdown to stay latched until someone
+     * acts. Clearing is now explicit, and goes back through SELFTEST. */
+    if (g_drive.state != (uint32_t)DRIVE_FAULT)
     {
       int32_t iu = g_enc_abs(g_cs.u_ma);
       int32_t iw = g_enc_abs(g_cs.w_ma);
@@ -575,46 +596,9 @@ int main(void)
 
       if (ip > OC_TRIP_MA)
       {
-        MotorPwm_EmergencyStop();
         OpenLoop_Stop((OpenLoopState_t *)&g_ol);
-        g_faulted    = 1U;
         g_oc_trips++;
-        s_fault_tick = HAL_GetTick();
-        /* g_cmd.ol_enable / gate_en are deliberately left alone - they record
-         * what the operator asked for, and the retry below needs to know. */
-      }
-      else if ((HAL_GetTick() - s_clean_tick) >= OC_CLEAN_MS)
-      {
-        /* Run clean for long enough and the retry budget is restored. */
-        g_oc_retries = 0U;
-        g_oc_gaveup  = 0U;
-        s_clean_tick = HAL_GetTick();
-      }
-    }
-    else
-    {
-      /* Latched. Re-arm after OC_RETRY_MS, but only while the operator still
-       * has the drive commanded on, and only within the retry budget. */
-      if (((HAL_GetTick() - s_fault_tick) >= OC_RETRY_MS) &&
-          (g_cmd.ol_enable != 0U) && (g_cmd.gate_en != 0U))
-      {
-        if (g_oc_retries < OC_MAX_RETRIES)
-        {
-          g_oc_retries++;
-          g_oc_peak    = 0;
-          g_faulted    = 0U;
-          s_clean_tick = HAL_GetTick();
-
-          MotorPwm_SetDuty(0, 0, 0);
-          MotorPwm_EnableOutputs();
-          MotorPwm_GateEnable();
-          OpenLoop_Start((OpenLoopState_t *)&g_ol, g_cmd.ol_freq_x100,
-                         g_cmd.ol_mod, g_cmd.ol_align_ms, g_cmd.ol_ramp_ms);
-        }
-        else
-        {
-          g_oc_gaveup = 1U;
-        }
+        Drive_Fault(DRIVE_FAULT_OVERCURRENT);
       }
     }
 
@@ -695,11 +679,10 @@ int main(void)
       if (g_cmd.clear_fault != 0U)
       {
         g_cmd.clear_fault = 0U;
-        g_faulted    = 0U;
-        g_oc_peak    = 0;
-        g_oc_retries = 0U;
-        g_oc_gaveup  = 0U;
-        s_clean_tick = HAL_GetTick();
+        g_oc_peak = 0;
+        /* The only way out of FAULT, and it lands in SELFTEST rather than
+         * READY - see Drive_ClearFault. */
+        Drive_ClearFault();
       }
 
       if (g_cmd.ol_start != 0U)
@@ -784,26 +767,21 @@ int main(void)
 
     /* CAN asked for the power stage. Same ordering as the bench block below -
      * outputs before gates on the way up, gates first on the way down. */
+    /* Bridge requests go through the state machine, which owns the arming
+     * order and the enable flags.
+     *
+     * The old version of this cleared g_faulted on the way up, so asking for
+     * the bridge silently un-latched whatever had tripped. Drive_Arm refuses
+     * from anywhere but READY instead, and a latched fault now needs an
+     * explicit clear that re-runs the self-test. */
     if (g_can_wants_bridge != s_bridge_up)
     {
       s_bridge_up = g_can_wants_bridge;
-      if (s_bridge_up != 0U)
-      {
-        g_faulted = 0U;
-        MotorPwm_SetDutyPermille(0, 0, 0);
-        MotorPwm_EnableOutputs();
-        MotorPwm_GateEnable();
-        g_foc.id_ref = 0.0f;
-        g_foc.iq_ref = 0.0f;
-        g_foc.enabled = 1U;
-      }
-      else
-      {
-        g_foc.enabled = 0U;
-        MotorPwm_GateDisable();
-        MotorPwm_DisableOutputs();
-      }
+      if (s_bridge_up != 0U) { (void)Drive_Arm();    }
+      else                   { (void)Drive_Disarm(); }
     }
+
+    Drive_Step(now);
 
     /* Heartbeat so a stalled loop is visible without a debugger attached.
      * Rate-limited off HAL_GetTick - at ~15 kHz, toggling per iteration would

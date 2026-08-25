@@ -73,6 +73,13 @@ extern "C" {
  * bus reading is not trustworthy and the gain rescale would divide by a bad
  * number. See FOC_VBUS_MIN_MV. */
 #define LIM_VBUS_MAX_MV         50400
+
+/* The undervoltage bound the comment above already described but that nothing
+ * defined until the drive self-test needed to test against it. Same value as
+ * FOC_VBUS_MIN_MV and for the same reason - the two must agree, because a bus
+ * the self-test accepts but FOC_SetGainsForVbus rejects would leave the loop
+ * running on gains sized for a different supply. */
+#define LIM_VBUS_MIN_MV         6000
 #define LIM_VBUS_WARN_MV        45000
 
 /* ---- speed -------------------------------------------------------------- *
