@@ -136,4 +136,6 @@ cmake                toolchain files
 - [HARDWARE_NOTES.md](HARDWARE_NOTES.md) - board-level quirks that are not
   derivable from the source tree, and the measurements behind the constants
 - [docs/CAN_PROTOCOL.md](docs/CAN_PROTOCOL.md) - CAN wire format and framing
+- [docs/LED_CODES.md](docs/LED_CODES.md) - the two-LED front panel: what each
+  pattern means and how to tell a hung ISR from a hung main loop
 - [CLAUDE.md](CLAUDE.md) - working conventions for this repo
