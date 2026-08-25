@@ -12,7 +12,7 @@
   *          a step in the target cannot produce a derivative kick.
   *
   *          Rate separation is what makes the cascade stable: the current loop
-  *          is closed at 20 kHz with ~1 kHz of bandwidth, so the position loop
+  *          is closed at 30 kHz with ~1 kHz of bandwidth, so the position loop
   *          runs at POS_RATE_HZ (1 kHz) and is tuned for well under that. It
   *          is stepped from the same HRTIM ISR, decimated by POS_DECIM, so its
   *          sample interval is exact and not subject to main-loop jitter.
@@ -20,7 +20,7 @@
   *          Angle unwrapping happens at the FULL ISR rate, not the decimated
   *          one: the 15-bit encoder only stays unambiguous while the rotor
   *          moves less than half a turn between samples, and doing it at
-  *          20 kHz buys 20x the headroom for free (it is integer-only).
+  *          30 kHz buys 30x the headroom for free (it is integer-only).
   *
   *          SWD is the only console this board has and OpenOCD cannot format
   *          floats, so every command and every readout below is an integer in
@@ -80,7 +80,7 @@ extern "C" {
  * 0 disables it.
  *
  * The PID runs at POS_RATE_HZ but the current loop consumes its output at
- * 20 kHz, so without this the FOC sees a 1 kHz staircase - a zero-order hold,
+ * 30 kHz, so without this the FOC sees a 1 kHz staircase - a zero-order hold,
  * with all the harmonics that implies, landing right in the audible band.
  *
  * At standstill the steps are not small. Measured holding position, the
@@ -218,7 +218,7 @@ extern "C" {
  *                  render a physical feel - detents, endstops, springs. See
  *                  haptic.h. Unlike every mode above it closes no loop of its
  *                  own; the operator's hand is the feedback path. It is also
- *                  the only mode evaluated at the full 20 kHz ISR rate rather
+ *                  the only mode evaluated at the full 30 kHz ISR rate rather
  *                  than at POS_RATE_HZ, because a detent edge rendered a
  *                  millisecond late stops feeling like an edge. */
 #define MOTION_MODE_HAPTIC    4U

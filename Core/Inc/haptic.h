@@ -10,12 +10,12 @@
   *          moving, what should it feel like pushing against?" and hands that
   *          to the current loop. The rotor is free - your hand closes the loop.
   *
-  *          Because of that it runs at the FULL 20 kHz ISR rate rather than
+  *          Because of that it runs at the FULL 30 kHz ISR rate rather than
   *          the 1 kHz outer loop. Detents are the one thing here that a slow
   *          update makes obviously worse: the wall of a detent is a torque
   *          edge, and rendering that edge 1 ms late is the difference between
   *          a click and a mush. The law is a handful of multiplies, so the
-  *          cost of running it 20x more often is small.
+  *          cost of running it 30x more often is small.
   *
   * ---------------------------------------------------------------------------
   * Composition

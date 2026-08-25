@@ -113,7 +113,8 @@ float Position_Step(PosState_t *p, uint16_t enc_raw)
    * [-16384, +16383] is what makes this a *relative* measurement, so it keeps
    * counting through the wrap at 32767 -> 0 instead of reporting a full turn
    * backwards. Valid as long as the rotor moves less than half a turn between
-   * samples, which at 20 kHz is 300000 rpm. */
+   * samples: at 30 kHz that ceiling is 0.5 * 30000 = 15000 rev/s, or 900000
+   * rpm, so it is not a constraint any real shaft can reach. */
   int32_t d = (int32_t)raw - (int32_t)p->last_raw;
   if (d >  (POS_COUNTS_PER_REV / 2)) { d -= POS_COUNTS_PER_REV; }
   if (d < -(POS_COUNTS_PER_REV / 2)) { d += POS_COUNTS_PER_REV; }
@@ -152,7 +153,7 @@ float Position_Step(PosState_t *p, uint16_t enc_raw)
   /* ---- output smoothing, EVERY tick ------------------------------------ *
    *
    * The PID only refreshes at POS_RATE_HZ, but the current loop consumes this
-   * at the full 20 kHz, so handing it p->iq_raw directly would feed it a
+   * at the full PWM_FREQ_HZ, so handing it p->iq_raw directly would feed it a
    * 1 kHz staircase. Running the filter out here - on every tick, not the
    * decimated one - is what turns those steps into a continuous command.
    *

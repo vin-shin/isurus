@@ -373,7 +373,7 @@ void MotorPwm_SetDutyNorm(float u, float v, float w)
 }
 
 /* Timer A repetition event fires once per PWM period. With RepetitionCounter
- * at 0 that is 20 kHz, and it is phase-locked to the same timebase driving the
+ * at 0 that is PWM_FREQ_HZ, and it is phase-locked to the same timebase driving the
  * ADC trigger - so the control loop always runs at the same point in the
  * switching period. */
 void MotorPwm_EnableControlIsr(void)

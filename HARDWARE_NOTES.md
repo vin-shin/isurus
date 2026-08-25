@@ -5,6 +5,18 @@ source tree. Read this before debugging a board that "doesn't run".
 
 Target: **STM32G474RET6**, LQFP64, 512 KB flash / 128 KB RAM.
 
+## Contents
+
+1. [BOOT0 / FDCAN1_RX pin conflict](#1-boot0--fdcan1_rx-pin-conflict-critical) — **read this first**
+2. [Debug workflow notes](#2-debug-workflow-notes)
+3. [Verifying the blink without halting the core](#3-verifying-the-blink-without-halting-the-core)
+4. [Encoder — Allegro A1333 on SPI1](#4-encoder--allegro-a1333-on-spi1)
+5. [Debug LED brightness — PB1 via TIM3_CH4](#5-debug-led-brightness--pb1-via-tim3_ch4)
+6. [Phase current sensing — CT4022-A40BSN8](#6-phase-current-sensing--ct4022-a40bsn8)
+7. [Three-phase PWM — HRTIM1 and the UCC21330 gate drivers](#7-three-phase-pwm--hrtim1-and-the-ucc21330-gate-drivers)
+8. [Motor parameters and encoder zero calibration](#8-motor-parameters-and-encoder-zero-calibration)
+9. [Debugging heuristic worth remembering](#9-debugging-heuristic-worth-remembering)
+
 ---
 
 ## 1. BOOT0 / FDCAN1_RX pin conflict (critical)
@@ -180,13 +192,25 @@ and otherwise fails with "Generic failure".
 ## 3. Verifying the blink without halting the core
 
 Memory can be read over SWD while the target runs, so the application can be observed
-without perturbing it. Useful symbol addresses in the current build:
+without perturbing it.
 
-| Symbol | Address |
-|---|---|
-| `SystemCoreClock` | `0x20000000` |
-| `uwTick` | `0x20000028` |
-| `GPIOB_ODR` (PB1 = LED) | `0x48000414` |
+> **The RAM addresses below were true of one build and are not stable.** Any
+> code-size change moves the BSS layout, and a stale address does not error — it
+> reads a *different* variable and looks exactly like the firmware ignoring you.
+> Resolve symbols from the ELF at run time instead, the way every script in
+> `tools/` does:
+>
+> ```bash
+> arm-none-eabi-nm build/Debug/makolongfin2.elf | awk '$3 == "uwTick" { print $1 }'
+> ```
+>
+> Peripheral registers are fixed by the part and are safe to hardcode.
+
+| Symbol | Address when this was captured | Stable? |
+|---|---|---|
+| `SystemCoreClock` | `0x20000000` | no — resolve from the ELF |
+| `uwTick` | `0x20000028` | no — resolve from the ELF |
+| `GPIOB_ODR` (PB1 = LED) | `0x48000414` | yes — peripheral address |
 
 ```tcl
 # live.cfg — run with: openocd -f live.cfg
@@ -514,7 +538,7 @@ follower**, per the `.ioc`:
 | U | PC3 | OPAMP5 (`Follower_Internally_Connected`) | `ADC_CHANNEL_VOPAMP5` | **ADC5** |
 | W | PA1 | OPAMP3 (`Follower_Internally_Connected`) | `ADC_CHANNEL_VOPAMP3_ADC2` | **ADC2** |
 
-Two consequences that cost time if you miss them:
+Three consequences that cost time if you miss them:
 
 - **OPAMP5's output is reachable only from ADC5.** `IS_ADC_CHANNEL` in
   `stm32g4xx_hal_adc_ex.h` gates `ADC_CHANNEL_VOPAMP5` to `ADC5` alone. CubeMX
@@ -592,15 +616,21 @@ current. `CS_UA_PER_LSB` should stay at 24414 even though the rail is 3286 mV.
 
 ### Before closing the loop
 
-- ~~OPAMP power-mode mismatch~~ — fixed, see above. Both are `HIGHSPEED`.
-- ADC conversion is **software-triggered polling** here. For FOC it has to be
-  triggered from the PWM timer so sampling lands in the correct part of the
-  switching period.
-- Consider ADC oversampling: 24 mA/LSB is coarse for low-current control.
+All three items originally listed here have since been closed. They are kept
+because each is a trap worth recognising if it ever comes back.
+
+- ~~OPAMP power-mode mismatch~~ — fixed above; both are `HIGHSPEED`.
+- ~~ADC conversion is software-triggered polling~~ — the ADC is now triggered
+  from HRTIM, so sampling lands at a fixed point in the switching period. See
+  [HRTIM-triggered ADC sampling](#hrtim-triggered-adc-sampling), and
+  [The ADC trigger is a deadline](#the-adc-trigger-is-a-deadline) for why the
+  trigger *position* is not a free parameter.
+- ~~Consider ADC oversampling~~ — 8x oversampling is enabled. That is what the
+  4.75 us conversion time quoted in section 7 is made of.
 
 ---
 
-## 7. Three-phase PWM — HRTIM1, and the UCC21330 gate drivers
+## 7. Three-phase PWM — HRTIM1 and the UCC21330 gate drivers
 
 Gate drivers: **UCC21330BQDRQ1**, one per phase. Dual-channel isolated, 4 A
 source / 6 A sink, 3 kVRMS.
@@ -653,7 +683,28 @@ Consequences:
 - Disabling the HRTIM outputs does **not** de-energise anything. The pins simply
   sit low, which is the zero vector, not off.
 
+### Timebase
+
+HRTIM kernel clock is the APB2 timer clock (128 MHz, APB2 prescaler 1) and
+`PRESCALERRATIO_MUL8` gives a **1.024 GHz** counter, so duty resolution is about
+**0.98 ns** and the period in counts is `1.024e9 / PWM_FREQ_HZ`.
+
+| `PWM_FREQ_HZ` | period, counts | period, time | |
+|---|---|---|---|
+| 20000 | 51200 | 50.0 us | original bring-up value |
+| **30000** | **34133** | **33.3 us** | **current** |
+
+The switch to 30 kHz was made to get the switching whine out of the audible
+band; it also cuts current ripple by a third (ripple goes as 1/fsw) at 1.5x the
+switching loss. 40 kHz does not fit — the control ISR measures ~28 us against a
+25 us period. **Anything that assumes a control-loop rate must derive it from
+`PWM_FREQ_HZ`**, not hardcode a number; three places once hardcoded 20000 (both
+FOC integrators and the position loop's output filter) and none of them would
+have failed loudly — they would have run with silently wrong gains.
+
 ### Verified with outputs disabled
+
+Captured during bring-up, at the original 20 kHz:
 
 ```
 pwm_init_rc = 0
@@ -664,11 +715,10 @@ outputs_en = 0   HRTIM OENR = 0x0000
    PA9(W)=0  PA10(V)=0  PA11(U)=0
 ```
 
-HRTIM kernel clock is the APB2 timer clock (128 MHz, APB2 prescaler 1);
-`PRESCALERRATIO_MUL8` gives a 1.024 GHz counter, so 51200 counts is exactly
-20 kHz with ~0.98 ns duty resolution. Compare registers have a hardware minimum
-of 3, which at 2.9 ns is below the driver's 5 ns input deglitch filter and so
-reads as a true 0%.
+> **The `cmp U=3` in that capture is the bug documented in the next subsection.**
+> A compare of 3 was believed at the time to be a true 0% — it is not; it is
+> below HRTIM's minimum actionable compare and produces a stuck **100%**. The
+> floor is now `PWM_CMP_MIN = 16`, and true 0% does not use a compare at all.
 
 `MotorPwm_EnableOutputs()` is the only thing that connects HRTIM to the pins,
 and nothing calls it at boot.
@@ -717,6 +767,7 @@ Verified after the fix — 0% is genuinely 0%, and duty is linear:
 The general lesson: **on a motor bridge, always confirm that a commanded zero
 actually produces zero at the pin.** A duty that looks right in the middle of
 the range says nothing about the endpoints.
+
 ### Gate driver enable — PC5
 
 `PC5` drives the DIS/enable net common to all three drivers. It is configured as
@@ -743,19 +794,39 @@ to an output**, so bringing the pin up cannot emit even a momentary enable pulse
 `MotorPwm_SafeShutdown()` drops the gate line first, then the HRTIM outputs —
 that order matters, because only the gate line actually turns FETs off.
 
+### Driver bring-up checklist
+
+- **VDDA−VSSA and VDDB−VSSB ≥ 9.2 V.** The **B** suffix is the **8 V UVLO**
+  option (A = 5 V, C = 12 V). Below that the outputs never turn on and
+  everything else looks healthy.
+- **VCCI 3.0–5.5 V** — the 3V3 rail is fine.
+- **DIS is pulled HIGH internally = outputs disabled.** It must be pulled or
+  driven low to operate. Route it to an MCU pin if it is not already.
+- **DT resistor must go to GND.** Floating or tied to VCCI disables the
+  interlock and permits overlap.
+- INA/INB have 90 kΩ internal pull-downs, so a Hi-Z MCU pin reads low.
+
 ### HRTIM-triggered ADC sampling
 
 Timer A compare unit 3 drives `HRTIM_ADCTRIGGER_1`; ADC2 (W) and ADC5 (U) both
 select `ADC_EXTERNALTRIG_HRTIM_TRG1`, so the two phases are sampled at the same
-instant every PWM period. Default position is 90% of the period
-(`PWM_ADC_TRIG_PERMILLE`), late enough that the duty edges have settled — tune
-it on a scope. `MotorPwm_SetAdcTriggerPoint()` moves it at run time.
+instant every PWM period. The trigger sits a fixed **`PWM_ADC_LEAD_NS` = 5000 ns
+before the period event**, late enough that the duty edges have settled.
+`MotorPwm_SetAdcTriggerPoint()` moves it at run time.
+
+> **The lead is expressed in nanoseconds, not as a fraction of the period, and
+> that matters.** It used to be `PWM_ADC_TRIG_PERMILLE = 900`, which happened to
+> be 5 us at 20 kHz — but the same 900 per-mille at 30 kHz is only 3.33 us,
+> *less than the conversion needs*, and the failure would have been the silent
+> one described under [The ADC trigger is a deadline](#the-adc-trigger-is-a-deadline).
+> A fixed 5000 ns reproduces the validated 20 kHz behaviour bit for bit and
+> stays correct as the switching frequency moves.
 
 The counters run whether or not the outputs are enabled, so the whole trigger
 path is verifiable with the power stage inert:
 
 ```
-cs_trig_rc = 0   gate_en = 0   OENR = 0x0000   adc_trig_pos = 46080
+cs_trig_rc = 0   gate_en = 0   OENR = 0x0000   adc_trig_pos = 46080   (20 kHz)
 
    U_raw  U_mV  U_mA  |  W_raw  W_mV  W_mA  | samples  err
     2039  1634    24  |   2041  1636    24  |     117    0
@@ -773,20 +844,6 @@ zero sits at a fractional code (~2038.5) while `u_zero` / `w_zero` are integers,
 so re-running the zero capture just moves the residual between −24 and +24 mA.
 Storing the zero as sub-LSB fixed point would remove it if that 24 mA ever
 matters for torque ripple.
-
-### Driver bring-up checklist
-
-- **VDDA−VSSA and VDDB−VSSB ≥ 9.2 V.** The **B** suffix is the **8 V UVLO**
-  option (A = 5 V, C = 12 V). Below that the outputs never turn on and
-  everything else looks healthy.
-- **VCCI 3.0–5.5 V** — the 3V3 rail is fine.
-- **DIS is pulled HIGH internally = outputs disabled.** It must be pulled or
-  driven low to operate. Route it to an MCU pin if it is not already.
-- **DT resistor must go to GND.** Floating or tied to VCCI disables the
-  interlock and permits overlap.
-- INA/INB have 90 kΩ internal pull-downs, so a Hi-Z MCU pin reads low.
-
----
 
 ### Centre-aligned PWM without up-down mode
 
@@ -819,15 +876,16 @@ failed. The technique above came from reading a working implementation
 The control ISR fires on the Timer A period event and reads the ADC data
 register on its first instruction. **The conversion must already be finished.**
 8x oversampling at 6.5-cycle sampling on a PCLK/4 clock is 8 x 19 = 152 ADC
-cycles, about 4.75 us, so the trigger needs at least that much lead:
-`PWM_ADC_TRIG_PERMILLE = 900` gives 5 us of a 50 us period.
+cycles, about **4.75 us**, so the trigger needs at least that much lead.
+`PWM_ADC_LEAD_NS = 5000` gives 5 us, which clears it at any switching frequency
+— that is exactly why the lead is a time and not a fraction of the period.
 
 Moving the trigger to the period event to "sample in the zero vector" breaks
 this: the trigger becomes simultaneous with the ISR, so DR is stale by a period
 or racing the new conversion.
 
 **This failure is nearly invisible to a static test.** Holding a constant
-current, a delayed copy of a constant is the same constant - the bench readings
+current, a delayed copy of a constant is the same constant — the bench readings
 were linear and low-noise and looked perfect. It only appears once the loop has
 to respond to change: iq tracked ~12% of command and ripple grew with vmax.
 Validate feedback *timing* with a moving quantity, never a static one.
@@ -850,7 +908,7 @@ Measured with centre-aligned PWM, `vmax = 0.60`, 15.3 V bus, motor unloaded:
 
 An **unloaded** motor accelerates until back-EMF consumes the voltage budget.
 Past that point `|v|` pins at `vmax`, speed stops rising, and measured iq falls
-to whatever friction demands - so raising `iq_ref` changes nothing. This is not
+to whatever friction demands — so raising `iq_ref` changes nothing. This is not
 a tuning problem and no amount of gain fixes it; it is the supply.
 
 Consequences for testing:
@@ -858,11 +916,12 @@ Consequences for testing:
   torque, so the rotor holds still and the loop is measured without the
   mechanics running away. On the d axis this controller tracks to within 1%:
   0.5/1/2/3 A commanded reads 503/1005/1997/3028 mA, ripple 78-116 mA (~4 LSB),
-  with iq staying inside +/-11 mA.
+  with iq staying inside ±11 mA.
 - **Speed deltas alias.** Sampling mechanical angle over SWD and unwrapping at
-  +/-180 deg gives nonsense once the motor turns faster than half a revolution
-  per sample. Sample continuously and accumulate.
+  ±180° gives nonsense once the motor turns faster than half a revolution per
+  sample. Sample continuously and accumulate.
 
+---
 
 ## 8. Motor parameters and encoder zero calibration
 
@@ -909,7 +968,7 @@ by the supply, and raising `vmax` buys speed only until back-EMF catches up.
 recording because each was measured before the config file was consulted:
 
 - **Phase resistance.** Current scales linearly at ~73 mA per 0.1% modulation,
-  implying ~0.13 ohm — the same order as the documented 85 mohm, measured purely
+  implying ~0.13 Ω — the same order as the documented 85 mΩ, measured purely
   from the current-vs-modulation sweep.
 - **Pole pairs.** Stepping a DC vector through 720 degrees electrical moved the
   rotor 35.76 degrees mechanical, giving **20.13 pole pairs**. Expected 36.00
@@ -947,7 +1006,7 @@ Scaling was measured, not assumed: writing 1024 shifted the reported angle
 
 Two independent checks that the calibration is good:
 
-- After programming, the rotor held at electrical zero read **0.00 +/- 0.07
+- After programming, the rotor held at electrical zero read **0.00 ± 0.07
   degrees**, i.e. within one offset LSB.
 - Electrical zeros must land on multiples of 18 degrees mechanical for 20 pole
   pairs. A later alignment settled at **305.87** against a predicted

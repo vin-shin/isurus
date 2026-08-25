@@ -27,7 +27,11 @@ current-sense zero calibration and tripping overcurrent on a stationary motor.
 
 ## Touching the control ISR
 
-The 20 kHz HRTIM ISR has a hard 50 us deadline; overrun it and control steps are
-lost. It currently runs ~33 us. `Core/Src/{foc,position,csense,encoder,motor_pwm,main}.c`
-are built at `-O2` for this reason while the rest of the project stays at `-O0` —
-see the comment in `CMakeLists.txt` before changing that.
+The 30 kHz HRTIM ISR has a hard 33.3 us deadline; overrun it and control steps
+are lost. It currently runs ~28 us — 84% loaded, so the margin is thin.
+`Core/Src/{foc,position,haptic,csense,encoder,motor_pwm,main}.c` are built at
+`-O2` for this reason while the rest of the project stays at `-O0` — see the
+comment in `CMakeLists.txt` before changing that.
+
+The deadline is `1 / PWM_FREQ_HZ` (`Core/Inc/motor_pwm.h`), not a constant.
+Anything that assumes a control-loop rate must derive it from that symbol.

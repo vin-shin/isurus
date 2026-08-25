@@ -54,13 +54,15 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     ${CMAKE_SOURCE_DIR}/Core/Src/haptic.c
 )
 
-# The 20 kHz control ISR is a hard real-time deadline, not a hot loop to be
-# tuned later: overrun the 50 us PWM period and control steps are simply lost.
+# The 30 kHz control ISR is a hard real-time deadline, not a hot loop to be
+# tuned later: overrun the 33.3 us PWM period and control steps are simply lost.
+# The budget is 1 / PWM_FREQ_HZ, so raising the switching frequency shortens it.
 #
 # At -O0 every float operation round-trips through the stack, and the FOC
 # transforms plus the position profile are almost entirely float. Measured with
-# the whole project at -O0, worst-case ISR was 48.2 us of the 50 us budget -
-# 96% loaded, with a motion profile running.
+# the whole project at -O0, worst-case ISR was 48.2 us with a motion profile
+# running. That was already 96% of the 50 us budget this project had at 20 kHz;
+# against the present 33.3 us period it does not fit at all.
 #
 # So the files on the ISR path are built optimised while everything else stays
 # at -O0 and remains comfortable to step through. If you need to single-step
@@ -92,10 +94,11 @@ target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE
 
 # sqrtf() is required by the C standard to set errno on a negative argument, so
 # GCC emits a call into libm rather than the Cortex-M4F's single VSQRT.F32
-# instruction - even with -mfpu=fpv4-sp-d16. In the 20 kHz control ISR that is
-# not a micro-optimisation: the two sqrtf calls in the position profile cost
-# ~1400 cycles between them and pushed the worst-case ISR from 39.2 us to
-# 50.1 us, i.e. straight through the 50 us PWM period.
+# instruction - even with -mfpu=fpv4-sp-d16. In the control ISR that is not a
+# micro-optimisation: the two sqrtf calls in the position profile cost ~1400
+# cycles between them and pushed the worst-case ISR from 39.2 us to 50.1 us.
+# Measured at 20 kHz, that was straight through the then-50 us PWM period; at
+# the present 30 kHz the same 1400 cycles are a third of the entire budget.
 #
 # Nothing in this project reads errno, so dropping that requirement is free.
 target_compile_options(${CMAKE_PROJECT_NAME} PRIVATE

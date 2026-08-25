@@ -92,7 +92,7 @@ uint32_t Encoder_RawToDegX100(uint16_t raw_counts)
 }
 
 /* Direct-register 16-bit transfer. HAL_SPI_TransmitReceive carries far too
- * much overhead for a 50 us budget. */
+ * much overhead for a 33.3 us budget. */
 static inline uint16_t Spi1Xfer16Fast(uint16_t tx)
 {
     uint32_t guard = 2000U;

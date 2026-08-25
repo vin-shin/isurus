@@ -39,7 +39,7 @@ void Encoder_GetDebugData(uint16_t *rx1, uint16_t *rx2);
 uint32_t Encoder_RawToDegX100(uint16_t raw_counts);
 
 /* Direct-register angle read for the control ISR. The HAL path costs most of
- * a PWM period, which is unaffordable at 20 kHz. No error reporting: on a
+ * a PWM period, which is unaffordable at 30 kHz. No error reporting: on a
  * timeout it returns the previous good value. */
 uint16_t Encoder_ReadAngleFast(void);
 

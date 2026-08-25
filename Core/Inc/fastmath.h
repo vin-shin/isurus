@@ -13,8 +13,10 @@
   *
   *          The cost is not academic. Two sqrtf calls in the position
   *          profile's braking maths measured ~1400 cycles between them and
-  *          pushed the worst-case control ISR from 39.2 us to 50.1 us - past
-  *          the 50 us PWM period, which means dropped control steps.
+  *          pushed the worst-case control ISR from 39.2 us to 50.1 us. Measured
+  *          at 20 kHz, that was past the then-50 us PWM period; against the
+  *          present 33.3 us period the same 1400 cycles are a third of the
+  *          whole budget. Either way it means dropped control steps.
   *
   *          So the instruction is requested explicitly. This stays correct at
   *          any optimisation level and does not depend on a compiler flag
