@@ -106,14 +106,25 @@ jobs:
       # inside Drivers/ are suppressed for the same reason the scope excludes
       # them: not this project's code to fix.
       #
-      # This step is the one that matters most, and its value is UNVERIFIED.
+      # This step is the one that matters most, and it is now VERIFIED.
+      #
       # The work plan's motivating bug is `errors & !MASK` - logical NOT where
-      # bitwise was meant - and that is NOT caught by any GCC warning flag;
-      # this was tested, see CMakeLists.txt. cppcheck is expected to flag it as
-      # a boolean used in a bitwise operation, which is why this step exists,
-      # but that expectation has not been confirmed. Confirm it on the first
-      # run by checking cppcheck actually reports a deliberately planted case,
-      # rather than trusting a green tick.
+      # bitwise was meant - and no GCC warning flag catches it; that was tested
+      # separately, see CMakeLists.txt. On 2026-08-25 the case was planted for
+      # real, in encoder.c's A1333 ready-bit test, and pushed on a scratch
+      # branch. The firmware job compiled it clean and this job went red with:
+      #
+      #   style: Boolean result is used in bitwise operation.  [clarifyCondition]
+      #   style: Condition '(st&!0x0001U)!=0U' is always false [knownConditionTrueFalse]
+      #
+      # So the green tick below has been seen to go red for the reason it
+      # exists, which is the only thing that makes it worth anything.
+      #
+      # DO NOT DROP `style` FROM --enable. Both of those findings are
+      # style-class. Dropping the category to quieten unrelated noise - which
+      # is tempting, it is where constParameterPointer lives - silently
+      # disables the entire reason this job is here, and the planted bug then
+      # passes. Narrow the SCOPE or suppress specific ids instead.
       - name: cppcheck
         run: |
           cppcheck --enable=warning,style,performance,portability \

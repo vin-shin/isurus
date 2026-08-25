@@ -114,12 +114,20 @@ Left:
   machine lands in `FAULT` with the right cause each time. `pmsm.h` already
   carries the injection flags; nothing consumes them yet. This needs `drive.c`
   and its `motor_pwm` calls stubbed the way `foc.c`'s CORDIC was.
-- **Verify cppcheck actually catches `errors & !MASK`.** CI runs it for exactly
-  this, and it is unverified — no GCC warning flag catches that bug, tested.
-  Plant a deliberate case and confirm the job goes red. Do not trust the green
-  tick until you have seen it fail.
-- **First CI run will need iterating.** It has never executed; the runner
-  environment is the untested part.
+- ~~**Verify cppcheck actually catches `errors & !MASK`.**~~ Done 2026-08-25.
+  Planted in `encoder.c`'s A1333 ready-bit test on a scratch branch: the
+  firmware job compiled it clean and cppcheck went red with `clarifyCondition`
+  and `knownConditionTrueFalse`. Both are **style**-class, so `--enable` must
+  keep `style` — dropping it to quieten unrelated noise disables the check
+  silently. Recorded in the workflow.
+- ~~**First CI run will need iterating.**~~ Done 2026-08-25, and it needed it.
+  CI had in fact been running and failing on *every* commit since the first.
+  Two independent causes: a literal `
+` in the apt line, so the toolchain
+  never installed and the firmware job never compiled anything; and cppcheck
+  running over all of `Core/Src`, where 14 of 18 findings were
+  `constParameterPointer` on HAL callbacks nobody here can change. All three
+  jobs green as of `81c4c94`.
 - **Model fidelity: the sub-period ADC sampling instant.** `sim.h` applies
   duties with a 1.5-period delay while the firmware compensates 1.65, because
   the real ADC triggers before the period boundary. Until that is modelled the
