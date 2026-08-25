@@ -158,6 +158,11 @@ int32_t Drive_Disarm(void);
  * latched until a driver acts. */
 void Drive_ClearFault(void);
 
+/* Tell the state machine the control loop was stopped from outside it, so a
+ * stale RUN is not reported after the bridge has already been safed. ISR-safe;
+ * a no-op unless the state is RUN. */
+void Drive_LoopStopped(void);
+
 /* Main-loop housekeeping: state timing, and the automatic INIT -> SELFTEST
  * transition. Cheap; call it every pass. */
 void Drive_Step(uint32_t now_ms);

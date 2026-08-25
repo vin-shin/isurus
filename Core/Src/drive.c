@@ -199,6 +199,22 @@ void Drive_Fault(DriveFault_t cause)
   }
 }
 
+void Drive_LoopStopped(void)
+{
+  /* Something outside the state machine cleared g_foc.enabled - a bench tool,
+   * a debugger. The ISR has already safed the bridge; this makes the reported
+   * state agree with the hardware instead of continuing to claim RUN.
+   *
+   * Not a fault: disabling the loop is a legitimate thing for an operator to
+   * do. It is only a problem if the state machine goes on telling CAN and the
+   * SWD tools that the drive is running, which is the exact class of lie
+   * Drive_Enter exists to prevent. */
+  if (g_drive.state == (uint32_t)DRIVE_RUN)
+  {
+    Drive_Enter(DRIVE_READY);
+  }
+}
+
 void Drive_Init(void)
 {
   g_drive.state         = (uint32_t)DRIVE_INIT;

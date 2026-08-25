@@ -85,10 +85,19 @@ mww $PMODE 0
 mww $PENA 0
 mww $IQA 0
 mww $IDA 0
-mww $ENA 0
+# Gates and outputs BEFORE the control loop, not after.
+#
+# Clearing \$ENA first stops the loop updating the duty registers while the
+# HRTIM keeps applying the last ones it wrote, and on a spinning rotor that
+# frozen vector sweeps every angle relative to the magnets. Measured at 27.2 A
+# on a motor rated 22 A continuous. The firmware now safes the bridge on that
+# transition by itself, so this is belt and braces - but "gates first on the
+# way down" is the rule main.c enforces everywhere else, and this was the one
+# place that had it backwards.
 mww [expr {$CMDA+20}] 0
 mww [expr {$CMDA+16}] 0
 mww $CMDA 1
+mww $ENA 0
 shutdown
 EOF
 

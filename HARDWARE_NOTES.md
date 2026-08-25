@@ -1262,29 +1262,23 @@ Detecting a failed current sensor needs a third independent measurement. There
 is no third sensor in the firmware: `csense.c` starts OPAMP3 and OPAMP5 only,
 and nothing anywhere references a V-phase current.
 
-**There is a promising lead, though.** `makolongfin2.ioc` assigns four more
-OPAMP inputs that the firmware never touches:
+**Confirmed 2026-08-25: there is no phase-V sensor on this board.** The
+question was open for a while because `makolongfin2.ioc` assigns four OPAMP
+inputs the firmware never touches — PA3 (OPAMP1_VINP), PB0 (OPAMP2_VINP),
+PB11 (OPAMP4_VINP), PB12 (OPAMP6_VINP), plus PA6 (ADC2_IN3) — which looked
+like it might be a third sensor waiting to be brought up. It is not. Those
+pins are routed but carry no phase-current sensor, so no amount of firmware
+turns this into a three-phase measurement.
 
-| Pin | Signal | Used by firmware? |
-|---|---|---|
-| PA1 | OPAMP3_VINP | yes — phase W |
-| PC3 | OPAMP5_VINP | yes — phase U |
-| PA3 | OPAMP1_VINP | no |
-| PB0 | OPAMP2_VINP | no |
-| PB11 | OPAMP4_VINP | no |
-| PB12 | OPAMP6_VINP | no |
-| PA6 | ADC2_IN3 | no |
+So this is a hardware requirement for the next board spin, alongside the
+comparator in section 10. A third sensor buys two things, not one: a real sum
+check that can actually detect a failed sensor, and better common-mode
+rejection from the full 3-phase Clarke instead of the 2-phase reconstruction.
 
-**Check the schematic before assuming a board respin is needed.** If any of
-those four already carries a phase-V shunt or TMR sensor, the third phase is a
-firmware change rather than a hardware one — bring up the OPAMP the same way
-`CSense_Init` brings up 3 and 5, point an ADC at it, and the full 3-phase
-Clarke and the sum check both become available. This was not verifiable from
-the repository and is the first thing to establish.
-
-If none of them does, the next board spin needs a third sensor. It buys two
-things, not one: a real sum check, and better common-mode rejection from the
-full 3-phase Clarke instead of the 2-phase reconstruction.
+Until then the drive cannot detect a failed current sensor at all, and that
+limitation should be stated plainly rather than papered over — the existing
+`i_u + i_v + i_w` identity will always evaluate to zero and must never be
+presented as a check.
 
 ### The A1333 frame CRC is unverifiable from here
 

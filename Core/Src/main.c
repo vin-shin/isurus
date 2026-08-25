@@ -271,6 +271,62 @@ void HRTIM1_TIMA_IRQHandler(void)
 
   HRTIM1_TIMA->TIMxICR = HRTIM_TIMICR_REPC;
 
+  /* Re-seed the position unwrapper whenever the control loop is (re)enabled.
+   *
+   * Position_Step is called from INSIDE the enabled block below, so while the
+   * drive is disarmed it stops sampling entirely and p->last_raw freezes at
+   * whatever angle the rotor had when the bridge went down. Re-arming after
+   * the shaft has coasted then produces one enormous bogus delta on the first
+   * tick - not a real movement, just the gap in sampling.
+   *
+   * That was always true and always harmless, because the delta only fed a
+   * glitch COUNTER. Now it feeds a latching plausibility fault, so the same
+   * stale value trips DRIVE_FAULT_ENCODER the instant the drive is armed
+   * after any real motion. Clearing `seeded` makes Position_Step re-baseline
+   * on its next call and emit a delta of zero.
+   *
+   * Done on the g_foc.enabled edge rather than in Drive_Enter because the SWD
+   * tools set that flag directly to run the ISR with the bridge down, and
+   * they need re-seeding just as much. */
+  {
+    static uint32_t s_loop_was_on = 0U;
+    if (g_foc.enabled != s_loop_was_on)
+    {
+      s_loop_was_on = g_foc.enabled;
+
+      if (g_foc.enabled != 0U)
+      {
+        g_pos.seeded = 0U;
+      }
+      else
+      {
+        /* Loop switched OFF: take the bridge down with it, immediately.
+         *
+         * The duty registers hold whatever the last control step wrote, and
+         * the HRTIM keeps applying it forever - it is hardware and does not
+         * care that the loop stopped. On a spinning rotor that frozen vector
+         * sweeps through every angle relative to the magnets, so it is
+         * alternately braking, driving and shorting, with nothing regulating
+         * the current.
+         *
+         * Measured, and it is not marginal: at 2027 rad/s electrical with the
+         * loop drawing 1.2 A, clearing g_foc.enabled while the gates stayed
+         * enabled produced a 27.2 A peak and tripped the overcurrent. That is
+         * a motor rated 22 A continuous, and it is exactly the 27.0 A a
+         * foc_dash demo run hit - its teardown drops the loop several SWD
+         * writes before it drops the gates.
+         *
+         * The tool's ordering is being fixed too, but this belongs here: any
+         * path that clears g_foc.enabled - a tool, a debugger, a future
+         * caller - must not be able to leave a live bridge behind, and only
+         * the ISR sees every such transition. Drive_SafeState is two register
+         * writes and is ISR-safe. */
+        Drive_SafeState();
+        Drive_LoopStopped();
+      }
+    }
+  }
+
   if (g_foc.enabled != 0U)
   {
     /* Conversions were triggered earlier this period, so DR is fresh. */

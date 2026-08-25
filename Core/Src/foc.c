@@ -199,30 +199,45 @@ void FOC_Init(FocState_t *f)
   f->omega_e_rads_x10  = 0;
   f->theta_adv_deg_x10 = 0;
 
-  /* OFF by default, which is a deliberate reversal of how this shipped.
+  /* OFF by default. It does what it claims and it is still not ready.
    *
-   * The decoupled loop is still the correct one in principle, and on the HV
-   * machine it is not optional at all - see the bandwidth derivation in
-   * foc.h. But as first shipped it made this bench materially WORSE, and it
-   * did so quietly: a torque reversal that peaked at 1.3 A with the
-   * feedforward off peaked at 4.7 A with it on, and running the foc_dash demo
-   * tripped the 15 A overcurrent at 27 A on a motor rated for 22 A
-   * continuous.
+   * What works: at ~266 Hz electrical, 12 ensemble-averaged iq steps, it cuts
+   * the d-axis disturbance it exists to cut -
    *
-   * Two causes, both now fixed - a lambda_m that was 14% high (foc.h) and an
-   * anti-windup that scaled the integrators to zero whenever the feedforward
-   * alone reached vmax (above). Neither fix has been measured on the motor
-   * yet, and a correction that has already been wrong once does not get to
-   * default itself back on untested.
+   *       peak |id|   123 mA on   209 mA off    -41%
+   *       rms id     51.1 mA on  78.6 mA off    -35%
    *
-   * To re-validate, and to turn this back on if it passes:
+   * What does not: run the actual foc_dash demo, which spins to terminal
+   * speed and then reverses, and peak phase current is 9326 mA with this on
+   * against 1489 mA with it off. Six times worse. It no longer TRIPS the 15 A
+   * limit - that took fixing a lambda_m 14% high (foc.h) and an anti-windup
+   * that crushed the integrators (below) - but six times the peak current is
+   * not a correction, it is a different bug.
    *
-   *     tools/step_trace.sh --run 400 1200 12 decouple
+   * The cause is the velocity estimate, and it is a gap in the original
+   * analysis rather than a bug in the code. omega_e comes from the position
+   * loop, filtered at ~8 Hz because kd there must not amplify encoder
+   * quantisation. That is a 20 ms lag. Under 1 A of braking this rotor
+   * decelerates at ~16000 electrical rad/s^2, so during a hard reversal
+   * omega_e is wrong by ~320 rad/s, the feedforward is wrong by 0.86 V, and
+   * 0.86 V across an 85 mohm winding is 10.1 A. Measured 9.3 A.
    *
-   * plus a torque reversal peak-current check with the flag both ways. It
-   * should show d-axis disturbance down, as it did before, AND peak current
-   * during a reversal no higher than with the flag off - which is the part
-   * that was never checked the first time. */
+   * It is worse than that arithmetic suggests, because at terminal speed
+   * w_e*lambda_m/Vbus is 0.250 against a vmax of 0.250 - the feedforward
+   * alone fills the entire modulation ceiling, so there is no headroom left
+   * for the PI to correct the error quickly.
+   *
+   * The delay compensation was checked against this same lag and is fine: it
+   * uses omega_e for an ANGLE advance, where 320 rad/s is 0.3 degrees. The
+   * feedforward uses it for a VOLTAGE magnitude, where the same error is
+   * volts. Checking one and assuming the other was the mistake.
+   *
+   * What this needs before it goes on by default: an omega_e for the
+   * feedforward that tracks faster than 8 Hz. Not a second estimator that can
+   * disagree with the position loop's - the same encoder differences, filtered
+   * for a different purpose. And re-test with the DEMO, not a short reversal;
+   * a 1.5 s reversal showed 1359 vs 1375 mA and looked like a pass, because
+   * the motor never reached the speed where this bites. */
   f->decouple = 0U;
   f->vd_ff_pm = 0;
   f->vq_ff_pm = 0;
