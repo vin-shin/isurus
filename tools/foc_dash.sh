@@ -55,6 +55,14 @@ IQA=$(printf "0x%x" $((FOC+4)))
 IDA=$(printf "0x%x" $((FOC+0)))
 CMDA=$(printf "0x%x" $(sym g_cmd))
 
+# The outer motion loop owns g_foc.iq_ref whenever it is enabled - it rewrites
+# it on every control tick. This dashboard drives iq_ref directly, so the two
+# cannot both run: without standing the position loop down first, every value
+# written here is overwritten within 33 us and the demo does nothing at all.
+POSB=$(sym g_pos)
+PENA=$(printf "0x%x" $((POSB+0)))
+PMODE=$(printf "0x%x" $((POSB+92)))
+
 CFG="$(mktemp)"
 SAFECFG="$(mktemp)"
 OCD_PID=""
@@ -73,6 +81,8 @@ source [find target/stm32g4x.cfg]
 reset_config none
 adapter speed 4000
 init
+mww $PMODE 0
+mww $PENA 0
 mww $IQA 0
 mww $IDA 0
 mww $ENA 0
@@ -238,6 +248,11 @@ if {$DEMO} {
     mww $CMDA 1
     sleep 200
     mww $FLTA 0
+    # Stand the outer loop down first, so the iq_ref written below is
+    # ours and stays ours.
+    mww $PMODE 0
+    mww $PENA 0
+    sleep 100
     mww $IDA 0
     mww $IQA 0
     mww $ENA 1
