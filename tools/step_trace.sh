@@ -142,7 +142,11 @@ sleep 200
 mww [expr {$CMDA+20}] 1
 mww $CMDA 1
 sleep 200
-mww $FLTA 0
+# g_faulted is a derived mirror now - writing it clears nothing. The real
+# entry is g_cmd.clear_fault, which re-runs the self-test. See drive.h.
+mww [expr {$CMDA+36}] 1
+mww $CMDA 1
+sleep 300
 mww $PMODE 0
 mww $PENA 0
 mww $IDA 0
