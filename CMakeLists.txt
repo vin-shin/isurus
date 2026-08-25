@@ -110,6 +110,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     ${CMAKE_SOURCE_DIR}/Core/Src/openloop.c
     ${CMAKE_SOURCE_DIR}/Core/Src/foc.c
     ${CMAKE_SOURCE_DIR}/Core/Src/drive.c
+    ${CMAKE_SOURCE_DIR}/Core/Src/led.c
     ${CMAKE_SOURCE_DIR}/Core/Src/position.c
     ${CMAKE_SOURCE_DIR}/Core/Src/can.c
     ${CMAKE_SOURCE_DIR}/Core/Src/haptic.c
@@ -132,6 +133,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
 set_source_files_properties(
     ${CMAKE_SOURCE_DIR}/Core/Src/foc.c
     ${CMAKE_SOURCE_DIR}/Core/Src/drive.c
+    ${CMAKE_SOURCE_DIR}/Core/Src/led.c
     ${CMAKE_SOURCE_DIR}/Core/Src/position.c
     ${CMAKE_SOURCE_DIR}/Core/Src/haptic.c
     ${CMAKE_SOURCE_DIR}/Core/Src/csense.c
