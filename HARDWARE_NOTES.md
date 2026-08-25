@@ -18,6 +18,7 @@ Target: **STM32G474RET6**, LQFP64, 512 KB flash / 128 KB RAM.
 9. [Debugging heuristic worth remembering](#9-debugging-heuristic-worth-remembering)
 10. [No hardware overcurrent path — requirement for the next board spin](#10-no-hardware-overcurrent-path--requirement-for-the-next-board-spin)
 11. [Safe-state policy — freewheel vs active short circuit](#11-safe-state-policy--freewheel-vs-active-short-circuit)
+12. [Sensor plausibility — what the board cannot currently check](#12-sensor-plausibility--what-the-board-cannot-currently-check)
 
 ---
 
@@ -1238,3 +1239,77 @@ bench testing. One already was not: an early version applied ASC *before*
 entering the FAULT state, and `Drive_Enter()` drops the gate drivers on the
 way into any non-RUN state, so the ASC would have been silently undone. It was
 found by reading, not by running.
+
+---
+
+## 12. Sensor plausibility — what the board cannot currently check
+
+Two of the four checks the HV work plan asks for cannot be implemented on this
+board as it stands. Both are written up here rather than approximated in
+firmware, for the same reason as section 10: a check that cannot actually
+detect the thing it claims to detect is worse than no check, because it gets
+trusted.
+
+### Phase V is not measured, so the sum check is impossible
+
+`i_v` is reconstructed as `-(i_u + i_w)`. That identity is exact for a machine
+with no neutral connection, which is why it is used — but it is also
+unfalsifiable. `i_u + i_v + i_w` is zero **by construction**, so asserting that
+it is near zero tests nothing at all. A failed U or W sensor simply moves the
+error into the reconstructed V and the sum still comes out zero.
+
+Detecting a failed current sensor needs a third independent measurement. There
+is no third sensor in the firmware: `csense.c` starts OPAMP3 and OPAMP5 only,
+and nothing anywhere references a V-phase current.
+
+**There is a promising lead, though.** `makolongfin2.ioc` assigns four more
+OPAMP inputs that the firmware never touches:
+
+| Pin | Signal | Used by firmware? |
+|---|---|---|
+| PA1 | OPAMP3_VINP | yes — phase W |
+| PC3 | OPAMP5_VINP | yes — phase U |
+| PA3 | OPAMP1_VINP | no |
+| PB0 | OPAMP2_VINP | no |
+| PB11 | OPAMP4_VINP | no |
+| PB12 | OPAMP6_VINP | no |
+| PA6 | ADC2_IN3 | no |
+
+**Check the schematic before assuming a board respin is needed.** If any of
+those four already carries a phase-V shunt or TMR sensor, the third phase is a
+firmware change rather than a hardware one — bring up the OPAMP the same way
+`CSense_Init` brings up 3 and 5, point an ADC at it, and the full 3-phase
+Clarke and the sum check both become available. This was not verifiable from
+the repository and is the first thing to establish.
+
+If none of them does, the next board spin needs a third sensor. It buys two
+things, not one: a real sum check, and better common-mode rejection from the
+full 3-phase Clarke instead of the 2-phase reconstruction.
+
+### The A1333 frame CRC is unverifiable from here
+
+The work plan asks for the encoder frame's CRC to be checked. `encoder.c`
+reads the angle with the two-frame ANG15 protocol and uses `rx2 & 0x7FFF`,
+discarding bit 15. Whether bit 15 is a parity bit, a status flag, or unused —
+and whether the A1333 offers a CRC-bearing frame format at all — is not
+determinable from anything in this repository, and **the datasheet is required
+before writing that code**. Guessing a polynomial and getting it wrong would
+produce a check that fails on good frames or passes on bad ones.
+
+What has been done instead, and what it does and does not cover:
+
+- **Substitution counting.** `Encoder_ReadAngleFast` has always fallen back to
+  the last good angle when a frame reads `0xFFFF`, which is what a dead MISO
+  line gives. That was silent, so a severed encoder produced a plausible,
+  constant, entirely fictional angle indefinitely — indistinguishable to the
+  control loop from a stalled rotor, and the loop responds by pouring current
+  into a fixed electrical angle. It is now counted, and
+  `ENC_MAX_SUBSTITUTIONS` consecutive substitutions latch `DRIVE_FAULT_ENCODER`.
+- **Kinematic rate limit.** A frame corrupted into a *plausible-looking* angle
+  is caught by the fact that the rotor cannot have moved that far in 33 us.
+  See `POS_ENC_DMAX_COUNTS`.
+
+Neither is a CRC. A frame corrupted into a nearby angle, at a moment when the
+rotor genuinely could have moved that far, still passes — and that is precisely
+the case a CRC would catch. Treat the encoder as *checked for gross failure*,
+not as verified.

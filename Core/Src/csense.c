@@ -276,7 +276,28 @@ static int CSense_ArmTriggered(ADC_HandleTypeDef *hadc, uint32_t channel)
 
   sConfig.Channel      = channel;
   sConfig.Rank         = ADC_REGULAR_RANK_1;
-  sConfig.SamplingTime = ADC_SAMPLETIME_6CYCLES_5;   /* 8 of these fit easily */
+  /* 6.5 cycles of sampling, and this does NOT "fit easily" - it fits, with
+   * 5% to spare, and the margin is worth knowing before anyone changes it.
+   *
+   *   ADC kernel clock  = HCLK/4 = 32 MHz   (ADC_CLOCK_SYNC_PCLK_DIV4)
+   *   one conversion    = 6.5 sample + 12.5 convert = 19 cycles = 594 ns
+   *   8x oversampling   = 4.75 us
+   *   window available  = PWM_ADC_LEAD_NS = 5.00 us
+   *   margin            = 250 ns, i.e. 95% of the window is used
+   *
+   * The window is the time between the HRTIM trigger and the control ISR
+   * reading DR, so overrunning it does not produce an error - it produces a
+   * result from the PREVIOUS period, silently, which is exactly the stale-DR
+   * failure motor_pwm.h warns about and which cost a debugging session once
+   * already.
+   *
+   * Consequences for anything that moves: 16x oversampling needs 9.5 us and
+   * does not fit at all. Raising SamplingTime past ~9.5 cycles does not fit.
+   * Lowering the ADC prescaler helps, raising it does not. And since the
+   * window is a fixed 5 us rather than a fraction of the period, none of this
+   * changes with PWM_FREQ_HZ - but the PERIOD does, so at some switching
+   * frequency the 5 us lead stops being affordable from the other end. */
+  sConfig.SamplingTime = ADC_SAMPLETIME_6CYCLES_5;
   sConfig.SingleDiff   = ADC_SINGLE_ENDED;
   sConfig.OffsetNumber = ADC_OFFSET_NONE;
   sConfig.Offset       = 0;

@@ -287,6 +287,15 @@ void HRTIM1_TIMA_IRQHandler(void)
     uint16_t enc = Encoder_ReadAngleFast();
     uint32_t t_b = DWT->CYCCNT;
 
+    /* A sustained run of substituted angles means the SPI link is gone, and
+     * the loop is now steering current at a fixed, fictional electrical angle
+     * - which looks exactly like a stalled rotor and is the worst thing to do
+     * about one. See g_enc_sub_consec in encoder.h. */
+    if (g_enc_sub_consec >= ENC_MAX_SUBSTITUTIONS)
+    {
+      Drive_Fault(DRIVE_FAULT_ENCODER);
+    }
+
     /* Outer position loop. It self-decimates to POS_RATE_HZ, and is stepped
      * even while disengaged (g_pos.enabled clear) so its multi-turn count and
      * velocity estimate stay live - engaging then picks up from a correct

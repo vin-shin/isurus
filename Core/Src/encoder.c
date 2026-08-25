@@ -20,6 +20,9 @@
 #define ENC_SPI_TIMEOUT_MS      2U
 
 static uint16_t s_last_good = 0;
+volatile uint32_t g_enc_sub_consec = 0;
+volatile uint32_t g_enc_sub_total  = 0;
+
 static uint16_t s_debug_rx1 = 0;
 static uint16_t s_debug_rx2 = 0;
 
@@ -126,7 +129,19 @@ uint16_t Encoder_ReadAngleFast(void)
     while (((SPI1->SR & SPI_SR_BSY) != 0U) && (--guard != 0U)) { }
     ENC_CS_PORT->BSRR = (uint32_t)ENC_CS_PIN;
 
-    if (rx != 0xFFFFU) { s_last_good = (uint16_t)(rx & 0x7FFFU); }
+    if (rx != 0xFFFFU)
+    {
+        s_last_good      = (uint16_t)(rx & 0x7FFFU);
+        g_enc_sub_consec = 0U;
+    }
+    else
+    {
+        /* Substituting the last good angle, and SAYING SO. See the comment on
+         * g_enc_sub_consec in encoder.h - this path used to be silent, which
+         * made a dead encoder indistinguishable from a stationary one. */
+        g_enc_sub_consec++;
+        g_enc_sub_total++;
+    }
 
     return s_last_good;
 }
