@@ -88,6 +88,22 @@ static void apply_opts(Sim_t *s, int argc, char **argv, int from)
        * has wrong by this factor. */
       s->m.lambda_m = (double)FOC_LAMBDA_M_WB / v;
     }
+    else if (!strncmp(a, "L_err=", 6) && v > 0.0)
+    {
+      /* Same trick for inductance: scale the MODEL's Ld/Lq and leave
+       * FOC_LD_H / FOC_LQ_H alone, so the firmware keeps designing its gains
+       * and its w_e*Lq*iq feedforward for the value it was given while the
+       * plant behaves like a motor that is wrong by this factor. L_err > 1
+       * means the firmware OVER-estimates - the case worth testing, because
+       * a bench step measured a current loop about 3x faster than the model,
+       * which is what a real inductance below the assumed one looks like.
+       *
+       * Ld and Lq move together: this machine is surface-magnet and the
+       * firmware defines both as FOC_L_H, so splitting them here would model
+       * a saliency neither the motor nor the controller has. */
+      s->m.Ld = (double)FOC_LD_H / v;
+      s->m.Lq = (double)FOC_LQ_H / v;
+    }
     else { fprintf(stderr, "ignoring unknown option '%s'\n", a); }
   }
 }

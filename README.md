@@ -138,4 +138,7 @@ cmake                toolchain files
 - [docs/CAN_PROTOCOL.md](docs/CAN_PROTOCOL.md) - CAN wire format and framing
 - [docs/LED_CODES.md](docs/LED_CODES.md) - the two-LED front panel: what each
   pattern means and how to tell a hung ISR from a hung main loop
+- [docs/BENCH-2026-08-25.md](docs/BENCH-2026-08-25.md) - simulator vs bench
+  validation of the current loop, and an inductance hypothesis that the
+  measurement refuted
 - [CLAUDE.md](CLAUDE.md) - working conventions for this repo
