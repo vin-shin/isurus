@@ -34,6 +34,7 @@
 #include "openloop.h"
 #include "foc.h"
 #include "position.h"
+#include "can.h"
 #include <stdio.h>
 #include <stdarg.h>
 #include <string.h>
@@ -146,6 +147,28 @@ volatile BenchCmd_t g_cmd = {0};
 volatile OpenLoopState_t g_ol = {0};
 volatile FocState_t      g_foc = {0};
 volatile PosState_t      g_pos = {0};
+
+/* ---- CAN ---------------------------------------------------------------- *
+ *
+ * g_can_wants_bridge is how can.c asks for the power stage without reaching
+ * into the peripheral itself: bringing the bridge up has a required order
+ * (duty, then outputs, then gates) and exactly one place in this file
+ * enforces it. CAN raises the request; the main loop performs it.
+ *
+ * The tx_* fields are a self-test hook. With g_can_loopback set, the node
+ * receives its own transmissions, so writing a command here sends a real
+ * protocol frame to ourselves and exercises filters, framing and decode with
+ * no second node on the bus. */
+volatile CanTelem_t g_can = {0};
+volatile uint32_t g_can_wants_bridge = 0;
+volatile uint32_t g_can_loopback     = 0;   /* set, then g_can_reinit, to self-test */
+volatile uint32_t g_can_reinit       = 0;   /* write 1 to re-init FDCAN1            */
+volatile uint32_t g_can_tx_cmd       = 0;   /* CAN_CMD_* to transmit                */
+volatile uint32_t g_can_tx_go        = 0;   /* write 1 to send it                   */
+volatile uint32_t g_can_tx_len       = 0;   /* payload bytes: 0, 1, 4 or 8          */
+volatile int32_t  g_can_tx_arg       = 0;   /* first  int32 of the payload          */
+volatile int32_t  g_can_tx_arg2      = 0;   /* second int32, for the 8-byte forms   */
+static   uint32_t s_bridge_up        = 0;
 volatile uint32_t g_oc_trips  = 0;   /* overcurrent trip count */
 volatile int32_t  g_oc_peak   = 0;   /* worst |I| seen, mA     */
 volatile uint32_t g_faulted   = 0;   /* latched: needs clear_fault or retry */
@@ -325,6 +348,8 @@ int main(void)
   OpenLoop_Init((OpenLoopState_t *)&g_ol, MotorPwm_GetPeriod());
   FOC_Init((FocState_t *)&g_foc);
   Position_Init((PosState_t *)&g_pos);
+  (void)Can_Init(0U);
+  Can_GetTelem((CanTelem_t *)&g_can);
 
   /* DWT cycle counter, used to time the control ISR. */
   CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
@@ -617,6 +642,62 @@ int main(void)
         /* Gates last on the way up, so the PWM is already correct before the
          * drivers are allowed to act on it. */
         MotorPwm_GateEnable();
+      }
+    }
+
+    /* ---- CAN ------------------------------------------------------------ */
+    if (g_can_reinit != 0U)
+    {
+      g_can_reinit = 0U;
+      (void)Can_Init((uint8_t)g_can_loopback);
+    }
+
+    Can_Poll();
+    Can_CheckTimeout();
+    Can_PublishTelem();
+    Can_GetTelem((CanTelem_t *)&g_can);
+
+    /* Self-test transmit hook; see the g_can_tx_* declarations.
+     *
+     * Triggered by its own g_can_tx_go flag rather than by a non-zero command
+     * id. ESTOP is command 0x00, so keying the trigger off the command made
+     * the one frame most worth testing the one frame impossible to send. */
+    if (g_can_tx_go != 0U)
+    {
+      g_can_tx_go = 0U;
+      uint8_t  payload[8] = {0};
+      uint8_t  len = (uint8_t)g_can_tx_len;
+      uint32_t a   = (uint32_t)g_can_tx_arg;
+      uint32_t b   = (uint32_t)g_can_tx_arg2;
+
+      payload[0] = (uint8_t)a;         payload[1] = (uint8_t)(a >> 8);
+      payload[2] = (uint8_t)(a >> 16); payload[3] = (uint8_t)(a >> 24);
+      payload[4] = (uint8_t)b;         payload[5] = (uint8_t)(b >> 8);
+      payload[6] = (uint8_t)(b >> 16); payload[7] = (uint8_t)(b >> 24);
+
+      (void)Can_Send(CAN_ID(CAN_NODE_ID, g_can_tx_cmd & 0x1FU), payload, len);
+    }
+
+    /* CAN asked for the power stage. Same ordering as the bench block below -
+     * outputs before gates on the way up, gates first on the way down. */
+    if (g_can_wants_bridge != s_bridge_up)
+    {
+      s_bridge_up = g_can_wants_bridge;
+      if (s_bridge_up != 0U)
+      {
+        g_faulted = 0U;
+        MotorPwm_SetDutyPermille(0, 0, 0);
+        MotorPwm_EnableOutputs();
+        MotorPwm_GateEnable();
+        g_foc.id_ref = 0.0f;
+        g_foc.iq_ref = 0.0f;
+        g_foc.enabled = 1U;
+      }
+      else
+      {
+        g_foc.enabled = 0U;
+        MotorPwm_GateDisable();
+        MotorPwm_DisableOutputs();
       }
     }
 

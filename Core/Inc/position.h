@@ -184,6 +184,42 @@ extern "C" {
 #define POS_ACCEL_MAX_DPS2   3600
 #define POS_JERK_MAX_DPS3    36000
 
+/* ---- control modes ------------------------------------------------------
+ *
+ * ONE control-request interface, shared by every transport. The SWD tools and
+ * the CAN command frame both write the same fields, so there is exactly one
+ * place where "what is the motor being asked to do" is defined.
+ *
+ * `enabled` is the master switch and is independent of the mode: clearing it
+ * always stops the output, whatever mode is selected. The mode chooses which
+ * setpoint field is live and which loop runs.
+ *
+ *   MODE_IDLE      commands zero current. Selecting it is a soft stop that
+ *                  leaves the bridge energised and the loop running.
+ *   MODE_TORQUE    torque_cmd_ma goes straight through to iq, clamped by
+ *                  iq_max_ma. No outer loop - the motor will accelerate for
+ *                  as long as the current holds, so it is the only mode with
+ *                  no speed of its own.
+ *   MODE_VELOCITY  vel_cmd_dps through an acceleration ramp and a PI loop.
+ *   MODE_POSITION  cmd_deg_x10 through the S-curve profile and the PID.
+ *
+ * Changing mode is bumpless: integrators are cleared and the position target
+ * is re-seeded from where the rotor actually is, so nothing jumps. */
+#define MOTION_MODE_IDLE      0U
+#define MOTION_MODE_TORQUE    1U
+#define MOTION_MODE_VELOCITY  2U
+#define MOTION_MODE_POSITION  3U
+
+/* Velocity loop gains, in A per rad/s and A per (rad/s)*s.
+ *
+ * Sized from the position loop's own damping term, which is already a
+ * velocity gain: kd 0.12 A/(rad/s) is what holds that loop steady, so the
+ * velocity loop's proportional gain starts in the same neighbourhood. ki
+ * carries the steady-state load, since kp alone would leave a standing error
+ * against friction. Both are runtime-tunable; expect to trim them. */
+#define POS_VKP_DEFAULT      0.15f
+#define POS_VKI_DEFAULT      2.0f
+
 /* Below these the profile is considered arrived and is snapped exactly onto
  * the command, so it cannot creep on floating-point residue. */
 #define POS_ARRIVE_RAD       0.0005f   /* ~0.03 deg  */
@@ -225,6 +261,15 @@ typedef struct {
   int32_t  vel_filt_x1000; /* 84  velocity EMA alpha x1000                 */
   int32_t  iq_raw_ma;      /* 88  PID output BEFORE smoothing              */
 
+  /* ---- control request; see MOTION_MODE_* above ------------------------- */
+  uint32_t mode;           /* 92  MOTION_MODE_*                            */
+  int32_t  torque_cmd_ma;  /* 96  MODE_TORQUE setpoint, mA of iq           */
+  int32_t  vel_cmd_dps;    /* 100 MODE_VELOCITY setpoint, mech deg/s       */
+  int32_t  vkp_x1000;      /* 104 velocity loop A/(rad/s)  x1000           */
+  int32_t  vki_x1000;      /* 108 velocity loop A/(rad*s)  x1000           */
+  int32_t  vel_ref_dps;    /* 112 ramped velocity reference (telemetry)    */
+  int32_t  vel_integ_ma;   /* 116 velocity integrator alone  (telemetry)   */
+
   /* ---- internal ---------------------------------------------------------- */
   int32_t  pos_counts;     /* unwrapped multi-turn count                   */
   uint16_t last_raw;       /* previous 15-bit reading                      */
@@ -238,6 +283,9 @@ typedef struct {
   float    target_acc;     /* rad/s^2, profile state */
   float    vel_rads;
   float    integ;          /* A */
+  float    vel_ref;        /* rad/s, ramped velocity reference */
+  float    vel_integ;      /* A */
+  uint32_t last_mode;
   float    iq_raw;         /* A, PID output           */
   float    iq_out;         /* A, smoothed, what ships */
 } PosState_t;

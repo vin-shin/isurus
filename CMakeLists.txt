@@ -50,6 +50,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     ${CMAKE_SOURCE_DIR}/Core/Src/openloop.c
     ${CMAKE_SOURCE_DIR}/Core/Src/foc.c
     ${CMAKE_SOURCE_DIR}/Core/Src/position.c
+    ${CMAKE_SOURCE_DIR}/Core/Src/can.c
 )
 
 # The 20 kHz control ISR is a hard real-time deadline, not a hot loop to be
@@ -73,6 +74,9 @@ set_source_files_properties(
     ${CMAKE_SOURCE_DIR}/Core/Src/main.c
     PROPERTIES COMPILE_OPTIONS "-O2"
 )
+# can.c is deliberately NOT in that list. It is polled from the main loop and
+# never runs in interrupt context, so it has no deadline to miss and is more
+# useful left steppable.
 
 # Add include paths
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE

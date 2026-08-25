@@ -34,6 +34,16 @@ void Position_Init(PosState_t *p)
   p->accel_max_dps2 = POS_ACCEL_MAX_DPS2;
   p->jerk_max_dps3  = POS_JERK_MAX_DPS3;
   p->iq_max_ma    = POS_IQ_MAX_MA;
+  p->mode           = MOTION_MODE_POSITION;
+  p->torque_cmd_ma  = 0;
+  p->vel_cmd_dps    = 0;
+  p->vkp_x1000      = (int32_t)(POS_VKP_DEFAULT * 1000.0f);
+  p->vki_x1000      = (int32_t)(POS_VKI_DEFAULT * 1000.0f);
+  p->vel_ref_dps    = 0;
+  p->vel_integ_ma   = 0;
+  p->vel_ref        = 0.0f;
+  p->vel_integ      = 0.0f;
+  p->last_mode      = MOTION_MODE_POSITION;
   p->out_lpf_hz     = POS_OUT_LPF_HZ;
   p->vel_filt_x1000 = (int32_t)(POS_VEL_ALPHA * 1000.0f);
   p->zero_here    = 0U;
@@ -144,37 +154,120 @@ float Position_Step(PosState_t *p, uint16_t enc_raw)
   if (valpha >  1.0f) { valpha = 1.0f;   }
   p->vel_rads += valpha * (raw_vel - p->vel_rads);
 
+  float iq_max_a = (float)p->iq_max_ma * 0.001f;
+
+  /* A mode change must not kick the motor. Clear both integrators and re-seed
+   * the position target from where the rotor actually is, so whichever loop
+   * takes over starts from the present state rather than from whatever the
+   * previous mode left behind. */
+  if (p->mode != p->last_mode)
+  {
+    p->last_mode  = p->mode;
+    p->integ      = 0.0f;
+    p->vel_integ  = 0.0f;
+
+    /* Hand over at the state the rotor is ACTUALLY in, so a mode change while
+     * moving is continuous rather than a step. Seeding these to zero would ask
+     * a spinning rotor to be at rest, and the new loop would answer that with
+     * a violent correction. */
+    p->target_rad = p->pos_rad;
+    p->target_vel = p->vel_rads;
+    p->target_acc = 0.0f;
+    p->vel_ref    = p->vel_rads;
+
+    /* cmd_deg_x10 is deliberately NOT touched here.
+     *
+     * It is on the engage path below, where a stale target from boot could
+     * otherwise fling the rotor to mechanical zero. But a mode change is the
+     * operator explicitly asking for position control, and they will have
+     * written the setpoint first - overwriting it here silently discarded the
+     * command, so "p 0" after a velocity move held the current position
+     * instead of returning to zero. */
+  }
+
+  /* Servo-on, tracked on the `enabled` edge and NOTHING else.
+   *
+   * Seeding the position command from the present rotor angle is a safety
+   * measure for exactly one situation: cmd_deg_x10 is 0 at boot, so enabling
+   * a servo whose rotor is elsewhere would fling it to mechanical zero. It
+   * must therefore fire once per enable - not once per mode change.
+   *
+   * Keying it off the position branch instead was wrong twice over. The
+   * torque and velocity branches had to clear the flag to get seeding on the
+   * way back, and the idle branch cleared it too - so the first entry into
+   * position mode after either one silently overwrote whatever setpoint had
+   * just been written, and "p 0" held station instead of returning to zero. */
   if (p->enabled == 0U)
   {
-    /* Disabled: keep tracking the angle so an engage is bumpless, but hold
-     * the PID in reset and command nothing. */
+    p->was_enabled = 0U;
+  }
+  else if (p->was_enabled == 0U)
+  {
+    p->was_enabled = 1U;
+    p->target_rad  = p->pos_rad;
+    p->target_vel  = 0.0f;
+    p->target_acc  = 0.0f;
+    p->vel_ref     = 0.0f;
+    p->cmd_deg_x10 = (int32_t)(p->pos_rad * DEG_X10_PER_RAD);
+    p->integ       = 0.0f;
+    p->vel_integ   = 0.0f;
+  }
+
+  if ((p->enabled == 0U) || (p->mode == MOTION_MODE_IDLE))
+  {
+    /* Off, or idling: keep tracking the angle so an engage is bumpless, but
+     * hold every integrator in reset and command nothing. Note this does NOT
+     * clear was_enabled - idle is a mode, not a disable. */
     p->integ      = 0.0f;
+    p->vel_integ  = 0.0f;
+    p->vel_ref    = 0.0f;
     p->iq_raw     = 0.0f;
     p->target_rad = p->pos_rad;
     p->target_vel = 0.0f;
     p->target_acc = 0.0f;
-    p->was_enabled = 0U;
+  }
+  else if (p->mode == MOTION_MODE_TORQUE)
+  {
+    /* Straight through. Nothing here limits speed - only the back-EMF the
+     * current loop eventually cannot push against does. */
+    p->iq_raw = clampf((float)p->torque_cmd_ma * 0.001f, iq_max_a);
+  }
+  else if (p->mode == MOTION_MODE_VELOCITY)
+  {
+    float vkp  = (float)p->vkp_x1000 * 0.001f;
+    float vki  = (float)p->vki_x1000 * 0.001f;
+    float vcmd = (float)p->vel_cmd_dps * DEG_TO_RAD;
+    float amax = (float)p->accel_max_dps2 * DEG_TO_RAD;
+    if (amax <= 0.0f) { amax = 1.0f; }
+
+    /* Ramp the reference rather than stepping it, for the same reason the
+     * position mode has a profile: a step demands infinite acceleration and
+     * the loop can only answer it by saturating. */
+    float dv    = vcmd - p->vel_ref;
+    float dvmax = amax * POS_DT;
+    if (dv >  dvmax) { dv =  dvmax; }
+    if (dv < -dvmax) { dv = -dvmax; }
+    p->vel_ref += dv;
+
+    float verr  = p->vel_ref - p->vel_rads;
+    float integ = p->vel_integ + vki * verr * POS_DT;
+    float prop  = vkp * verr;
+    float iq    = prop + integ;
+
+    /* Same back-calculation as the position loop: hold the integrator at
+     * exactly what the output can deliver instead of letting it wind past. */
+    if (iq >  iq_max_a) { iq =  iq_max_a; integ =  iq_max_a - prop; }
+    if (iq < -iq_max_a) { iq = -iq_max_a; integ = -iq_max_a - prop; }
+
+    p->vel_integ = clampf(integ, iq_max_a);
+    p->iq_raw    = iq;
   }
   else
   {
-    if (p->was_enabled == 0U)
-    {
-      /* Servo-on. Take the target from where the rotor IS, not from whatever
-       * cmd_deg_x10 happens to hold - at boot that is 0, and a fresh enable
-       * would otherwise fling the rotor to mechanical zero at vel_max. The
-       * operator writes the target AFTER enabling. */
-      p->was_enabled = 1U;
-      p->target_rad  = p->pos_rad;
-      p->target_vel  = 0.0f;
-      p->target_acc  = 0.0f;
-      p->cmd_deg_x10 = (int32_t)(p->pos_rad * DEG_X10_PER_RAD);
-      p->integ       = 0.0f;
-    }
-
     float kp     = (float)p->kp_x1000 * 0.001f;
     float ki     = (float)p->ki_x1000 * 0.001f;
     float kd     = (float)p->kd_x1000 * 0.001f;
-    float iq_max = (float)p->iq_max_ma * 0.001f;
+    float iq_max = iq_max_a;
 
     /* ---- motion profile ------------------------------------------------ *
      *
@@ -360,6 +453,8 @@ float Position_Step(PosState_t *p, uint16_t enc_raw)
   p->target_vel_dps = (int32_t)(p->target_vel / DEG_TO_RAD);
   p->target_acc_dps2= (int32_t)(p->target_acc / DEG_TO_RAD);
   p->iq_raw_ma      = (int32_t)(p->iq_raw * 1000.0f);
+  p->vel_ref_dps    = (int32_t)(p->vel_ref / DEG_TO_RAD);
+  p->vel_integ_ma   = (int32_t)(p->vel_integ * 1000.0f);
   p->iq_out_ma      = (int32_t)(p->iq_out * 1000.0f);
   p->integ_ma       = (int32_t)(p->integ * 1000.0f);
   p->turns          = p->pos_counts / POS_COUNTS_PER_REV;
