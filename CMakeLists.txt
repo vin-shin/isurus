@@ -49,6 +49,29 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     ${CMAKE_SOURCE_DIR}/Core/Src/motor_pwm.c
     ${CMAKE_SOURCE_DIR}/Core/Src/openloop.c
     ${CMAKE_SOURCE_DIR}/Core/Src/foc.c
+    ${CMAKE_SOURCE_DIR}/Core/Src/position.c
+)
+
+# The 20 kHz control ISR is a hard real-time deadline, not a hot loop to be
+# tuned later: overrun the 50 us PWM period and control steps are simply lost.
+#
+# At -O0 every float operation round-trips through the stack, and the FOC
+# transforms plus the position profile are almost entirely float. Measured with
+# the whole project at -O0, worst-case ISR was 48.2 us of the 50 us budget -
+# 96% loaded, with a motion profile running.
+#
+# So the files on the ISR path are built optimised while everything else stays
+# at -O0 and remains comfortable to step through. If you need to single-step
+# the FOC maths itself, drop this block temporarily rather than lowering it
+# globally; the loop will overrun while you do.
+set_source_files_properties(
+    ${CMAKE_SOURCE_DIR}/Core/Src/foc.c
+    ${CMAKE_SOURCE_DIR}/Core/Src/position.c
+    ${CMAKE_SOURCE_DIR}/Core/Src/csense.c
+    ${CMAKE_SOURCE_DIR}/Core/Src/encoder.c
+    ${CMAKE_SOURCE_DIR}/Core/Src/motor_pwm.c
+    ${CMAKE_SOURCE_DIR}/Core/Src/main.c
+    PROPERTIES COMPILE_OPTIONS "-O2"
 )
 
 # Add include paths
@@ -59,6 +82,18 @@ target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
 # Add project symbols (macros)
 target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user defined symbols
+)
+
+# sqrtf() is required by the C standard to set errno on a negative argument, so
+# GCC emits a call into libm rather than the Cortex-M4F's single VSQRT.F32
+# instruction - even with -mfpu=fpv4-sp-d16. In the 20 kHz control ISR that is
+# not a micro-optimisation: the two sqrtf calls in the position profile cost
+# ~1400 cycles between them and pushed the worst-case ISR from 39.2 us to
+# 50.1 us, i.e. straight through the 50 us PWM period.
+#
+# Nothing in this project reads errno, so dropping that requirement is free.
+target_compile_options(${CMAKE_PROJECT_NAME} PRIVATE
+    -fno-math-errno
 )
 
 # Remove wrong libob.a library dependency when using cpp files

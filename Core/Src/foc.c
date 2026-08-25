@@ -8,6 +8,7 @@
 #include "foc.h"
 #include "main.h"
 #include <math.h>
+#include "fastmath.h"
 
 #define ONE_BY_SQRT3    0.57735026919f
 #define TWO_BY_SQRT3    1.15470053838f
@@ -16,6 +17,24 @@ void FOC_Reset(FocState_t *f)
 {
   f->id_integ = 0.0f;
   f->iq_integ = 0.0f;
+}
+
+void FOC_SetGainsForVbus(FocState_t *f, int32_t vbus_mv)
+{
+  if (f->vbus_track == 0U) { return; }
+  if ((vbus_mv < FOC_VBUS_MIN_MV) || (vbus_mv > FOC_VBUS_MAX_MV)) { return; }
+
+  float vbus = (float)vbus_mv * 0.001f;
+
+  /* Same derivation as the defaults, just against the bus that is actually
+   * present: pole-zero cancellation places the closed loop at FOC_BW_RADS,
+   * and dividing by vbus is what keeps it there as the supply moves. */
+  f->kp = (FOC_BW_RADS * FOC_L_H)   / vbus;
+  f->ki = (FOC_BW_RADS * FOC_R_OHM) / vbus;
+
+  f->vbus_used_mv = vbus_mv;
+  f->kp_x10000    = (int32_t)(f->kp * 10000.0f);
+  f->ki_x100      = (int32_t)(f->ki * 100.0f);
 }
 
 void FOC_Init(FocState_t *f)
@@ -27,6 +46,10 @@ void FOC_Init(FocState_t *f)
   f->vmax    = FOC_VMAX_DEFAULT;
   f->enabled     = 0U;
   f->elec_offset = FOC_ELEC_OFFSET_DEFAULT;
+  f->vbus_track   = 1U;
+  f->vbus_used_mv = FOC_VBUS_NOM_MV;
+  f->kp_x10000    = (int32_t)(f->kp * 10000.0f);
+  f->ki_x100      = (int32_t)(f->ki * 100.0f);
   f->updates = 0U;
   f->isr_max = 0U;
   FOC_Reset(f);
@@ -78,7 +101,7 @@ void FOC_Update(FocState_t *f, int32_t iu_ma, int32_t iw_ma, uint16_t enc_raw)
   /* Limit the vector magnitude, not each axis separately - clipping d and q
    * independently rotates the applied vector away from where it was asked
    * for. */
-  float vmag = sqrtf(f->vd * f->vd + f->vq * f->vq);
+  float vmag = fm_sqrtf(f->vd * f->vd + f->vq * f->vq);
   if (vmag > f->vmax)
   {
     float k = f->vmax / vmag;
@@ -144,7 +167,7 @@ void FOC_Update(FocState_t *f, int32_t iu_ma, int32_t iw_ma, uint16_t enc_raw)
   f->id_ref_ma = (int32_t)(f->id_ref * 1000.0f);
   f->elec_deg_x10 = (int32_t)(((uint32_t)f->elec_counts * 3600U) / FOC_ENC_COUNTS);
   f->vmax_pm   = (int32_t)(f->vmax * 1000.0f);
-  f->vmag_pm   = (int32_t)(sqrtf(f->vd * f->vd + f->vq * f->vq) * 1000.0f);
+  f->vmag_pm   = (int32_t)(fm_sqrtf(f->vd * f->vd + f->vq * f->vq) * 1000.0f);
 
   f->updates++;
 }

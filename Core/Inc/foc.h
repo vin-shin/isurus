@@ -39,9 +39,34 @@ extern "C" {
  *
  * The first attempt used kp = 0.08, which meant a 1 A error commanded 1.49 V
  * across an 85 mohm winding - a demand for 17 A. Loop gain of ~17 oscillates
- * no matter how clean the current feedback is. */
+ * no matter how clean the current feedback is.
+ *
+ * Note where Vbus sits: in the DENOMINATOR of both gains. It is not a
+ * calibration detail, it is the plant gain. Raise the supply to 31 V without
+ * touching these numbers and every duty the loop commands delivers twice the
+ * current it was sized for - the loop gain doubles, the phase margin goes with
+ * it, and a controller tuned to be critically damped at 15.5 V rings or
+ * oscillates. This is exactly the mistake the kp = 0.08 attempt above made,
+ * arrived at from the other direction.
+ *
+ * So these two are only the values for FOC_VBUS_NOM_MV. The live gains are
+ * recomputed from the measured bus by FOC_SetGainsForVbus - see below. */
 #define FOC_KP_DEFAULT      0.022f
 #define FOC_KI_DEFAULT      34.0f
+
+/* Plant parameters the gains are derived from, kept explicit so the bus-
+ * voltage rescale can recompute rather than merely scale. */
+#define FOC_BW_RADS         6283.0f    /* 1 kHz target bandwidth       */
+#define FOC_R_OHM           0.085f     /* phase resistance             */
+#define FOC_L_H             54.3e-6f   /* phase inductance             */
+#define FOC_VBUS_NOM_MV     15550      /* bus the defaults were sized at */
+
+/* Sanity window for the measured bus. Outside it the reading is not trusted
+ * and the gains are left alone: a bus of 0 would otherwise divide to infinity
+ * and put NaN into the duty registers, which is the single worst thing that
+ * can reach a motor bridge. */
+#define FOC_VBUS_MIN_MV     6000
+#define FOC_VBUS_MAX_MV     60000
 
 /* Modulation ceiling, as a fraction of the available bus voltage.
  *
@@ -112,9 +137,25 @@ typedef struct {
   int32_t  elec_deg_x10;      /* electrical angle, tenths of a degree */
   int32_t  vmax_pm;           /* modulation ceiling, per-mille        */
   int32_t  vmag_pm;           /* applied vector magnitude, per-mille  */
+
+  /* Bus-voltage gain tracking. Appended at the END of the struct on purpose:
+   * tools/foc_dash.sh addresses the mirrors above by fixed byte offset. */
+  uint32_t vbus_track;        /* 1 = rescale kp/ki from the measured bus */
+  int32_t  vbus_used_mv;      /* bus the live gains were computed for    */
+  int32_t  kp_x10000;         /* live kp, for SWD readout                */
+  int32_t  ki_x100;           /* live ki, for SWD readout                */
 } FocState_t;
 
 void FOC_Init(FocState_t *f);
+
+/* Recompute kp/ki for the measured bus voltage, holding the closed-loop
+ * bandwidth at FOC_BW_RADS regardless of what the supply is set to.
+ *
+ * Cheap enough to call from the main loop every time the bus is sampled; it
+ * does nothing unless f->vbus_track is set and the reading is inside the
+ * sanity window. Safe to call while the loop is running - kp and ki are read
+ * afresh each ISR, and a single-word float store cannot tear on this core. */
+void FOC_SetGainsForVbus(FocState_t *f, int32_t vbus_mv);
 
 /* One control step. iu_ma / iw_ma are signed milliamps, enc_raw is the 15-bit
  * encoder reading. Writes the resulting duties into the state; the caller

@@ -33,6 +33,7 @@
 #include "motor_pwm.h"
 #include "openloop.h"
 #include "foc.h"
+#include "position.h"
 #include <stdio.h>
 #include <stdarg.h>
 #include <string.h>
@@ -144,6 +145,7 @@ volatile BenchCmd_t g_cmd = {0};
 
 volatile OpenLoopState_t g_ol = {0};
 volatile FocState_t      g_foc = {0};
+volatile PosState_t      g_pos = {0};
 volatile uint32_t g_oc_trips  = 0;   /* overcurrent trip count */
 volatile int32_t  g_oc_peak   = 0;   /* worst |I| seen, mA     */
 volatile uint32_t g_faulted   = 0;   /* latched: needs clear_fault or retry */
@@ -170,6 +172,9 @@ static uint32_t s_rate_reads0 = 0;
 static uint32_t s_print_div   = 0;
 static uint32_t s_hb_t0       = 0;
 static uint32_t s_cs_div      = 0;
+
+/* 1 while the position loop owns g_foc.iq_ref. ISR-only. */
+static uint32_t s_pos_drove   = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -222,6 +227,31 @@ void HRTIM1_TIMA_IRQHandler(void)
     int32_t iw = CSense_RawToMa(w_raw, g_cs.w_zero);
 
     uint16_t enc = Encoder_ReadAngleFast();
+
+    /* Outer position loop. It self-decimates to POS_RATE_HZ, and is stepped
+     * even while disengaged (g_pos.enabled clear) so its multi-turn count and
+     * velocity estimate stay live - engaging then picks up from a correct
+     * state instead of from a cold start with a stale angle. Only its OUTPUT
+     * is conditional. */
+    float iq_cmd = Position_Step((PosState_t *)&g_pos, enc);
+
+    if (g_pos.enabled != 0U)
+    {
+      g_foc.id_ref = 0.0f;
+      g_foc.iq_ref = iq_cmd;
+      s_pos_drove  = 1U;
+    }
+    else if (s_pos_drove != 0U)
+    {
+      /* Disengaging must also drop the torque it was commanding. Simply
+       * ceasing to write iq_ref would leave the current loop holding the last
+       * servo output for as long as FOC stays enabled - the motor would keep
+       * pushing at whatever it happened to need at the instant the operator
+       * switched the position loop off. */
+      s_pos_drove  = 0U;
+      g_foc.id_ref = 0.0f;
+      g_foc.iq_ref = 0.0f;
+    }
 
     FOC_Update((FocState_t *)&g_foc, iu, iw, enc);
 
@@ -294,6 +324,7 @@ int main(void)
   MotorPwm_SetDutyPermille(0, 0, 0);
   OpenLoop_Init((OpenLoopState_t *)&g_ol, MotorPwm_GetPeriod());
   FOC_Init((FocState_t *)&g_foc);
+  Position_Init((PosState_t *)&g_pos);
 
   /* DWT cycle counter, used to time the control ISR. */
   CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
@@ -391,6 +422,15 @@ int main(void)
       s_cs_div = 0;
       (void)CSense_Read((CSenseTelem_t *)&g_cs);
       g_vbus_read_rc = CSense_ReadVbus((CSenseTelem_t *)&g_cs);
+
+      /* Keep the current-loop gains matched to the bus that is actually
+       * present. Vbus is the plant gain, so a supply change silently retunes
+       * the loop unless the gains move with it - see foc.h. Costs two divides
+       * at ~750 Hz and is a no-op if g_foc.vbus_track is cleared. */
+      if (g_vbus_read_rc == 0)
+      {
+        FOC_SetGainsForVbus((FocState_t *)&g_foc, (int32_t)g_cs.vbus_mv);
+      }
       g_adc1_state   = HAL_ADC_GetState(&hadc1);
       g_adc1_err     = HAL_ADC_GetError(&hadc1);
       MotorPwm_GetTelem((MotorPwmTelem_t *)&g_pwm);
