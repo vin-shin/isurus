@@ -7,14 +7,24 @@ turn it; the firmware answers with torque 20000 times a second.
 
     python tools/dial.py            start on the "detent" preset
     python tools/dial.py fine       start on a named preset
+    python tools/dial.py --demo     cycle every preset; type anything to take over
 
 The display is a fixed frame that repaints in place - it does not scroll, and
 a half-typed command survives the repaint. Commands:
 
     <preset>       switch feel; the names are listed on screen
+    menu [n]       bind the dial to an n-item menu (default 6)
+    volume         bind the dial to a 0-100 volume control
+    none           unbind, back to the plain preset
     set <k> <v>    change one parameter live, e.g. `set detent_ma 800`
     z              call the present position zero (re-centres the clicks)
     q              quit (disengages and opens the gates)
+
+`menu` and `volume` are the point of the whole exercise: a detent is only
+interesting once it indexes something, and an endstop is only interesting as
+the end of a real range. Both fix the detent geometry so the click count IS
+the value, then draw what the value means - so the thing you feel and the
+thing on screen are the same object.
 
 Everything is live - switching presets or nudging a parameter takes effect on
 the next control tick, so the fastest way to find a feel you like is to keep
@@ -85,9 +95,25 @@ PRESETS = {
                     endstop_k=0, _d="no detents, just a little viscosity"),
     "brake":   dict(detent_count=0, spring_k=0, damping=0, friction_ma=260,
                     endstop_k=0, _d="dry friction only - a drag knob"),
+    "magnet":  dict(detent_count=4, detent_ma=900, detent_shape=0, damping=70,
+                    spring_k=0, endstop_k=0, friction_ma=0,
+                    _d="4 strong sine wells - snaps to quarter turns"),
+    "stepped": dict(detent_count=24, detent_ma=700, detent_shape=1, damping=30,
+                    spring_k=0, endstop_k=0, friction_ma=180,
+                    _d="clicks plus drag - an instrument knob"),
     "off":     dict(detent_count=0, spring_k=0, damping=0, friction_ma=0,
                     endstop_k=0, _d="no force at all; the shaft spins free"),
 }
+
+# The dial bound to something. This is the point of the exercise: a detent is
+# only interesting if it indexes a value, and endstops are only interesting if
+# they are the ends of a range. An app fixes the detent geometry so that
+# detent_index IS the value, then draws whatever the value means.
+MENU_ITEMS = ["Play", "Pause", "Next", "Prev", "Shuffle", "Repeat",
+              "Volume", "Settings"]
+
+DEG_PER_STEP = 15.0          # 24 detents per revolution
+STEPS_PER_REV = 24
 
 
 def symbols():
@@ -235,11 +261,67 @@ class Dial:
 
 
 ESC = ""
-FRAME_H = 21          # rows the frame occupies; the prompt sits just below it
+FRAME_H = 22          # rows the frame occupies; the prompt sits just below it
 PROMPT_ROW = FRAME_H + 1
+DEMO_SECS = 6
 
 
-def dial_art(angle, detents, idx, w=34, h=13):
+SPARK = " .-=*#"
+
+
+def spark(vals, lo, hi, width):
+    """A one-row trace. Coarse on purpose - it is here to show shape (are the
+    detents firing? is the damping ringing?), not to be read off."""
+    if not vals:
+        return " " * width
+    v = vals[-width:]
+    out = ""
+    span = (hi - lo) or 1
+    for x in v:
+        i = int((x - lo) * (len(SPARK) - 1) / span)
+        out += SPARK[max(0, min(len(SPARK) - 1, i))]
+    return out.rjust(width)
+
+
+def app_params(app):
+    """Haptic gains that make detent_index line up with an app's value."""
+    if app is None:
+        return None
+    n = app["n"]
+    return dict(detent_count=STEPS_PER_REV, detent_ma=550, detent_shape=1,
+                damping=45, spring_k=0, friction_ma=0,
+                endstop_lo=0, endstop_hi=int((n - 1) * DEG_PER_STEP * 10),
+                endstop_k=5000, torque_max=900)
+
+
+def app_value(app, idx):
+    n = app["n"]
+    return max(0, min(n - 1, idx))
+
+
+def app_lines(app, idx, width=64):
+    """Two rows: what the dial is bound to, and where it is pointing."""
+    if app is None:
+        return ["", ""]
+    v = app_value(app, idx)
+    if app["kind"] == "menu":
+        cells = []
+        for i, name in enumerate(app["items"]):
+            cells.append((ESC + "[1;97m[" + name + "]" + ESC + "[0m") if i == v
+                         else (ESC + "[90m " + name + " " + ESC + "[0m"))
+        return ["   " + ESC + "[90mmenu" + ESC + "[0m   turn to select, "
+                "the ends are hard stops",
+                "   " + "".join(cells)]
+    # volume
+    pct = v * 5
+    filled = int(pct * 30 / 100)
+    barv = "".join("#" if i < filled else "." for i in range(30))
+    return ["   " + ESC + "[90mvolume" + ESC + "[0m  0 to 100 in steps of 5",
+            "   [" + ESC + "[1;92m" + barv + ESC + "[0m] "
+            + ESC + "[1;96m" + ("%3d" % pct) + ESC + "[0m"]
+
+
+def dial_art(angle, detents, idx, w=34, h=11):
     """The dial as a character grid: rim, one tick per detent, and a needle.
 
     Drawn CLOCKWISE-positive so the needle turns the way the shaft does. Screen
@@ -291,7 +373,8 @@ def bar(val, lo, hi, width=22):
     return out
 
 
-def build_frame(name, desc, idx, torque, endstop, angle, vel, params, msg):
+def build_frame(name, desc, idx, torque, endstop, angle, vel, params, msg,
+                trace, app):
     detents = params.get("detent_count", 0)
     tmax = params.get("torque_max", 900) or 900
     art = dial_art(angle, detents, idx)
@@ -324,6 +407,8 @@ def build_frame(name, desc, idx, torque, endstop, angle, vel, params, msg):
         lines.append("   %s   %s" % (row, right[i] if i < len(right) else ""))
     lines.append("")
     lines.append("   torque  %s" % bar(torque, -tmax, tmax))
+    lines.append("   %strace%s   %s" % (ESC + "[90m", ESC + "[0m",
+                                        spark(trace, -tmax, tmax, 44)))
     lines.append("   %sdetents%s %-4d %sstrength%s %-5d mA  %sdamping%s %.2f  %sshape%s %s" % (
         ESC + "[90m", ESC + "[0m", detents,
         ESC + "[90m", ESC + "[0m", params.get("detent_ma", 0),
@@ -331,6 +416,8 @@ def build_frame(name, desc, idx, torque, endstop, angle, vel, params, msg):
         ESC + "[90m", ESC + "[0m",
         "ramp" if params.get("detent_shape", 1) else "sine"))
     lines.append("   %s%s%s" % (ESC + "[90m", "  ".join(PRESETS), ESC + "[0m"))
+    for l in app_lines(app, idx):
+        lines.append(l)
     lines.append("   %s%s%s" % (ESC + "[93m", msg, ESC + "[0m"))
     return lines
 
@@ -359,7 +446,10 @@ def prompt():
 
 
 def main():
-    start = sys.argv[1] if len(sys.argv) > 1 else "detent"
+    args = [a for a in sys.argv[1:]]
+    demo = "--demo" in args
+    args = [a for a in args if a != "--demo"]
+    start = args[0] if args else "detent"
     if start not in PRESETS:
         sys.exit("unknown preset %r; try: %s" % (start, ", ".join(PRESETS)))
 
@@ -380,9 +470,15 @@ def main():
 
     d.bridge_up()
     name = start
+    app = None
     params = dict(PRESETS[name])
     d.apply(params)
-    msg = "grab the shaft and turn it - type a preset name to switch, q to quit"
+    trace = []
+    order = list(PRESETS)
+    demo_i = order.index(name)
+    demo_next = time.time() + DEMO_SECS
+    msg = ("DEMO: cycling every %ds - type anything to take over"
+           % DEMO_SECS) if demo else           "grab the shaft and turn it - type a preset name to switch, q to quit"
 
     # stdin on its own thread: the frame has to keep repainting while you type,
     # and there is no portable non-blocking console read under mintty.
@@ -399,10 +495,28 @@ def main():
     prompt()
 
     while True:
+        if demo and time.time() >= demo_next:
+            # Advance before drawing, not after: doing it afterwards left one
+            # frame on screen whose title named the old preset while the
+            # message announced the new one.
+            demo_i = (demo_i + 1) % len(order)
+            name = order[demo_i]
+            app = None
+            params = dict(PRESETS[name])
+            d.apply(params)
+            demo_next = time.time() + DEMO_SECS
+            msg = "DEMO %d/%d - %s" % (demo_i + 1, len(order),
+                                       PRESETS[name]["_d"])
+
         try:
             idx, torque, endstop, angle, vel, detents = d.telem()
-            draw(build_frame(name, PRESETS[name]["_d"], idx, torque, endstop,
-                             angle, vel, params, msg))
+            trace.append(torque)
+            if len(trace) > 44:
+                del trace[0]
+            title = name if app is None else "%s:%s" % (app["kind"], app["n"])
+            desc = PRESETS[name]["_d"] if app is None else app["desc"]
+            draw(build_frame(title, desc, idx, torque, endstop,
+                             angle, vel, params, msg, trace, app))
         except IOError as exc:
             msg = "lost the debug link: %s" % exc
             break
@@ -414,10 +528,35 @@ def main():
 
         parts = line.split()
         c = parts[0].lower() if parts else ""
+        if demo:
+            demo = False
+            msg = "demo stopped - you have the dial"
         if c in ("q", "quit", "exit"):
             break
+        elif c == "menu":
+            n = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 6
+            n = max(2, min(len(MENU_ITEMS), n))
+            app = dict(kind="menu", n=n, items=MENU_ITEMS[:n],
+                       desc="%d items, hard stops at both ends" % n)
+            params = app_params(app)
+            d.apply(params)
+            d.o.write(d.pos + 36, 1)          # zero: item 0 is where you are
+            msg = "bound to a %d-item menu" % n
+        elif c == "volume":
+            app = dict(kind="volume", n=21,
+                       desc="0 to 100 in steps of 5, hard stops at both ends")
+            params = app_params(app)
+            d.apply(params)
+            d.o.write(d.pos + 36, 1)
+            msg = "bound to a volume control"
+        elif c in ("none", "free-app", "unbind"):
+            app = None
+            params = dict(PRESETS[name])
+            d.apply(params)
+            msg = "unbound - back to preset %s" % name
         elif c in PRESETS:
             name = c
+            app = None
             params = dict(PRESETS[name])
             d.apply(params)
             msg = "%s: %s" % (name, PRESETS[name]["_d"])
