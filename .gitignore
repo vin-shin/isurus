@@ -47,3 +47,7 @@ step_trace_raw.txt
 # Generated figure sets from tools/viz.py report. Regenerate rather than
 # commit: every run restamps the plotted-at time, so these churn as binaries.
 reports/
+
+# Python bytecode from tools/
+__pycache__/
+*.pyc
