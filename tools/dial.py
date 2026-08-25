@@ -8,9 +8,10 @@ turn it; the firmware answers with torque 20000 times a second.
     python tools/dial.py            start on the "detent" preset
     python tools/dial.py fine       start on a named preset
 
-While it runs the display streams and you can still type. Commands:
+The display is a fixed frame that repaints in place - it does not scroll, and
+a half-typed command survives the repaint. Commands:
 
-    <preset>       switch feel; bare `list` shows them all
+    <preset>       switch feel; the names are listed on screen
     set <k> <v>    change one parameter live, e.g. `set detent_ma 800`
     z              call the present position zero (re-centres the clicks)
     q              quit (disengages and opens the gates)
@@ -233,23 +234,128 @@ class Dial:
             return False
 
 
-def render(name, idx, torque, endstop, angle, vel, detents):
-    """One line: the click count is the dial's value, the bar is where the
-    shaft sits inside the current well."""
-    if detents > 0:
-        span = 360.0 / detents
-        frac = ((angle + span / 2.0) % span) / span      # 0..1 across the well
-        cells = 21
-        pos = int(frac * (cells - 1))
-        bar = "".join("O" if i == pos else ("|" if i == cells // 2 else "-")
-                      for i in range(cells))
-        value = "click %+5d" % idx
-    else:
-        bar = "-" * 21
-        value = "  free    "
-    wall = {-1: "<LO ", 1: " HI>", 0: "    "}[endstop]
-    return ("  \033[1;97m%-8s\033[0m %s  [%s] %s  %+8.1f deg  %+5d d/s  "
-            "\033[90mtorque\033[0m %+5d mA " % (name, value, bar, wall, angle, vel, torque))
+ESC = ""
+FRAME_H = 21          # rows the frame occupies; the prompt sits just below it
+PROMPT_ROW = FRAME_H + 1
+
+
+def dial_art(angle, detents, idx, w=34, h=13):
+    """The dial as a character grid: rim, one tick per detent, and a needle.
+
+    Drawn CLOCKWISE-positive so the needle turns the way the shaft does. Screen
+    y grows downward while the maths convention has angle growing anticlockwise,
+    so the plotted angle is negated - the same correction pos_dash.sh needed.
+    """
+    import math
+    g = [[" "] * w for _ in range(h)]
+    cx, cy = w // 2, h // 2
+    rx, ry = w // 2 - 2, h // 2 - 1
+
+    def put(deg, r, ch):
+        a = math.radians(-deg)
+        x = int(round(cx + rx * r * math.cos(a)))
+        y = int(round(cy - ry * r * math.sin(a)))
+        if 0 <= x < w and 0 <= y < h:
+            g[y][x] = ch
+
+    for t in range(0, 360, 4):                      # rim
+        put(t, 1.0, ".")
+    if 0 < detents <= 48:                           # one tick per well
+        for i in range(detents):
+            put(i * 360.0 / detents, 1.0, "+")
+
+    for r in (0.25, 0.4, 0.55, 0.7):                # needle
+        put(angle, r, "=")
+    put(angle, 0.85, "O")
+    g[cy][cx] = "+"
+
+    # The click count deliberately is NOT drawn inside the dial: it would sit
+    # on the same rows the needle sweeps through and collide with it. It lives
+    # in the readout column instead.
+    return ["".join(r) for r in g]
+
+
+def bar(val, lo, hi, width=22):
+    span = (hi - lo) or 1
+    n = int((val - lo) * width / span)
+    n = max(0, min(width, n))
+    mid = width // 2
+    out = ""
+    for i in range(width):
+        if i == mid:
+            out += "#" if i < n else "|"
+        elif i < n:
+            out += "#"
+        else:
+            out += "."
+    return out
+
+
+def build_frame(name, desc, idx, torque, endstop, angle, vel, params, msg):
+    detents = params.get("detent_count", 0)
+    tmax = params.get("torque_max", 900) or 900
+    art = dial_art(angle, detents, idx)
+
+    right = [
+        "",
+        "%sclick%s" % (ESC + "[90m", ESC + "[0m") if detents else
+        "%sfree spin%s" % (ESC + "[90m", ESC + "[0m"),
+        "   %s%+d%s" % (ESC + "[1;96m", idx, ESC + "[0m") if detents else "",
+        "",
+        "angle   %+9.1f deg" % angle,
+        "vel     %+6d d/s" % vel,
+        "torque  %+6d mA" % torque,
+        "",
+        "endstop   %s" % {-1: ESC + "[1;91m< LO" + ESC + "[0m",
+                          1: ESC + "[1;91mHI >" + ESC + "[0m",
+                          0: ESC + "[90m--" + ESC + "[0m"}[endstop],
+        "",
+        "",
+        "",
+        "",
+    ]
+
+    lines = []
+    lines.append("  %sHAPTIC DIAL%s  makolongfin2      %s%-9s%s %s%s%s" % (
+        ESC + "[1;97m", ESC + "[0m", ESC + "[1;95m", name, ESC + "[0m",
+        ESC + "[90m", desc, ESC + "[0m"))
+    lines.append("")
+    for i, row in enumerate(art):
+        lines.append("   %s   %s" % (row, right[i] if i < len(right) else ""))
+    lines.append("")
+    lines.append("   torque  %s" % bar(torque, -tmax, tmax))
+    lines.append("   %sdetents%s %-4d %sstrength%s %-5d mA  %sdamping%s %.2f  %sshape%s %s" % (
+        ESC + "[90m", ESC + "[0m", detents,
+        ESC + "[90m", ESC + "[0m", params.get("detent_ma", 0),
+        ESC + "[90m", ESC + "[0m", params.get("damping", 0) / 100.0,
+        ESC + "[90m", ESC + "[0m",
+        "ramp" if params.get("detent_shape", 1) else "sine"))
+    lines.append("   %s%s%s" % (ESC + "[90m", "  ".join(PRESETS), ESC + "[0m"))
+    lines.append("   %s%s%s" % (ESC + "[93m", msg, ESC + "[0m"))
+    return lines
+
+
+def draw(lines):
+    """Repaint in place, without disturbing whatever is being typed.
+
+    The cursor is saved first and restored last, and the frame is written with
+    absolute row addressing that never touches the prompt row. That is what
+    keeps a half-typed command on screen while the display keeps updating - a
+    plain reprint would either erase it or scroll the frame away.
+    """
+    out = [ESC + "[s"]
+    for i, line in enumerate(lines[:FRAME_H]):
+        out.append("%s[%d;1H%s%s[K" % (ESC, i + 1, line, ESC))
+    for i in range(len(lines), FRAME_H):
+        out.append("%s[%d;1H%s[K" % (ESC, i + 1, ESC))
+    out.append(ESC + "[u")
+    sys.stdout.write("".join(out))
+    sys.stdout.flush()
+
+
+def prompt():
+    sys.stdout.write("%s[%d;1H%s[K> " % (ESC, PROMPT_ROW, ESC))
+    sys.stdout.flush()
 
 
 def main():
@@ -265,19 +371,21 @@ def main():
     def teardown():
         ok = d.safe_off()
         ocd.close()
-        print("\npower stage safe." if ok else
-              "\n!! COULD NOT DISENGAGE - POWER DOWN THE BOARD MANUALLY !!")
+        # Leave the terminal below the frame, not on top of it.
+        sys.stdout.write("%s[%d;1H%s[K\n" % (ESC, PROMPT_ROW + 1, ESC))
+        print("power stage safe." if ok else
+              "!! COULD NOT DISENGAGE - POWER DOWN THE BOARD MANUALLY !!")
 
     atexit.register(teardown)
 
     d.bridge_up()
     name = start
-    d.apply(PRESETS[name])
-    print("\nGrab the shaft and turn it. Type a preset name to switch, `q` to quit.")
-    print("presets: " + ", ".join(PRESETS) + "\n")
+    params = dict(PRESETS[name])
+    d.apply(params)
+    msg = "grab the shaft and turn it - type a preset name to switch, q to quit"
 
-    # stdin on its own thread: the display has to keep streaming while you
-    # type, and there is no portable non-blocking console read under mintty.
+    # stdin on its own thread: the frame has to keep repainting while you type,
+    # and there is no portable non-blocking console read under mintty.
     q = queue.Queue()
 
     def reader():
@@ -287,14 +395,16 @@ def main():
 
     threading.Thread(target=reader, daemon=True).start()
 
+    sys.stdout.write(ESC + "[2J")
+    prompt()
+
     while True:
         try:
             idx, torque, endstop, angle, vel, detents = d.telem()
-            sys.stdout.write("\r\033[K" + render(name, idx, torque, endstop,
-                                                 angle, vel, detents))
-            sys.stdout.flush()
+            draw(build_frame(name, PRESETS[name]["_d"], idx, torque, endstop,
+                             angle, vel, params, msg))
         except IOError as exc:
-            print("\nlost the debug link: %s" % exc)
+            msg = "lost the debug link: %s" % exc
             break
 
         try:
@@ -302,31 +412,33 @@ def main():
         except queue.Empty:
             continue
 
-        print()
         parts = line.split()
-        if not parts:
-            continue
-        c = parts[0].lower()
+        c = parts[0].lower() if parts else ""
         if c in ("q", "quit", "exit"):
             break
-        elif c == "list":
-            for k, v in PRESETS.items():
-                print("  %-8s %s" % (k, v["_d"]))
-        elif c == "z":
-            d.o.write(d.pos + 36, 1)
-        elif c == "set" and len(parts) == 3 and parts[1] in FIELDS:
-            try:
-                d.set(parts[1], float(parts[2]))
-            except ValueError:
-                print("  not a number: %r" % parts[2])
-        elif c == "set":
-            print("  fields: " + ", ".join(FIELDS))
         elif c in PRESETS:
             name = c
-            d.apply(PRESETS[name])
-            print("  -> %s: %s" % (name, PRESETS[name]["_d"]))
+            params = dict(PRESETS[name])
+            d.apply(params)
+            msg = "%s: %s" % (name, PRESETS[name]["_d"])
+        elif c == "set" and len(parts) == 3 and parts[1] in FIELDS:
+            try:
+                v = int(round(float(parts[2])))
+                d.set(parts[1], v)
+                params[parts[1]] = v
+                msg = "%s = %d" % (parts[1], v)
+            except ValueError:
+                msg = "not a number: %r" % parts[2]
+        elif c == "set":
+            msg = "fields: " + ", ".join(FIELDS)
+        elif c == "z":
+            d.o.write(d.pos + 36, 1)
+            msg = "zeroed here"
+        elif c == "":
+            pass
         else:
-            print("  ? try a preset name, `list`, `set <field> <value>`, `z`, `q`")
+            msg = "? preset name, `set <field> <value>`, `z`, or `q`"
+        prompt()
 
 
 if __name__ == "__main__":
