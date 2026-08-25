@@ -99,6 +99,13 @@ jobs:
       # distinct reads. False positives of that shape are worse than no
       # analysis: they teach you to ignore the job.
       #
+      # -D__GNUC__ and the Drivers suppression are both about CMSIS. Without
+      # the define, cmsis_compiler.h reaches its `#error Unknown compiler` and
+      # cppcheck reports that as an error in a vendor header - a red job caused
+      # entirely by the analyser not knowing which toolchain this is. Findings
+      # inside Drivers/ are suppressed for the same reason the scope excludes
+      # them: not this project's code to fix.
+      #
       # This step is the one that matters most, and its value is UNVERIFIED.
       # The work plan's motivating bug is `errors & !MASK` - logical NOT where
       # bitwise was meant - and that is NOT caught by any GCC warning flag;
@@ -113,10 +120,11 @@ jobs:
                    --inline-suppr \
                    --suppress=missingIncludeSystem \
                    --suppress=unusedFunction \
+                   --suppress=*:Drivers/* \
                    --error-exitcode=1 \
                    --platform=arm32-wchar_t4 \
                    --std=c11 \
-                   -DSTM32G474xx \
+                   -DSTM32G474xx -D__GNUC__=10 \
                    -I Core/Inc \
                    -I Drivers/CMSIS/Include \
                    -I Drivers/CMSIS/Device/ST/STM32G4xx/Include \
