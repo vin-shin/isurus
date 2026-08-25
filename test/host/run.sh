@@ -44,6 +44,12 @@ build "$ROOT/Core/Src/foc.c" "$OUT/test_foc.exe"
 "$OUT/test_foc.exe"
 rc=$?
 
+# Also build the CSV dumper, so `tools/viz.py compare` has something to plot
+# against a bench capture. Same harness (sim.h) as the assertions above, so a
+# plot cannot show behaviour the tests never exercised.
+"$CC" -std=gnu11 -O2 -g -Wall -Wextra -Werror "${INC[@]}"       "$ROOT/test/host/sim_dump.c" "$ROOT/test/host/pmsm.c"       "$ROOT/test/host/cordic_model.c" "$ROOT/Core/Src/foc.c"       -o "$OUT/sim_dump.exe" -lm
+echo "sim_dump: $OUT/sim_dump.exe"
+
 if [ "${1:-}" = "--mutants" ]; then
   echo "verifying the tests can fail"
   echo "---------------------------"
