@@ -56,6 +56,89 @@ extern "C" {
 
 /* Plant parameters the gains are derived from, kept explicit so the bus-
  * voltage rescale can recompute rather than merely scale. */
+/* Closed-loop current bandwidth. 1 kHz here, and NOT a number to copy to the
+ * HV inverter without reading the rest of this comment.
+ *
+ * ---- what sets the ceiling -------------------------------------------
+ *
+ * After pole-zero cancellation the open loop is just an integrator behind the
+ * transport delay of FOC_DELAY_PERIODS (foc.c):
+ *
+ *     L(s) = (w_bw / s) * exp(-s*Td)
+ *
+ * The integrator contributes -90 degrees at every frequency and the delay
+ * contributes -w*Td, so at crossover
+ *
+ *     PM = 90 deg - w_bw * Td
+ *
+ * That is the whole story: bandwidth and phase margin trade against each
+ * other through Td alone, and Td is set by the switching frequency. On this
+ * bench Td is 55 us (1.65 periods at 30 kHz, including the 5 us ADC lead), so
+ * FOC_BW_RADS = 6283 rad/s gives PM = 70 degrees. Healthy, and the reason the
+ * bench value is being left alone.
+ *
+ * ---- what that means for the EMRAX at 917 Hz electrical --------------
+ *
+ * Taking Td = 1.5/f_sw (the HV board's ADC lead is not known yet and only
+ * makes this worse):
+ *
+ *     f_sw     Td       bw @ PM 60      x f_e     ripple into 255 uH
+ *     10 kHz   150 us     556 Hz        0.61x     58.8 A pp  (19.6%)
+ *     20 kHz    75 us    1111 Hz        1.21x     29.4 A pp  ( 9.8%)
+ *     30 kHz    50 us    1667 Hz        1.82x     19.6 A pp  ( 6.5%)
+ *
+ * The usual "current loop wants 5 to 10 times f_e" would need 83 kHz for 5x
+ * and 165 kHz for 10x. At 600 V and 300 A those are not switching
+ * frequencies, they are a thermal design that does not close - 30 kHz is
+ * already at the aggressive end for a SiC traction bridge at this power.
+ *
+ * So the honest answer to "is 30 kHz enough" is: it is enough for everything
+ * except the thing the rule of thumb is actually about, and no reachable
+ * frequency fixes that one. Bandwidth is not the lever here.
+ *
+ * ---- which changes what the design has to get right -------------------
+ *
+ * Torque RESPONSE is not the binding requirement and never was. 1667 Hz is a
+ * 0.21 ms rise time against a VCU that issues torque commands at 100-1000 Hz.
+ * The requirement the 5-10x rule encodes is DISTURBANCE REJECTION - having
+ * enough loop gain at f_e to reject the cross-coupling as an unknown. That is
+ * what cannot be bought at any practical f_sw, and the scale of it is why:
+ *
+ *     w_e * Lq * iq at 917 Hz and 300 A = 441 V, or 73% of a 600 V bus
+ *     w_e * lambda_m at 917 Hz          = 346 V, or 58% of the bus
+ *
+ * Three quarters of the bus is not a disturbance a controller rejects. It has
+ * to be computed and fed forward, which is what FOC_LD_H / FOC_LQ_H /
+ * FOC_LAMBDA_M_WB and f->decouple are for. That makes the decoupling
+ * load-bearing rather than an optimisation, and moves the risk from the
+ * controller onto the MOTOR PARAMETERS:
+ *
+ *     Lq error 10%  ->  44 V uncancelled  ( 7.3% of bus)
+ *     Lq error 20%  ->  88 V uncancelled  (14.7% of bus)
+ *     lambda_m 11%  ->  38 V uncancelled  ( 6.4% of bus)
+ *
+ * 20% is not a pessimistic figure for Lq on an axial-flux machine at 300 A -
+ * that is what saturation does - and 11% is roughly what 100 K does to NdFeB
+ * remanence. Against kp = w_bw*Lq = 2.67 V/A, a 34 V feedforward error is a
+ * 13 A standing error for the integrator to walk out.
+ *
+ * ---- what to take to the hardware review ------------------------------
+ *
+ *   1. 30 kHz is defensible and 20 kHz is workable; the choice between them
+ *      is a loss-and-cooling question, not a control-bandwidth one, because
+ *      neither reaches the coupling-rejection bandwidth and both are far
+ *      beyond what torque response needs.
+ *   2. Do not spend thermal budget buying switching frequency in the hope of
+ *      controller margin. It buys 1.2x versus 1.8x of f_e; the requirement is
+ *      5x. The money goes to feedforward accuracy instead.
+ *   3. Characterise Lq against current and lambda_m against temperature, and
+ *      budget for a table rather than the two constants that suffice at 48 V.
+ *      This is the deliverable that decides whether the HV current loop
+ *      works, and it is a motor-test-rig task, not a firmware one.
+ *   4. Transport-delay compensation gets MORE important, not less: at 917 Hz
+ *      the uncompensated frame error is 18.2 degrees, and sin(18.2) = 0.31 of
+ *      a 441 V coupling term is not a rounding error. See foc.c.
+ */
 #define FOC_BW_RADS         6283.0f    /* 1 kHz target bandwidth       */
 #define FOC_R_OHM           0.085f     /* phase resistance             */
 #define FOC_L_H             54.3e-6f   /* phase inductance             */
