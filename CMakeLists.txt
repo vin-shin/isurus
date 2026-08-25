@@ -34,8 +34,68 @@ enable_language(C ASM)
 # Create an executable object type
 add_executable(${CMAKE_PROJECT_NAME})
 
+# Release build settings, set here rather than in cmake/gcc-arm-none-eabi.cmake
+# because CubeMX regenerates that file.
+#
+# -O2, not the -Os the toolchain file defaults to. This project has a hard
+# 33.3 us deadline in the control ISR and -Os trades speed for size on a part
+# using 10% of its flash - the wrong way round. The per-file -O2 pins further
+# down exist precisely because -O0 could not meet that deadline; under Release
+# they simply become redundant rather than conflicting.
+#
+# -g1 rather than -g0. It costs nothing in the image - debug info is not
+# loaded to the target - and without it a HardFault address cannot be turned
+# back into a function name, which is the one thing anyone wants from a
+# release build that has just died on a car.
+#
+# Set before add_subdirectory so the vendor drivers are built the same way;
+# "Release" meaning two different optimisation levels in one image is the kind
+# of difference that shows up later as a timing mystery.
+set(CMAKE_C_FLAGS_RELEASE "-O2 -g1")
+set(CMAKE_CXX_FLAGS_RELEASE "-O2 -g1")
+
 # Add STM32CubeMX generated sources
 add_subdirectory(cmake/stm32cubemx)
+
+# Warnings, on THIS project's sources only.
+#
+# -Wall is already set in cmake/gcc-arm-none-eabi.cmake, which is the file
+# CubeMX regenerates; putting -Wextra -Werror here instead keeps it out of the
+# regeneration's way.
+#
+# Scoped to ${CMAKE_PROJECT_NAME} rather than applied globally on purpose. The
+# vendor HAL currently compiles clean at -Wall -Wextra - that was checked, all
+# three sampled drivers gave zero - but it is not code this project gets to
+# fix, and a CubeMX or HAL version bump that introduced one warning would
+# otherwise stop the build for a reason nobody here can act on.
+#
+# The fallout from turning these on was nothing: all ten project sources
+# already compiled clean at -Wall -Wextra -O2. That is worth stating, because
+# it means -Werror costs nothing today and only ever fires on something newly
+# introduced.
+target_compile_options(${CMAKE_PROJECT_NAME} PRIVATE
+    -Wextra
+    -Werror
+)
+
+# Do NOT expect this to catch the `errors & !MASK` class of bug.
+#
+# The work plan cites a sibling project with a live bug of that shape - logical
+# NOT where bitwise was meant, silently disabling an overcurrent interlock -
+# and expects -Wall to catch it. It does not. Tested on this toolchain against
+# both a constant and a variable mask:
+#
+#   -Wall -Wextra                  0 warnings
+#   + -Wlogical-op                 0 warnings
+#   + -Wint-in-bool-context        0 warnings
+#   + -Wbool-operation             0 warnings
+#   + -Wconversion                 0 warnings
+#
+# and GCC compiles `e & !MASK` to `movs r0, #0`, so the interlock becomes
+# unconditional dead code with no diagnostic at any level. That class needs a
+# static analyser - cppcheck or clang-tidy, per the plan's CI item - not a
+# compiler flag. Neither is installed here, so which of them actually catches
+# it is still unverified and should be confirmed before relying on it.
 
 # Link directories setup
 target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
