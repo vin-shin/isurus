@@ -39,6 +39,7 @@
 #include "limits.h"
 #include "trace.h"
 #include "drive.h"
+#include "led.h"
 #include <stdio.h>
 #include <stdarg.h>
 #include <string.h>
@@ -94,10 +95,10 @@ typedef struct {
  * character is out. The SWD reader is unaffected either way. */
 #define TELEM_PRINT_EVERY   200U
 
-/* Heartbeat LED on PB2. PB1 is the brightness LED driven by TIM3_CH4, so a
- * separate pin is needed for a plain "still alive" blink. */
-#define HEARTBEAT_PIN       GPIO_PIN_2
-#define HEARTBEAT_MS        1000U
+/* The two front-panel LEDs are PB1 and PB2 - see led.h for the scheme. PB2
+ * used to be a plain 1 Hz "still alive" toggle from here; it now carries the
+ * drive state and the fault cause, and PB1 is stepped from the control ISR.
+ */
 
 /* Sample the current sensors every N encoder reads. */
 /* Sample the current sensors every N encoder reads. Fast, because this is the
@@ -224,7 +225,6 @@ static uint32_t s_ol_tick = 0;
 static uint32_t s_rate_t0     = 0;  /* window start for the rate counter */
 static uint32_t s_rate_reads0 = 0;
 static uint32_t s_print_div   = 0;
-static uint32_t s_hb_t0       = 0;
 static uint32_t s_cs_div      = 0;
 
 /* 1 while the position loop owns g_foc.iq_ref. ISR-only. */
@@ -423,6 +423,12 @@ void HRTIM1_TIMA_IRQHandler(void)
    * completion, which is the property the bridge actually depends on. */
   Drive_WatchdogFeed();
 
+  /* Power-stage lamp, stepped from HERE rather than the main loop on purpose:
+   * driven by the control ISR it also attests that the control ISR is
+   * running, which a main-loop indicator cannot. Outside the g_foc.enabled
+   * gate above, so it keeps blinking with the bridge down. See led.h. */
+  Led_StepIsr();
+
   uint32_t dt = DWT->CYCCNT - t0;
   g_foc.isr_cycles = dt;
   if (dt > g_foc.isr_max) { g_foc.isr_max = dt; }
@@ -506,6 +512,7 @@ int main(void)
    * starts in INIT and the first Drive_Step from the main loop moves it to
    * SELFTEST, so the checks run against a settled system rather than against
    * peripherals that are still initialising. */
+  Led_Init();
   Drive_Init();
 
   /* Watchdog last of all. It is fed from the control ISR, so it must not be
@@ -848,14 +855,13 @@ int main(void)
 
     Drive_Step(now);
 
-    /* Heartbeat so a stalled loop is visible without a debugger attached.
-     * Rate-limited off HAL_GetTick - at ~15 kHz, toggling per iteration would
-     * be a blur, not a blink. */
-    if ((now - s_hb_t0) >= HEARTBEAT_MS)
-    {
-      s_hb_t0 = now;
-      HAL_GPIO_TogglePin(GPIOB, HEARTBEAT_PIN);
-    }
+    /* Front panel. PB2 carries the drive state and, in FAULT, the cause as a
+     * blink count - see led.h. This replaces the old 1 Hz heartbeat toggle,
+     * which proved only that the main loop was running and could say nothing
+     * about why the drive was refusing to move. PB1 is stepped from the
+     * control ISR instead, so between them the pair distinguishes a hung main
+     * loop from a hung ISR. */
+    Led_StepMain(now);
 
   }
   /* USER CODE END 3 */

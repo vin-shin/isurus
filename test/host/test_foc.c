@@ -19,13 +19,14 @@
 #include "foc.h"
 #include "main.h"
 #include "pmsm.h"
+#include "sim.h"
 
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
 
-#define TS      (1.0 / 30000.0)
-#define TWO_PI  6.283185307179586
+#define TS      SIM_TS
+#define TWO_PI  SIM_TWO_PI
 
 static int g_pass = 0, g_fail = 0;
 
@@ -33,51 +34,6 @@ static void check(int ok, const char *what, const char *detail)
 {
   if (ok) { g_pass++; printf("  PASS  %s\n", what); }
   else    { g_fail++; printf("  FAIL  %s\n          %s\n", what, detail); }
-}
-
-/* ---- the simulated drive ------------------------------------------------ */
-
-typedef struct {
-  Pmsm_t     m;
-  FocState_t f;
-  double     d_u, d_v, d_w;    /* duties in flight, applied next step */
-  int        primed;
-} Sim_t;
-
-static void sim_init(Sim_t *s)
-{
-  memset(s, 0, sizeof(*s));
-  Pmsm_Init(&s->m);
-  FOC_Init(&s->f);
-  Cordic_Host_Reset();                 /* FOC_Init used its own access order */
-  FOC_SetGainsForVbus(&s->f, (int32_t)(s->m.vbus * 1000.0));
-  s->d_u = s->d_v = s->d_w = 0.5;      /* zero volts */
-}
-
-static void sim_step(Sim_t *s, double t_load)
-{
-  double iu, iv, iw, vd, vq;
-
-  /* Apply what the PREVIOUS control step commanded - the transport delay. */
-  Pmsm_DutiesToDq(&s->m, s->d_u, s->d_v, s->d_w, &vd, &vq);
-  Pmsm_Step(&s->m, vd, vq, t_load, TS);
-
-  Pmsm_Phases(&s->m, &iu, &iv, &iw);
-  FOC_Update(&s->f,
-             (int32_t)lround(iu * 1000.0),
-             (int32_t)lround(iw * 1000.0),
-             (uint16_t)Pmsm_EncoderCount(&s->m),
-             (float)s->m.omega_m);
-
-  s->d_u = s->f.duty_u;
-  s->d_v = s->f.duty_v;
-  s->d_w = s->f.duty_w;
-}
-
-static void sim_run(Sim_t *s, double seconds, double t_load)
-{
-  long n = lround(seconds / TS);
-  for (long i = 0; i < n; i++) { sim_step(s, t_load); }
 }
 
 /* ---- tests -------------------------------------------------------------- */
