@@ -43,6 +43,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ELF="$ROOT/build/Debug/makolongfin2.elf"
 
+
 if [ "${1:-}" != "--run" ]; then
   awk 'NR>1 { if (!/^#/) exit; sub(/^# ?/, ""); print }' "$0"
   exit 1
@@ -51,6 +52,27 @@ shift
 IQ_LO_MA="${1:-400}"
 IQ_HI_MA="${2:-1200}"
 REPS="${3:-12}"
+
+# Trace decimation, 1 = every ISR tick. The default 512-sample buffer is 17 ms
+# at 30 kHz, which holds a current-loop step and nothing longer. A REVERSAL
+# takes a few hundred ms, so set STEP_TRACE_DECIM to trade resolution for
+# window:  STEP_TRACE_DECIM=24 tools/step_trace.sh --run 1000 -1000 6
+DECIM="${STEP_TRACE_DECIM:-1}"
+
+# How long to hold iq_lo before each step, ms. 500 is plenty to settle a
+# CURRENT step, but a REVERSAL has to re-accelerate the rotor from the other
+# direction, and approaching terminal speed is asymptotic - the drive runs out
+# of volts and the last few percent take far longer than the constant-current
+# part suggests. A reversal measured below terminal speed reads as a pass:
+# the work plan records exactly that trap, 1359 vs 1375 mA from a reversal
+# that never got there.
+SETTLE_MS="${STEP_TRACE_SETTLE_MS:-500}"
+# How long the buffer takes to fill, derived from the header rather than
+# written here: TRACE_LEN samples, one kept per DECIM ticks, at PWM_FREQ_HZ.
+# The old hard-coded 60 ms silently truncated any capture with decim > 3.
+PWM_HZ=$(awk '/#define +PWM_FREQ_HZ/ { gsub(/[^0-9]/,"",$3); print $3 }'          "$ROOT/Core/Inc/motor_pwm.h")
+TRACE_LEN=$(awk '/#define +TRACE_LEN/ { gsub(/[^0-9]/,"",$3); print $3 }'          "$ROOT/Core/Inc/trace.h")
+FILL_MS=$(( TRACE_LEN * DECIM * 1000 / PWM_HZ + 40 ))
 FLAG="${4:-decouple}"
 
 NM="${NM:-arm-none-eabi-nm}"
@@ -71,6 +93,8 @@ IDA=$(printf "0x%x" $((FOC+0)));   IQA=$(printf "0x%x" $((FOC+4)))
 ENA=$(printf "0x%x" $((FOC+112))); DC=$(printf "0x%x" $((FOC+196)))
 OM=$(printf "0x%x" $((FOC+200)));  DEC=$(printf "0x%x" $((FOC+208)))
 VQFF=$(printf "0x%x" $((FOC+220)))
+IDINT=$(printf "0x%x" $((FOC+64)))
+IQINT=$(printf "0x%x" $((FOC+68)))
 TCOUNT=$(printf "0x%x" $((TRC+8)))
 VBUSU=$(printf "0x%x" $((FOC+176)))   # vbus_used_mv
 STEPIQ=$(printf "0x%x" $(sym g_step_iq_ma))
@@ -151,7 +175,7 @@ mww $PMODE 0
 mww $PENA 0
 mww $IDA 0
 mww $ENA 1
-mww $TDECIM 1
+mww $TDECIM $DECIM
 sleep 100
 EOF
 
@@ -164,10 +188,15 @@ for dc in 1 0; do
   echo "sleep 2500"
   for rep in $(seq 1 "$REPS"); do
     echo "mww $IQA $IQ_LO"
-    echo "sleep 500"
+    echo "sleep $SETTLE_MS"
+    # Speed BEFORE the step. META is read after the buffer fills, so on a
+    # reversal it reports the speed the rotor ended at, not the one it started
+    # from - and the question is always whether it had reached terminal.
+    echo "echo \"PRE $dc $rep [expr {[read_memory $OM 32 1]}] [expr {[read_memory $VBUSU 32 1]}] [expr {[read_memory $IDINT 32 1]}] [expr {[read_memory $IQINT 32 1]}]\""
     echo "mww $STEPIQ $IQ_HI_MA"
     echo "mww $STEPRQ 1"
-    echo "sleep 60"
+    echo "sleep $FILL_MS"
+    echo "echo \"POST $dc $rep [expr {[read_memory $IDINT 32 1]}] [expr {[read_memory $IQINT 32 1]}] [expr {[read_memory $OM 32 1]}]\""
     echo "echo \"META $dc $rep [expr {[read_memory $OM 32 1]}] [expr {[read_memory $VQFF 32 1]}] [expr {[read_memory $TDONE 32 1]}] [expr {[read_memory $TCOUNT 32 1]}] [expr {[read_memory $VBUSU 32 1]}] [expr {[read_memory $ADV 32 1]}]\""
     for i in $(seq 0 15); do
       echo "echo \"T $dc $rep $i [read_memory [expr {$TBUF + $i*256}] 16 128]\""
@@ -192,7 +221,7 @@ EOF
 } > "$CFG"
 
 openocd -s "${OPENOCD_SCRIPTS:-C:/msys64/mingw64/share/openocd/scripts}" -d0 -f "$CFG" 2>&1 \
-  | grep -E "^(T|META) " > "$TMP/raw.txt" || true
+  | grep -E "^(T|META|PRE|POST) " > "$TMP/raw.txt" || true
 [ -s "$TMP/raw.txt" ] || { echo "No trace captured." >&2; exit 1; }
 
 cp "$TMP/raw.txt" "${STEP_TRACE_RAW:-$ROOT/step_trace_raw.txt}"
