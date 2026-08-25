@@ -37,6 +37,7 @@
 #include "can.h"
 #include "haptic.h"
 #include "limits.h"
+#include "trace.h"
 #include <stdio.h>
 #include <stdarg.h>
 #include <string.h>
@@ -149,6 +150,24 @@ volatile BenchCmd_t g_cmd = {0};
 volatile OpenLoopState_t g_ol = {0};
 volatile FocState_t      g_foc = {0};
 volatile PosState_t      g_pos = {0};
+volatile TraceState_t    g_trace = {0};
+
+/* Bench step generator.
+ *
+ * Write g_step_iq_ma, then write 1 to g_step_req: the control ISR arms the
+ * trace, waits STEP_PRE_TICKS for pre-roll, and applies the new iq_ref. The
+ * captured edge therefore always sits at the same known place in the window.
+ *
+ * This lives in firmware because the host cannot do it. An SWD write lands
+ * somewhere between one and twenty milliseconds after it is issued, which is
+ * the same order as the entire 17 ms capture - measured, with the edge coming
+ * out at sample 487 of 512 when the host tried to place it at sample 90. Arm
+ * and step from the host and the edge goes anywhere, including past the end
+ * of the buffer, and the run silently yields nothing to average. */
+volatile int32_t  g_step_iq_ma = 0;
+volatile uint32_t g_step_req   = 0;
+#define STEP_PRE_TICKS   60U    /* 2 ms at PWM_FREQ_HZ, matched to the
+                                 * analyser's pre-step baseline window */
 volatile HapticState_t   g_haptic = {0};
 
 /* ---- CAN ---------------------------------------------------------------- *
@@ -299,6 +318,27 @@ void HRTIM1_TIMA_IRQHandler(void)
       g_foc.iq_ref = 0.0f;
     }
 
+    /* Bench step generator - see g_step_req. Placed after the position block
+     * so that if the outer loop is driving iq_ref it wins; this is a bench
+     * tool and must not fight the servo. */
+    {
+      static uint32_t s_step_ctr = 0U;
+      if (g_step_req != 0U)
+      {
+        g_step_req = 0U;
+        s_step_ctr = 1U;
+        Trace_Arm(&g_trace, g_trace.decim);
+      }
+      if (s_step_ctr != 0U)
+      {
+        if (++s_step_ctr > STEP_PRE_TICKS)
+        {
+          s_step_ctr   = 0U;
+          g_foc.iq_ref = (float)g_step_iq_ma * 0.001f;
+        }
+      }
+    }
+
     /* g_pos.vel_rads is fresh: Position_Step ran just above, and it maintains
      * that estimate whether or not the position loop is engaged. Handing it
      * over here is what lets the current loop compensate transport delay
@@ -306,6 +346,11 @@ void HRTIM1_TIMA_IRQHandler(void)
     FOC_Update((FocState_t *)&g_foc, iu, iw, enc, g_pos.vel_rads);
 
     MotorPwm_SetDutyNorm(g_foc.duty_u, g_foc.duty_v, g_foc.duty_w);
+
+    /* Inside the stage timing on purpose: whatever this costs is ISR budget
+     * like anything else, and a capture facility whose cost is invisible is
+     * one that gets left armed. Disarmed it is a load and a branch. */
+    Trace_Capture(&g_trace, g_foc.id, g_foc.iq, g_foc.vd, g_foc.vq);
 
     uint32_t t_c = DWT->CYCCNT;
     g_isr_enc_cyc  = t_b - t_a;

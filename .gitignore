@@ -40,3 +40,6 @@ compile_commands.json
 Thumbs.db
 *.swp
 *~
+
+# Bench capture data from tools/step_trace.sh - regenerate, do not commit.
+step_trace_raw.txt
