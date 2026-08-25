@@ -96,8 +96,21 @@ if [ "${1:-}" = "--mutants" ]; then
   #    comes up on its own when the supply arrives.
   sed 's|    return;   /\* stay in SELFTEST; Drive_Step retries \*/|    ;|'       "$ROOT/Core/Src/drive.c" > "$OUT/mut_uvlatch.c"
 
+  # 7. Saturation CLEARS the plausibility accumulator instead of holding it,
+  #    so an implausible command can hide behind intermittent voltage limiting.
+  sed 's|    g_drive.torq_held_ms += dt;|    g_drive.torq_dev_ms = 0U;|' \
+      "$ROOT/Core/Src/drive.c" > "$OUT/mut_torqsat.c"
+  # 8. Trip on the first millisecond of deviation rather than at the bound.
+  sed 's|g_drive.torq_dev_ms >= DRIVE_TORQ_DEV_MS|g_drive.torq_dev_ms >= 1U|' \
+      "$ROOT/Core/Src/drive.c" > "$OUT/mut_torqfast.c"
+  # 9. Run the monitor outside RUN, where the bridge is down and the delivered
+  #    current is zero by construction - every disarmed drive then looks
+  #    implausible.
+  sed 's|  if (g_drive.state != (uint32_t)DRIVE_RUN)|  if (0)|' \
+      "$ROOT/Core/Src/drive.c" > "$OUT/mut_torqrun.c"
+
   fails=0
-  for m in clear nosafe miso uvlatch; do
+  for m in clear nosafe miso uvlatch torqsat torqfast torqrun; do
     "$CC" -std=gnu11 -O2 "${INC[@]}" "${DSRC[@]}" "$OUT/mut_$m.c"           -o "$OUT/mut_$m.exe" -lm 2>/dev/null
     if "$OUT/mut_$m.exe" >"$OUT/mut_$m.log" 2>&1; then
       echo "  NOT CAUGHT  drive mutant '$m' passed - the tests are too weak"

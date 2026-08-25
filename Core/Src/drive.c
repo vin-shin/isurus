@@ -315,6 +315,11 @@ int32_t Drive_Arm(void)
   /* Only from READY. This is the check that makes a CAN enable arriving
    * during SELFTEST, or after a fault, do nothing instead of energising. */
   if (g_drive.state != (uint32_t)DRIVE_READY) { return -1; }
+
+  /* Start the plausibility bound from the instant the bridge goes up, not
+   * from whenever the monitor last happened to run. */
+  Drive_TorqueMonitorReset();
+
   Drive_Enter(DRIVE_RUN);
   return 0;
 }
@@ -359,6 +364,90 @@ void Drive_Step(uint32_t now_ms)
     {
       Drive_SelfTest();
     }
+  }
+}
+
+/* ---- torque plausibility monitor ---------------------------------------- */
+
+/* File scope rather than function scope so arming can clear them. A monitor
+ * that carried timing state across a disarm would measure the bound from
+ * before the bridge was even up. */
+static uint32_t s_torq_last_ms;
+static uint32_t s_torq_have_last;
+
+void Drive_TorqueMonitorReset(void)
+{
+  s_torq_have_last    = 0U;
+  s_torq_last_ms      = 0U;
+  g_drive.torq_dev_ms = 0U;
+}
+
+
+void Drive_TorqueMonitor(int32_t req_ma, int32_t act_ma,
+                         int32_t vmag_pm, int32_t vmax_pm, uint32_t now_ms)
+{
+  g_drive.torq_req_ma = req_ma;
+  g_drive.torq_act_ma = act_ma;
+
+  /* Elapsed time from the caller's clock rather than a tick count, so the
+   * bound stays 100 ms whatever rate the main loop happens to run at. First
+   * call establishes the origin and contributes no elapsed time - otherwise
+   * the very first sample would charge the accumulator with everything since
+   * boot and trip instantly. */
+  uint32_t dt = 0U;
+  if (s_torq_have_last != 0U) { dt = now_ms - s_torq_last_ms; }
+  s_torq_last_ms   = now_ms;
+  s_torq_have_last = 1U;
+
+  /* A GAP IS NOT EVIDENCE. If the monitor was not called for a while - the
+   * main loop held up by something slow, or simply not called at all until
+   * the drive armed - then charging the accumulator with all of that elapsed
+   * time asserts the command was implausible throughout a period nobody was
+   * watching. On a 100 ms bound one 100 ms hiccup would be a false trip, and
+   * a safety monitor that fires spuriously is one that gets disabled.
+   *
+   * So a gap re-baselines instead: the time is not charged, and the next call
+   * measures from here. The bound is then always measured across samples that
+   * were actually taken. */
+  if (dt > DRIVE_TORQ_MAX_GAP_MS) { dt = 0U; }
+
+  /* Only RUN is meaningful. Anywhere else the bridge is down, so the delivered
+   * current is zero by construction while the requested value may be
+   * anything - a deviation that says nothing about whether the command can be
+   * believed. Reset rather than hold, so arming always starts from zero. */
+  if (g_drive.state != (uint32_t)DRIVE_RUN)
+  {
+    g_drive.torq_dev_ms = 0U;
+    return;
+  }
+
+  int32_t dev = req_ma - act_ma;
+  if (dev < 0) { dev = -dev; }
+
+  if (dev <= DRIVE_TORQ_DEV_MA)
+  {
+    g_drive.torq_dev_ms = 0U;
+    return;
+  }
+
+  /* Out of volts: the drive is delivering everything the bus allows, so the
+   * deviation is the vector limit's doing and not the command's. HOLD the
+   * accumulator rather than resetting it - a fault that alternates between
+   * saturated and not should still reach the bound, and clearing here would
+   * let an implausible command hide behind intermittent saturation. */
+  if ((vmax_pm > 0) && (vmag_pm >= vmax_pm))
+  {
+    g_drive.torq_held_ms += dt;
+    return;
+  }
+
+  g_drive.torq_dev_ms += dt;
+
+  if (g_drive.torq_dev_ms >= DRIVE_TORQ_DEV_MS)
+  {
+    g_drive.torq_trips++;
+    g_drive.torq_dev_ms = 0U;
+    Drive_Fault(DRIVE_FAULT_COMMAND);
   }
 }
 

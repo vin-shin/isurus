@@ -89,6 +89,13 @@ typedef struct {
   uint32_t safe_mode;     /* 40  DriveSafeMode_t chosen at the last fault  */
   int32_t  asc_threshold; /* 44  w_e above which freewheel back-charges,
                            *     rad/s, at the bus seen at that fault      */
+  /* Torque plausibility monitor. Appended at the END, like everything else:
+   * the SWD tools address the fields above by fixed byte offset. */
+  int32_t  torq_req_ma;   /* 48  last requested, mA of iq                  */
+  int32_t  torq_act_ma;   /* 52  last delivered                            */
+  uint32_t torq_dev_ms;   /* 56  how long the deviation has persisted      */
+  uint32_t torq_trips;    /* 60  monitor trips since boot                  */
+  uint32_t torq_held_ms;  /* 64  time the monitor spent held by saturation */
 } DriveTelem_t;
 
 extern volatile DriveTelem_t g_drive;
@@ -109,6 +116,55 @@ typedef enum {
   DRIVE_SAFE_FREEWHEEL = 0U,
   DRIVE_SAFE_ASC       = 1U
 } DriveSafeMode_t;
+
+/* ---- torque plausibility monitor ---------------------------------------
+ *
+ * The rules require that a torque command which cannot be believed is
+ * detected and the drive brought to a safe state within a bounded time.
+ * DRIVE_FAULT_COMMAND is reserved for it.
+ *
+ * DELIBERATELY NOT CITING A RULE NUMBER. The requirement above is stable; the
+ * numbering is not - it moves between rulebook years, and a stale citation in
+ * a safety comment is worse than none, because it reads as though someone
+ * checked. Fill it in from the rulebook edition the car is actually entered
+ * under, and check the threshold and the time bound against that edition too:
+ * the numbers below are engineering defaults, not quotations.
+ *
+ * WHAT IS NOT IMPLAUSIBLE: a drive that is out of volts. At terminal speed
+ * this bench saturates - measured 2026-08-25, w_e*lambda_m/Vbus reaches
+ * 0.242-0.244 against a vmax of 0.250 - and a saturated drive cannot deliver
+ * the current it was asked for. That is the inverter doing its best, not a
+ * command to disbelieve, and a monitor that trips on it would fire every time
+ * the car reaches top speed. So the timer is HELD while the vector limit is
+ * active rather than running, and the time spent held is counted separately
+ * so a held monitor can never be mistaken for a happy one.
+ */
+#define DRIVE_TORQ_DEV_MA      2000   /* deviation that counts as implausible */
+#define DRIVE_TORQ_DEV_MS       100U  /* how long it may persist before FAULT */
+
+/* Longer than this between calls and the elapsed time is NOT charged to the
+ * accumulator - see the note in Drive_TorqueMonitor. The main loop runs at
+ * ~750 Hz, so this is roughly fifteen times the expected interval and still
+ * well inside the bound. */
+#define DRIVE_TORQ_MAX_GAP_MS    20U
+
+/* Run the monitor. Pure with respect to everything except g_drive and the
+ * fault path, so the host tests drive it directly.
+ *
+ * Called from the MAIN LOOP, not the control ISR. The bound is 100 ms and the
+ * main loop runs at ~750 Hz, so the sampling adds ~1.3 ms of jitter to a
+ * 100 ms limit - immaterial - and it costs the 30 kHz ISR nothing, which at
+ * 74% loaded is the budget that matters. If the main loop stops, the windowed
+ * watchdog is what catches that, not this.
+ *
+ * vmag_pm/vmax_pm are the applied vector magnitude and the modulation ceiling,
+ * both per-mille of bus; when they meet, the drive is voltage-limited. */
+void Drive_TorqueMonitor(int32_t req_ma, int32_t act_ma,
+                         int32_t vmag_pm, int32_t vmax_pm, uint32_t now_ms);
+
+/* Drop the monitor's timing state. Called on arming, so the bound is always
+ * measured from the moment the bridge went up. */
+void Drive_TorqueMonitorReset(void);
 
 /* Pick the safe state for a given fault, speed and bus. Pure decision, no
  * side effects, so it can be reasoned about and tested on its own.
