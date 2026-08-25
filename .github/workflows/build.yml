@@ -24,7 +24,7 @@ jobs:
       - name: Install toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc-arm-none-eabi libnewlib-arm-none-eabi \n                                  cmake ninja-build
+          sudo apt-get install -y gcc-arm-none-eabi libnewlib-arm-none-eabi cmake ninja-build
 
       # Both configurations, because they differ in more than optimisation
       # level: Debug carries the per-file -O2 pins that keep the control ISR
@@ -81,8 +81,23 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y cppcheck
 
-      # Scoped to Core/Src. The vendor HAL and CMSIS are not this project's to
-      # fix and would drown the signal.
+      # Scoped to the project's OWN sources, matching the rule CMakeLists.txt
+      # already applies to -Wextra -Werror: the vendor HAL and the CubeMX
+      # peripheral files are not this project's to fix. Running over all of
+      # Core/Src is what kept this job red on every commit from the first one -
+      # 14 of its 18 findings were constParameterPointer on HAL callbacks whose
+      # signatures the HAL dictates and nobody here can change.
+      #
+      # main.c IS included despite being generated, because the 30 kHz control
+      # ISR lives in its USER CODE section. That is hand-written code on the
+      # hard-real-time path and the most valuable thing here to analyse.
+      #
+      # The include paths matter as much as the scope. With only -I Core/Inc
+      # cppcheck cannot see CMSIS, so DWT->CYCCNT is an unknown type rather
+      # than a volatile register - it then reported `t_b - t_a` as "same
+      # expression on both sides" for ISR stage timings that are deltas of
+      # distinct reads. False positives of that shape are worse than no
+      # analysis: they teach you to ignore the job.
       #
       # This step is the one that matters most, and its value is UNVERIFIED.
       # The work plan's motivating bug is `errors & !MASK` - logical NOT where
@@ -99,5 +114,14 @@ jobs:
                    --suppress=missingIncludeSystem \
                    --suppress=unusedFunction \
                    --error-exitcode=1 \
+                   --platform=arm32-wchar_t4 \
+                   --std=c11 \
+                   -DSTM32G474xx \
                    -I Core/Inc \
-                   Core/Src
+                   -I Drivers/CMSIS/Include \
+                   -I Drivers/CMSIS/Device/ST/STM32G4xx/Include \
+                   -I Drivers/STM32G4xx_HAL_Driver/Inc \
+                   Core/Src/foc.c Core/Src/drive.c Core/Src/position.c \
+                   Core/Src/haptic.c Core/Src/csense.c Core/Src/encoder.c \
+                   Core/Src/motor_pwm.c Core/Src/openloop.c Core/Src/can.c \
+                   Core/Src/led.c Core/Src/main.c
