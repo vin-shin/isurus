@@ -171,6 +171,10 @@ volatile uint32_t g_can_tx_len       = 0;   /* payload bytes: 0, 1, 4 or 8      
 volatile int32_t  g_can_tx_arg       = 0;   /* first  int32 of the payload          */
 volatile int32_t  g_can_tx_arg2      = 0;   /* second int32, for the 8-byte forms   */
 static   uint32_t s_bridge_up        = 0;
+
+/* ISR stage timings, DWT cycles. 128 cycles = 1 us. */
+volatile uint32_t g_isr_enc_cyc = 0, g_isr_enc_max = 0;
+volatile uint32_t g_isr_ctrl_cyc = 0, g_isr_ctrl_max = 0;
 volatile uint32_t g_oc_trips  = 0;   /* overcurrent trip count */
 volatile int32_t  g_oc_peak   = 0;   /* worst |I| seen, mA     */
 volatile uint32_t g_faulted   = 0;   /* latched: needs clear_fault or retry */
@@ -251,7 +255,12 @@ void HRTIM1_TIMA_IRQHandler(void)
     int32_t iu = CSense_RawToMa(u_raw, g_cs.u_zero);
     int32_t iw = CSense_RawToMa(w_raw, g_cs.w_zero);
 
+    /* Stage timing. Cheap - two DWT reads - and it is the only way to know
+     * which part of this ISR actually costs the budget, which is the question
+     * that decides whether the switching frequency can go up. */
+    uint32_t t_a = DWT->CYCCNT;
     uint16_t enc = Encoder_ReadAngleFast();
+    uint32_t t_b = DWT->CYCCNT;
 
     /* Outer position loop. It self-decimates to POS_RATE_HZ, and is stepped
      * even while disengaged (g_pos.enabled clear) so its multi-turn count and
@@ -281,6 +290,12 @@ void HRTIM1_TIMA_IRQHandler(void)
     FOC_Update((FocState_t *)&g_foc, iu, iw, enc);
 
     MotorPwm_SetDutyNorm(g_foc.duty_u, g_foc.duty_v, g_foc.duty_w);
+
+    uint32_t t_c = DWT->CYCCNT;
+    g_isr_enc_cyc  = t_b - t_a;
+    g_isr_ctrl_cyc = t_c - t_b;
+    if (g_isr_enc_cyc  > g_isr_enc_max)  { g_isr_enc_max  = g_isr_enc_cyc; }
+    if (g_isr_ctrl_cyc > g_isr_ctrl_max) { g_isr_ctrl_max = g_isr_ctrl_cyc; }
   }
 
   uint32_t dt = DWT->CYCCNT - t0;
