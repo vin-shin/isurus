@@ -93,6 +93,8 @@ IDA=$(printf "0x%x" $((FOC+0)));   IQA=$(printf "0x%x" $((FOC+4)))
 ENA=$(printf "0x%x" $((FOC+112))); DC=$(printf "0x%x" $((FOC+196)))
 OM=$(printf "0x%x" $((FOC+200)));  DEC=$(printf "0x%x" $((FOC+208)))
 VQFF=$(printf "0x%x" $((FOC+220)))
+IDINT=$(printf "0x%x" $((FOC+64)))
+IQINT=$(printf "0x%x" $((FOC+68)))
 TCOUNT=$(printf "0x%x" $((TRC+8)))
 VBUSU=$(printf "0x%x" $((FOC+176)))   # vbus_used_mv
 STEPIQ=$(printf "0x%x" $(sym g_step_iq_ma))
@@ -190,10 +192,11 @@ for dc in 1 0; do
     # Speed BEFORE the step. META is read after the buffer fills, so on a
     # reversal it reports the speed the rotor ended at, not the one it started
     # from - and the question is always whether it had reached terminal.
-    echo "echo \"PRE $dc $rep [expr {[read_memory $OM 32 1]}] [expr {[read_memory $VBUSU 32 1]}]\""
+    echo "echo \"PRE $dc $rep [expr {[read_memory $OM 32 1]}] [expr {[read_memory $VBUSU 32 1]}] [expr {[read_memory $IDINT 32 1]}] [expr {[read_memory $IQINT 32 1]}]\""
     echo "mww $STEPIQ $IQ_HI_MA"
     echo "mww $STEPRQ 1"
     echo "sleep $FILL_MS"
+    echo "echo \"POST $dc $rep [expr {[read_memory $IDINT 32 1]}] [expr {[read_memory $IQINT 32 1]}] [expr {[read_memory $OM 32 1]}]\""
     echo "echo \"META $dc $rep [expr {[read_memory $OM 32 1]}] [expr {[read_memory $VQFF 32 1]}] [expr {[read_memory $TDONE 32 1]}] [expr {[read_memory $TCOUNT 32 1]}] [expr {[read_memory $VBUSU 32 1]}] [expr {[read_memory $ADV 32 1]}]\""
     for i in $(seq 0 15); do
       echo "echo \"T $dc $rep $i [read_memory [expr {$TBUF + $i*256}] 16 128]\""
@@ -218,7 +221,7 @@ EOF
 } > "$CFG"
 
 openocd -s "${OPENOCD_SCRIPTS:-C:/msys64/mingw64/share/openocd/scripts}" -d0 -f "$CFG" 2>&1 \
-  | grep -E "^(T|META|PRE) " > "$TMP/raw.txt" || true
+  | grep -E "^(T|META|PRE|POST) " > "$TMP/raw.txt" || true
 [ -s "$TMP/raw.txt" ] || { echo "No trace captured." >&2; exit 1; }
 
 cp "$TMP/raw.txt" "${STEP_TRACE_RAW:-$ROOT/step_trace_raw.txt}"
