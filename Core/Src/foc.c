@@ -249,7 +249,26 @@ void FOC_Update(FocState_t *f, int32_t iu_ma, int32_t iw_ma, uint16_t enc_raw,
    * It is filtered (~8 Hz corner), so it lags during hard acceleration - worth
    * knowing, but checked and negligible: an EMRAX going 0 to 5500 rpm in 2 s
    * moves 58 electrical rad/s during that lag, which is 0.18 degrees of
-   * advance error. The filter is not the limiting term here. */
+   * advance error. The filter is not the limiting term here.
+   *
+   * DO NOT expect this to show up in steady-state id, and do not "fix" it when
+   * it does not. Measured on the bench at 200 Hz electrical, 1800 samples per
+   * condition (tools/delay_comp_ab.sh): rms id 150.7 mA with compensation on,
+   * 151.3 mA off - a difference of -0.4% +/- 2.4%, which is nothing.
+   *
+   * That is the correct result, not a failure, and the reason is structural.
+   * The FORWARD Park is right, so measured id IS the true d-axis current; the
+   * d-axis PI has integral action, so it drives that to zero at steady state
+   * whether or not the inverse Park angle is right. The angle error changes
+   * which vd/vq are needed to get there and it costs phase margin, but the
+   * equilibrium is nulled either way. All that leaks into steady-state id is
+   * sin(3.9 deg) = 6.8% of the iq RIPPLE, which is single-digit mA against a
+   * ~150 mA noise floor.
+   *
+   * The cost is paid in the TRANSIENT, where the integrator has not caught up
+   * yet, and in phase margin as f_e rises - 3.9 degrees here, 18.2 on the
+   * EMRAX at 917 Hz. Judge this with a step in iq_ref and an ISR-rate capture,
+   * not with a steady-state average. */
   f->omega_e = vel_mech_rads * (float)FOC_POLE_PAIRS;
 
   float   sin_o = f->sin_e;
