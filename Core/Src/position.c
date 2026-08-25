@@ -25,6 +25,23 @@ extern volatile int32_t  g_enc_glitch_max;
  * have to grow every time a new feel is added. */
 void *g_haptic_ptr = 0;
 
+/* Rebuild the output filter's coefficient from out_lpf_hz.
+ *
+ * Split out from the filter itself so it runs when the corner CHANGES rather
+ * than once per switching period. Callers are Position_Init and the decimated
+ * block, immediately after out_lpf_hz is clamped - keeping the two together is
+ * what guarantees the cached alpha can never reflect an out-of-range corner. */
+static void Position_SetOutLpf(PosState_t *p)
+{
+  float a = 1.0f;
+  if (p->out_lpf_hz > 0)
+  {
+    a = (TWO_PI * (float)p->out_lpf_hz) * (1.0f / (float)PWM_FREQ_HZ);
+    if (a > 1.0f) { a = 1.0f; }
+  }
+  p->out_lpf_alpha = a;
+}
+
 static float clampf(float v, float lim)
 {
   if (v >  lim) { return  lim; }
@@ -54,6 +71,10 @@ void Position_Init(PosState_t *p)
   p->vel_integ      = 0.0f;
   p->last_mode      = MOTION_MODE_POSITION;
   p->out_lpf_hz     = POS_OUT_LPF_HZ;
+  Position_SetOutLpf(p);   /* seed the cached alpha before the loop can run:
+                            * the decimated block that refreshes it is a whole
+                            * POS_DECIM away, and an alpha of 0 until then
+                            * would hold iq_out at zero */
   p->vel_filt_x1000 = (int32_t)(POS_VEL_ALPHA * 1000.0f);
   p->zero_here    = 0U;
 
@@ -159,16 +180,16 @@ float Position_Step(PosState_t *p, uint16_t enc_raw)
    *
    * The alpha is the small-angle form of 1 - exp(-2*pi*f/fs), which stays good
    * while the corner is well below the sample rate - it is 0.031 for 150 Hz at
-   * 30 kHz. fs is the PWM rate because this runs every ISR tick. */
-  {
-    float a = 1.0f;
-    if (p->out_lpf_hz > 0)
-    {
-      a = (6.28318530718f * (float)p->out_lpf_hz) * (1.0f / (float)PWM_FREQ_HZ);
-      if (a > 1.0f) { a = 1.0f; }
-    }
-    p->iq_out += a * (p->iq_raw - p->iq_out);
-  }
+   * 30 kHz. fs is the PWM rate because this runs every ISR tick.
+   *
+   * The FILTER runs every tick; its coefficient does not need to. Alpha is a
+   * function of out_lpf_hz alone, so rebuilding it here spent an int-to-float
+   * conversion and two multiplies per period recomputing a constant. It is
+   * cached by Position_SetOutLpf() instead, called from Init and from the
+   * decimated block right after out_lpf_hz is clamped - a corner change lands
+   * within one POS_DECIM period, which is 1 ms and inaudible in a 150 Hz
+   * filter. */
+  p->iq_out += p->out_lpf_alpha * (p->iq_raw - p->iq_out);
 
   /* ---- PID, decimated ------------------------------------------------- */
   if (++p->decim < POS_DECIM)
@@ -210,6 +231,10 @@ float Position_Step(PosState_t *p, uint16_t enc_raw)
     p->out_lpf_hz     = Lim_Clamp(p->out_lpf_hz,     0, (int32_t)(PWM_FREQ_HZ / 4U), hits);
     p->vel_filt_x1000 = Lim_Clamp(p->vel_filt_x1000, 1, 1000,              hits);
   }
+
+  /* out_lpf_hz is writable over SWD and CAN at any moment, so the cached
+   * coefficient is refreshed here - after the clamp above, never before it. */
+  Position_SetOutLpf(p);
 
   float iq_max_a = (float)p->iq_max_ma * 0.001f;
 

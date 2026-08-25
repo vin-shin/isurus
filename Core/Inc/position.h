@@ -304,6 +304,10 @@ typedef struct {
   uint32_t last_mode;
   float    iq_raw;         /* A, PID output           */
   float    iq_out;         /* A, smoothed, what ships */
+
+  /* Output-filter coefficient for out_lpf_hz, cached rather than rebuilt.
+   * Appended at the END so the fixed byte offsets above do not move. */
+  float    out_lpf_alpha;
 } PosState_t;
 
 /* main.c points this at the HapticState_t before enabling the loop. */
