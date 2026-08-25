@@ -5,10 +5,9 @@
 # the exact commands that are known to work locally - but the first push is
 # its first real test. Expect to iterate once.
 #
-# What it deliberately does NOT do: run host unit tests. The host harness the
-# work plan asks for does not exist yet, because the machine this was written
-# on has no native C compiler. Adding a test step that runs nothing would
-# report green for the wrong reason.
+# It also runs the host test suite for foc.c, including the mutant check that
+# verifies those tests can actually fail. A green suite that has never been
+# seen to go red is not evidence of anything.
 
 name: build
 
@@ -53,6 +52,24 @@ jobs:
       # is usually someone accidentally pulling in printf's float formatting.
       - name: Report size
         run: arm-none-eabi-size build/Debug/makolongfin2.elf build/Release/makolongfin2.elf
+
+  hosttests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Native gcc only - foc.c is compiled for the host here, not for ARM.
+      - name: Install gcc
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential
+
+      # --mutants plants the two bugs this project actually shipped (an angle
+      # conversion off by pi, and an anti-windup that scaled the integrators)
+      # and fails the job if the suite does NOT catch them. That guard is the
+      # reason to trust the green tick above it.
+      - name: foc.c host tests
+        run: bash test/host/run.sh --mutants
 
   analysis:
     runs-on: ubuntu-latest
