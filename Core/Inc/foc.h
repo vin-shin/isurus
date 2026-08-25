@@ -148,6 +148,12 @@ typedef struct {
   /* Decimation counter for the integer mirrors below the control maths.
    * Appended at the END so the fixed byte offsets the tools use do not move. */
   uint32_t mirror_div;
+
+  /* Transport-delay compensation. Appended at the END for the same reason. */
+  float    omega_e;           /* electrical rad/s, from the position loop  */
+  uint32_t delay_comp;        /* 1 = advance the inverse Park (default on) */
+  int32_t  omega_e_rads_x10;  /* omega_e for SWD readout, tenths of rad/s  */
+  int32_t  theta_adv_deg_x10; /* applied advance, tenths of a degree       */
 } FocState_t;
 
 void FOC_Init(FocState_t *f);
@@ -163,8 +169,17 @@ void FOC_SetGainsForVbus(FocState_t *f, int32_t vbus_mv);
 
 /* One control step. iu_ma / iw_ma are signed milliamps, enc_raw is the 15-bit
  * encoder reading. Writes the resulting duties into the state; the caller
- * applies them. */
-void FOC_Update(FocState_t *f, int32_t iu_ma, int32_t iw_ma, uint16_t enc_raw);
+ * applies them.
+ *
+ * vel_mech_rads is the rotor's MECHANICAL velocity in rad/s - hand it
+ * g_pos.vel_rads, the estimate the position loop already maintains. It is a
+ * parameter rather than a second estimator on purpose: two velocity estimates
+ * that can disagree are worse than one that is imperfect, and this one is
+ * differentiated from the same encoder counts the angle comes from. foc.c
+ * converts to electrical; pole pairs are its business, not the position
+ * loop's. */
+void FOC_Update(FocState_t *f, int32_t iu_ma, int32_t iw_ma, uint16_t enc_raw,
+                float vel_mech_rads);
 
 /* Zero the integrators - call whenever the loop is (re)enabled so stale
  * windup cannot kick the first output. */

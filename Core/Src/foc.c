@@ -15,6 +15,47 @@
 #define ONE_BY_SQRT3    0.57735026919f
 #define TWO_BY_SQRT3    1.15470053838f
 
+/* Transport delay, in switching periods, between measuring a current and the
+ * voltage computed from it actually reaching the motor.
+ *
+ * DERIVE this, never write down a number. The usual textbook figure is 1.5
+ * periods, and it is wrong here by the ADC's trigger lead. Walk the chain for
+ * a current sampled during period n:
+ *
+ *   1. The ADC is triggered PWM_ADC_LEAD_NS BEFORE the period boundary, not
+ *      at it - see motor_pwm.h, where the lead is a fixed 5 us because the
+ *      conversion takes a fixed time. So the sample instant is
+ *      (n+1)*Ts - PWM_ADC_LEAD_NS, EARLIER than the boundary, and every delay
+ *      below is measured from there.
+ *   2. The repetition event at (n+1)*Ts runs the control ISR, which reads that
+ *      conversion and computes a duty.
+ *   3. The compare registers are preloaded and latch on counter reset
+ *      (motor_pwm.c). The ISR's write happens after the reset at (n+1)*Ts, so
+ *      it latches at (n+2)*Ts - one full period of latency.
+ *   4. The duty is therefore applied across period n+2, and the pulse is
+ *      centred on PER/2, so the voltage's centroid is at (n+2.5)*Ts. This is
+ *      the usual half-period of zero-order hold.
+ *
+ *   delay = (n+2.5)*Ts - ((n+1)*Ts - lead) = 1.5*Ts + lead
+ *
+ * At 30 kHz the 5 us lead is 0.15 of a period, so the true figure is 1.65, not
+ * 1.5. That 0.15 is worth 1.7 degrees electrical on the EMRAX at 917 Hz -
+ * small, but free to get right, and it moves if either the switching frequency
+ * or the conversion time changes. Which is exactly why it is computed from
+ * both rather than typed in.
+ *
+ * If the ADC trigger is ever moved to the period event, this becomes 1.5 on
+ * its own - but read the warning in motor_pwm.h before doing that, because
+ * that move breaks the current loop for an unrelated reason. */
+#define FOC_DELAY_PERIODS  (1.5f + ((float)PWM_ADC_LEAD_NS * 1.0e-9f \
+                                    * (float)PWM_FREQ_HZ))
+
+/* Electrical angle advance per unit of electrical velocity, in encoder counts
+ * per (rad/s). Folds the delay, the loop rate and the counts-per-radian scale
+ * into one constant so the ISR pays a single multiply. */
+#define FOC_ADV_COUNTS_PER_RADS  ((FOC_DELAY_PERIODS / (float)PWM_FREQ_HZ) \
+                                  * ((float)FOC_ENC_COUNTS / 6.28318530718f))
+
 /* CORDIC configuration, written once in FOC_Init and never touched again.
  *
  * FUNC = 0 is cosine; PRECISION = 5 requests 20 iterations, which the hardware
@@ -139,10 +180,21 @@ void FOC_Init(FocState_t *f)
   f->updates = 0U;
   f->isr_max = 0U;
   f->mirror_div = 0U;
+
+  /* On by default. The uncompensated loop is the wrong one - it is only
+   * survivable at this bench's electrical frequency - so the corrected
+   * behaviour is what runs unless someone deliberately turns it off to
+   * compare. */
+  f->delay_comp = 1U;
+  f->omega_e    = 0.0f;
+  f->omega_e_rads_x10  = 0;
+  f->theta_adv_deg_x10 = 0;
+
   FOC_Reset(f);
 }
 
-void FOC_Update(FocState_t *f, int32_t iu_ma, int32_t iw_ma, uint16_t enc_raw)
+void FOC_Update(FocState_t *f, int32_t iu_ma, int32_t iw_ma, uint16_t enc_raw,
+                float vel_mech_rads)
 {
   /* ---- currents ---------------------------------------------------- */
   f->iu = (float)iu_ma * 0.001f;
@@ -171,6 +223,61 @@ void FOC_Update(FocState_t *f, int32_t iu_ma, int32_t iw_ma, uint16_t enc_raw)
    * that used to sit here existed only to be handed to sinf/cosf, and building
    * it was the cheap half of the cost. */
   FOC_SinCos(f->elec_counts, &f->sin_e, &f->cos_e);
+
+  /* ---- transport-delay compensation --------------------------------- *
+   *
+   * The two Park transforms do NOT describe the same instant, and using one
+   * angle for both is only harmless while the rotor barely moves between
+   * periods.
+   *
+   *   - The FORWARD Park converts a current that was MEASURED, so it belongs
+   *     at the angle the rotor was at when the ADC sampled: theta. Unchanged.
+   *   - The INVERSE Park converts a voltage that has not been APPLIED yet. By
+   *     the time it reaches the motor the rotor has turned by
+   *     omega_e * FOC_DELAY_PERIODS / PWM_FREQ_HZ, so it belongs at the angle
+   *     the rotor WILL be at: theta + that.
+   *
+   * Uncompensated, the applied vector lands behind the rotor by that angle,
+   * which cross-couples q-axis command into the d axis - the loop commands
+   * torque and gets some flux with it. On this bench at ~200 Hz electrical it
+   * is 4.0 degrees and easy to miss. On the EMRAX at 917 Hz it is 18.2
+   * degrees, where cos(18.2) = 0.95 of the intended torque appears and
+   * sin(18.2) = 0.31 of the current vector becomes an unrequested d-axis
+   * disturbance the PI then has to fight.
+   *
+   * omega_e is the position loop's existing velocity estimate, not a new one.
+   * It is filtered (~8 Hz corner), so it lags during hard acceleration - worth
+   * knowing, but checked and negligible: an EMRAX going 0 to 5500 rpm in 2 s
+   * moves 58 electrical rad/s during that lag, which is 0.18 degrees of
+   * advance error. The filter is not the limiting term here. */
+  f->omega_e = vel_mech_rads * (float)FOC_POLE_PAIRS;
+
+  float   sin_o = f->sin_e;
+  float   cos_o = f->cos_e;
+  int32_t adv   = 0;
+
+  if (f->delay_comp != 0U)
+  {
+    adv = (int32_t)(f->omega_e * FOC_ADV_COUNTS_PER_RADS);
+
+    /* Bound it. The largest advance any real machine here can ask for is
+     * about 18 degrees; a quarter turn is far outside that, so anything
+     * beyond it is a broken velocity estimate rather than a fast rotor. Left
+     * unbounded, one bad estimate rotates the applied vector to an arbitrary
+     * angle - at 48 V a twitch, at 600 V full current into the wrong place.
+     * Phase 3 is where the estimate itself gets policed; this is just a
+     * ceiling on the damage in the meantime. */
+    if (adv >  (int32_t)(FOC_ENC_COUNTS / 4U)) { adv =  (int32_t)(FOC_ENC_COUNTS / 4U); }
+    if (adv < -(int32_t)(FOC_ENC_COUNTS / 4U)) { adv = -(int32_t)(FOC_ENC_COUNTS / 4U); }
+
+    /* FOC_ENC_COUNTS is a power of two, so masking wraps the sum correctly
+     * for a negative advance too: two's complement makes (-1 & 32767) = 32767,
+     * which is the angle one count below zero. No branch, no modulo. */
+    uint16_t theta_out =
+      (uint16_t)(((int32_t)f->elec_counts + adv) & (int32_t)(FOC_ENC_COUNTS - 1U));
+
+    FOC_SinCos(theta_out, &sin_o, &cos_o);
+  }
 
   /* ---- Park: stationary -> rotor frame ------------------------------ */
   f->id =  f->ialpha * f->cos_e + f->ibeta * f->sin_e;
@@ -210,8 +317,12 @@ void FOC_Update(FocState_t *f, int32_t iu_ma, int32_t iw_ma, uint16_t enc_raw)
   }
 
   /* ---- inverse Park -------------------------------------------------- */
-  f->valpha = f->vd * f->cos_e - f->vq * f->sin_e;
-  f->vbeta  = f->vd * f->sin_e + f->vq * f->cos_e;
+  /* sin_o/cos_o, not sin_e/cos_e: this vector is applied a period and a half
+   * from now, at an angle the rotor has not reached yet. See the delay block
+   * above. With delay_comp off they are the same pair and this is the old
+   * behaviour exactly, which is what makes the A/B comparison honest. */
+  f->valpha = f->vd * cos_o - f->vq * sin_o;
+  f->vbeta  = f->vd * sin_o + f->vq * cos_o;
 
   /* ---- inverse Clarke ------------------------------------------------ */
   float vu = f->valpha;
@@ -268,6 +379,8 @@ void FOC_Update(FocState_t *f, int32_t iu_ma, int32_t iw_ma, uint16_t enc_raw)
     f->elec_deg_x10 = (int32_t)(((uint32_t)f->elec_counts * 3600U) / FOC_ENC_COUNTS);
     f->vmax_pm   = (int32_t)(f->vmax * 1000.0f);
     f->vmag_pm   = (int32_t)(fm_sqrtf(f->vd * f->vd + f->vq * f->vq) * 1000.0f);
+    f->omega_e_rads_x10  = (int32_t)(f->omega_e * 10.0f);
+    f->theta_adv_deg_x10 = (adv * 3600) / (int32_t)FOC_ENC_COUNTS;
   }
 
   f->updates++;

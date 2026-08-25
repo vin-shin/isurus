@@ -299,7 +299,11 @@ void HRTIM1_TIMA_IRQHandler(void)
       g_foc.iq_ref = 0.0f;
     }
 
-    FOC_Update((FocState_t *)&g_foc, iu, iw, enc);
+    /* g_pos.vel_rads is fresh: Position_Step ran just above, and it maintains
+     * that estimate whether or not the position loop is engaged. Handing it
+     * over here is what lets the current loop compensate transport delay
+     * without standing up a second velocity estimator. */
+    FOC_Update((FocState_t *)&g_foc, iu, iw, enc, g_pos.vel_rads);
 
     MotorPwm_SetDutyNorm(g_foc.duty_u, g_foc.duty_v, g_foc.duty_w);
 
