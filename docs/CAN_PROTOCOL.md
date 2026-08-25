@@ -131,6 +131,7 @@ exist on an 11-bit bus. Setpoint traffic can never delay it.
 | `0x027` | host → node 1 | ZERO_HERE |
 | `0x028` | host → node 1 | CLEAR_FAULT |
 | `0x029` | host → node 1 | SET_ENABLE |
+| `0x02A` | host → node 1 | SET_TORQUE_MNM |
 | `0x030` | node 1 → host | TELEM_MOTION |
 | `0x031` | node 1 → host | TELEM_STATE |
 
@@ -139,6 +140,24 @@ Node *n* occupies `n << 5` through `(n << 5) | 0x1F`. Node 63 is the last, at
 
 `CAN_NODE_ID` is a compile-time constant, defaulting to 1. A multi-drop bus
 needs one build per drive today.
+
+
+### Two torque commands, and why
+
+`0x02 SET_TORQUE` carries **milliamps of iq**, whatever its name suggests.
+`0x0A SET_TORQUE_MNM` carries **milli-newton-metres** and is the one a VCU
+should use.
+
+0x02 was not redefined. Same identifier and same four-byte length with a
+different meaning is the most dangerous shape a protocol change can take: a
+host still sending `1000` would go from asking for 1 A to asking for 1 Nm -
+about 12 A on this machine - and nothing anywhere would report an error. A new
+identifier makes an old host's frames simply not match.
+
+The conversion is `T = 1.5 * p * lambda_m * iq`, done at the CAN edge so
+everything downstream keeps working in milliamps. `id` stays at zero: this is
+a surface-magnet machine, the reluctance term is identically zero, and MTPA
+collapses to `id = 0`. See the torque interface note in `foc.h`.
 
 ## Byte order and units
 
@@ -176,9 +195,10 @@ Every quantity on the wire is a **scaled integer, never a float.**
 | `0x06` | `SET_PROFILE` | 8 | `i32` accel deg/s², `i32` jerk deg/s³ |
 | `0x07` | `ZERO_HERE` | 0 | — |
 | `0x08` | `CLEAR_FAULT` | 0 | — |
+| `0x0A` | `SET_TORQUE_MNM` | 4 | `i32` milli-newton-metres |
 | `0x09` | `SET_ENABLE` | 1 | `u8` 0 = disengage, 1 = engage |
 
-Anything in `0x0A`–`0x0F` is unknown and increments `rx_bad_cmd`.
+Anything in `0x0B`–`0x0F` is unknown and increments `rx_bad_cmd`.
 
 ### Mode values
 

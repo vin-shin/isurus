@@ -120,7 +120,21 @@ if [ "${1:-}" = "--mutants" ]; then
     fi
   done
 
-  for m in pi aw; do
+  # 10. An 'MTPA solution' on a surface-magnet machine: id driven off zero,
+  #     which buys no torque and costs copper loss. This is the mistake the
+  #     note in foc.h exists to prevent.
+  sed 's|  f->id_ref = 0.0f;|  f->id_ref = 0.5f;|' \
+      "$ROOT/Core/Src/foc.c" > "$OUT/mut_torqid.c"
+  # 11. Echo the REQUEST back instead of what was accepted, so a clamped
+  #     over-ask looks to the plausibility monitor like an implausible
+  #     command and faults a drive that behaved correctly.
+  sed 's|  return (int32_t)(FOC_IqToTorque((float)iq_ma \* 0.001f) \* 1000.0f);|  return t_mnm;|' \
+      "$ROOT/Core/Src/foc.c" > "$OUT/mut_torqecho.c"
+  # 12. Wrong torque constant - the kt the VCU's whole torque request rests on.
+  sed 's|  return iq_a \* FOC_KT_NM_PER_A;|  return iq_a * FOC_KT_NM_PER_A * 2.0f;|' \
+      "$ROOT/Core/Src/foc.c" > "$OUT/mut_torqkt.c"
+
+  for m in pi aw torqid torqecho torqkt; do
     # Mutants are built without -Werror: they leave variables unused by
     # construction, and that is not what is being checked.
     "$CC" -std=gnu11 -O2 "${INC[@]}" "${SRC[@]}" "$OUT/mut_$m.c" \

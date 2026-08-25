@@ -239,6 +239,25 @@ static void Can_Handle(uint8_t cmd, const uint8_t *d, uint8_t len)
       g_pos.torque_cmd_ma = rd_i32(d);
       break;
 
+    case CAN_CMD_SET_TORQUE_MNM:
+    {
+      if (len < 4U) { s_t.rx_bad_len++; return; }
+
+      /* Convert here, at the edge, so everything downstream keeps working in
+       * the milliamps it already speaks. The motion loop, the limits and the
+       * telemetry do not need to learn a second unit for the same quantity. */
+      int32_t mnm = rd_i32(d);
+      int32_t ma  = (int32_t)(FOC_TorqueToIq((float)mnm * 0.001f) * 1000.0f);
+
+      /* Range-checked on the CONVERTED value: the bound that exists is a
+       * current bound - what the sensors, the FETs and the thermal budget
+       * allow - and checking the torque figure against a torque bound derived
+       * from the same kt would be the same arithmetic twice. */
+      Can_RangeCheck(ma, -LIM_IQ_MAX_MA, LIM_IQ_MAX_MA);
+      g_pos.torque_cmd_ma = ma;
+      break;
+    }
+
     case CAN_CMD_SET_VELOCITY:
       if (len < 4U) { s_t.rx_bad_len++; return; }
       Can_RangeCheck(rd_i32(d), -LIM_VEL_MAX_DPS, LIM_VEL_MAX_DPS);

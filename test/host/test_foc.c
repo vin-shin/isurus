@@ -17,6 +17,7 @@
   */
 
 #include "foc.h"
+#include "limits.h"
 #include "main.h"
 #include "pmsm.h"
 #include "sim.h"
@@ -291,6 +292,87 @@ static void test_feedforward_keeps_integral_authority(void)
         "an over-large feedforward cannot drive uncommanded current", d);
 }
 
+
+/* ---- torque interface ---------------------------------------------------- */
+
+static void test_torque_map_round_trips(void)
+{
+  float worst = 0.0f;
+  for (float t = -0.9f; t <= 0.9f; t += 0.05f)
+  {
+    float e = fabsf(FOC_IqToTorque(FOC_TorqueToIq(t)) - t);
+    if (e > worst) { worst = e; }
+  }
+  char d[128];
+  snprintf(d, sizeof(d), "worst round-trip error %.3e Nm over +/-0.9 Nm", (double)worst);
+  check(worst < 1e-6f, "torque <-> iq round-trips", d);
+}
+
+static void test_torque_constant_matches_the_machine(void)
+{
+  /* Computed here from the same constants rather than copied, so a change to
+   * either moves the expectation with it. */
+  float expect_kt = 1.5f * (float)FOC_POLE_PAIRS * FOC_LAMBDA_M_WB;
+  float got = FOC_IqToTorque(1.0f);
+  char d[160];
+  snprintf(d, sizeof(d), "1 A gives %.4f Nm, expected %.4f",
+           (double)got, (double)expect_kt);
+  check(fabsf(got - expect_kt) < 1e-6f,
+        "one amp produces 1.5*p*lambda_m of torque", d);
+}
+
+static void test_set_torque_holds_id_at_zero(void)
+{
+  FocState_t f;
+  FOC_Init(&f);
+  f.id_ref = 3.0f;                       /* something to be overwritten */
+  (void)FOC_SetTorque(&f, 500);          /* 0.5 Nm */
+
+  char d[160];
+  snprintf(d, sizeof(d), "id_ref %.4f, iq_ref %.4f",
+           (double)f.id_ref, (double)f.iq_ref);
+  /* Surface magnet: MTPA is id = 0, and any other id is copper loss for no
+   * torque. Field weakening is what drives it negative, elsewhere. */
+  check(f.id_ref == 0.0f && f.iq_ref > 0.0f,
+        "a torque request sets id_ref to zero, not an MTPA solution", d);
+}
+
+static void test_set_torque_reports_what_it_accepted(void)
+{
+  FocState_t f;
+  FOC_Init(&f);
+
+  int32_t asked    = 100000;                        /* 100 Nm, far too much */
+  int32_t accepted = FOC_SetTorque(&f, asked);
+  int32_t iq_ma    = (int32_t)(f.iq_ref * 1000.0f);
+  int32_t at_limit = (int32_t)(FOC_IqToTorque((float)LIM_IQ_MAX_MA * 0.001f) * 1000.0f);
+
+  char d[192];
+  snprintf(d, sizeof(d), "asked %ld mNm, accepted %ld mNm, iq_ref %ld mA (limit %d)",
+           (long)asked, (long)accepted, (long)iq_ma, LIM_IQ_MAX_MA);
+  /* The return value is what the plausibility monitor compares against. If it
+   * echoed the request, every over-ask would read as an implausible command
+   * and fault a drive that was behaving correctly. */
+  check(accepted < asked && iq_ma == LIM_IQ_MAX_MA && accepted == at_limit,
+        "an over-large request is clamped and reported as clamped", d);
+}
+
+static void test_set_torque_is_symmetric_for_regen(void)
+{
+  FocState_t f;
+  FOC_Init(&f);
+  int32_t pos = FOC_SetTorque(&f,  100000);
+  float   iqp = f.iq_ref;
+  int32_t neg = FOC_SetTorque(&f, -100000);
+  float   iqn = f.iq_ref;
+
+  char d[160];
+  snprintf(d, sizeof(d), "+%ld mNm / %.3f A against %ld mNm / %.3f A",
+           (long)pos, (double)iqp, (long)neg, (double)iqn);
+  check(pos == -neg && fabsf(iqp + iqn) < 1e-6f,
+        "braking torque clamps symmetrically with driving torque", d);
+}
+
 int main(void)
 {
   printf("\nfoc.c host tests\n----------------\n");
@@ -301,6 +383,11 @@ int main(void)
   test_saturation();
   test_antiwindup_recovery();
   test_feedforward_keeps_integral_authority();
+  test_torque_map_round_trips();
+  test_torque_constant_matches_the_machine();
+  test_set_torque_holds_id_at_zero();
+  test_set_torque_reports_what_it_accepted();
+  test_set_torque_is_symmetric_for_regen();
   printf("----------------\n%d passed, %d failed\n\n", g_pass, g_fail);
   return g_fail == 0 ? 0 : 1;
 }

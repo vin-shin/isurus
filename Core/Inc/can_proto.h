@@ -191,6 +191,22 @@ extern "C" {
 #define CAN_CMD_CLEAR_FAULT     0x08U
 #define CAN_CMD_SET_ENABLE      0x09U
 
+/* Torque as TORQUE, in milli-newton-metres, for a VCU rather than a bench.
+ *
+ * A separate command from SET_TORQUE (0x02) on purpose, and 0x02 keeps its
+ * meaning: it carries milliamps of iq, whatever its name suggests.
+ * Redefining 0x02's payload would have been the tidier-looking change and a
+ * genuinely dangerous one - same identifier, same four-byte length, silently
+ * different meaning. A host still sending 1000 would go from asking for 1 A
+ * to asking for 1 Nm, which on this machine is about 12 A, and nothing
+ * anywhere would report an error. A new identifier makes an old host's frames
+ * simply not match instead.
+ *
+ * The conversion is T = 1.5 * p * lambda_m * iq - see the torque interface
+ * note in foc.h, and note that id stays at zero because this is a
+ * surface-magnet machine. */
+#define CAN_CMD_SET_TORQUE_MNM  0x0AU
+
 /* Inclusive bounds of the command half of the identifier space. The receive
  * filter is built from these, so telemetry never loops back in as command. */
 #define CAN_CMD_FIRST           0x00U
