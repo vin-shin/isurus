@@ -28,7 +28,13 @@ current-sense zero calibration and tripping overcurrent on a stationary motor.
 ## Touching the control ISR
 
 The 30 kHz HRTIM ISR has a hard 33.3 us deadline; overrun it and control steps
-are lost. It currently runs ~28 us — 84% loaded, so the margin is thin.
+are lost. It currently runs ~21.1 us — 63% loaded.
+
+Measure it, do not estimate it: `tools/isr_budget.sh` runs the real ISR on the
+target and reports min/median/p95/max per stage. It sweeps the electrical
+angle (cost varies by quadrant) and halts the core to read a coherent sample,
+and it does not energise the bridge. Report the before/after numbers whenever
+you change anything in that ISR.
 `Core/Src/{foc,position,haptic,csense,encoder,motor_pwm,main}.c` are built at
 `-O2` for this reason while the rest of the project stays at `-O0` — see the
 comment in `CMakeLists.txt` before changing that.
