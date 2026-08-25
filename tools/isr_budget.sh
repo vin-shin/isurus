@@ -29,7 +29,11 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-ELF="$ROOT/build/Debug/makolongfin2.elf"
+# Override to measure a different configuration, e.g.
+#   ISR_BUDGET_ELF=build/Release/makolongfin2.elf tools/isr_budget.sh
+# The deadline is a property of the hardware, not of the build, so Debug and
+# Release have to be measured against the same 33.3 us either way.
+ELF="${ISR_BUDGET_ELF:-$ROOT/build/Debug/makolongfin2.elf}"
 SAMPLES="${1:-240}"
 
 NM="${NM:-arm-none-eabi-nm}"

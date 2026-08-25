@@ -300,7 +300,14 @@ if {$DEMO} {
     mww [expr {$CMDA+20}] 1
     mww $CMDA 1
     sleep 200
-    mww $FLTA 0
+    # Clear a latched fault through the state machine, not by poking
+    # g_faulted. That word is now a derived mirror written only by
+    # Drive_Enter, so writing 0 to it does nothing at all - the drive stays in
+    # FAULT and refuses to arm. g_cmd.clear_fault is the one real entry, and
+    # it re-runs the self-test on the way out. See drive.h.
+    mww [expr {$CMDA+36}] 1
+    mww $CMDA 1
+    sleep 300
     mww $IDA 0
     mww $IQA 0
     mww $FENA 1

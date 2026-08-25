@@ -76,6 +76,31 @@ extern "C" {
  * 0.8 deg, so the damping term is still doing its job. */
 #define POS_VEL_ALPHA        0.05f
 
+/* Kinematic plausibility bound on the encoder, in counts per control tick.
+ *
+ * The angle cannot change faster than the rotor can turn, so a delta larger
+ * than the machine can physically produce is a corrupted frame, not motion.
+ * DERIVED from a stated mechanical bound rather than picked:
+ *
+ *     counts/tick = rpm/60 * POS_COUNTS_PER_REV / PWM_FREQ_HZ
+ *
+ *      600 rpm  LIM_VEL_MAX_DPS, the commanded ceiling  ->  10.9
+ *     1020 rpm  fastest free-spin measured on this bench -> 18.6
+ *     3000 rpm  the bound used here                      -> 54.6
+ *
+ * 3000 rpm is far above anything this bench reaches under power and above
+ * anything a hand-spun outrunner of this mass will do, so it will not
+ * nuisance-trip; 128 counts doubles that again for sampling jitter. Against a
+ * uniformly random corrupted frame it still catches 99.2%, because a random
+ * 15-bit value lands within 128 counts of the previous one only 0.8% of the
+ * time.
+ *
+ * For scale, the value this replaces was 1000 counts, which corresponds to
+ * 55000 rpm - it only ever caught total nonsense, and a frame corrupted into
+ * a merely implausible angle sailed through. */
+#define POS_ENC_MAX_RPM      3000
+#define POS_ENC_DMAX_COUNTS  128
+
 /* Corner frequency of the low-pass on the OUTPUT current command, in Hz.
  * 0 disables it.
  *

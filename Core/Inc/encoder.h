@@ -31,6 +31,31 @@ void Encoder_Init(void);
  * On SPI error the last good value is returned and ENC_ERR_SPI reported. */
 Encoder_Status_t Encoder_ReadAngle(uint16_t *raw_counts);
 
+/* Encoder link health, maintained by Encoder_ReadAngleFast.
+ *
+ * That function substitutes the LAST GOOD angle whenever a frame comes back
+ * as 0xFFFF, which is what a dead MISO line reads as. On its own that is the
+ * right thing to do - one bad frame should not put a garbage angle into the
+ * Park transform - but it used to be completely silent, so a disconnected
+ * encoder produced a plausible, constant, entirely fictional angle for as
+ * long as anyone cared to run. The control loop cannot tell that apart from a
+ * stalled rotor, and will happily pour current into a fixed electrical angle.
+ *
+ * So the substitution is counted. g_enc_sub_consec is the run length, which is
+ * what matters: isolated substitutions are noise, a sustained run is a broken
+ * link. g_enc_sub_total is for spotting a marginal connection that is not yet
+ * failing outright. */
+extern volatile uint32_t g_enc_sub_consec;
+extern volatile uint32_t g_enc_sub_total;
+
+/* Consecutive substitutions before the drive treats the encoder as failed.
+ *
+ * 8 ticks is 267 us at 30 kHz. Long enough that a single disturbed frame -
+ * or a short burst of them - is ridden out exactly as before, short enough
+ * that a severed link is caught in well under a millisecond, which is far
+ * faster than the rotor can move anywhere interesting. */
+#define ENC_MAX_SUBSTITUTIONS   8U
+
 /* Both raw SPI frames from the most recent read, for bring-up debugging. */
 void Encoder_GetDebugData(uint16_t *rx1, uint16_t *rx2);
 

@@ -7,9 +7,16 @@
 
 #include "position.h"
 #include "haptic.h"
+#include "drive.h"
+#include "foc.h"
 
 extern volatile uint32_t g_enc_glitch;
 extern volatile int32_t  g_enc_glitch_max;
+
+/* Read-only here. The plausibility check needs to know whether the current
+ * loop is actually consuming the angle, because that is what decides whether
+ * a corrupted frame can do any harm. */
+extern volatile FocState_t g_foc;
 #include <math.h>
 #include "fastmath.h"
 
@@ -142,14 +149,27 @@ float Position_Step(PosState_t *p, uint16_t enc_raw)
   p->last_raw    = raw;
   p->pos_counts += d;
 
-  /* See g_enc_glitch in main.c: a jump this large is not mechanically
-   * possible, so it is a corrupted encoder frame. */
+  /* Kinematic plausibility. A jump larger than POS_ENC_DMAX_COUNTS is not
+   * something the rotor can do in one tick, so it is a corrupted frame.
+   *
+   * This LATCHES a fault rather than filtering, and only while the current
+   * loop is actually using the angle. Silently rejecting the sample would be
+   * worse than useless - the loop would keep running on the previous angle
+   * with no indication, which is precisely the failure the encoder
+   * substitution counter exists to expose. And faulting while the bridge is
+   * down would punish someone turning the shaft by hand for no benefit: a bad
+   * angle only does damage when it can steer current. */
   {
     int32_t ad = (d < 0) ? -d : d;
-    if (ad > 1000)
+    if (ad > POS_ENC_DMAX_COUNTS)
     {
       g_enc_glitch++;
       if (ad > g_enc_glitch_max) { g_enc_glitch_max = ad; }
+
+      if (g_foc.enabled != 0U)
+      {
+        Drive_Fault(DRIVE_FAULT_ENCODER);
+      }
     }
   }
 

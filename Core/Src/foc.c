@@ -130,6 +130,15 @@ void FOC_SetGainsForVbus(FocState_t *f, int32_t vbus_mv)
   f->kp = (FOC_BW_RADS * FOC_L_H)   / vbus;
   f->ki = (FOC_BW_RADS * FOC_R_OHM) / vbus;
 
+  /* The decoupling feedforward is computed in volts and applied as normalised
+   * duty, so it needs 1/Vbus. It is derived HERE, from the same reading that
+   * has already passed the sanity window above, rather than anywhere else -
+   * a second place that divides by a bus voltage is a second place that can
+   * divide by zero and put NaN into the duty registers. If the reading is bad
+   * this function has already returned and inv_vbus keeps its last good
+   * value, which is the same protection kp and ki get. */
+  f->inv_vbus = 1.0f / vbus;
+
   f->vbus_used_mv = vbus_mv;
   f->kp_x10000    = (int32_t)(f->kp * 10000.0f);
   f->ki_x100      = (int32_t)(f->ki * 100.0f);
@@ -189,6 +198,63 @@ void FOC_Init(FocState_t *f)
   f->omega_e    = 0.0f;
   f->omega_e_rads_x10  = 0;
   f->theta_adv_deg_x10 = 0;
+
+  /* OFF by default. It does what it claims and it is still not ready.
+   *
+   * What works: at ~266 Hz electrical, 12 ensemble-averaged iq steps, it cuts
+   * the d-axis disturbance it exists to cut -
+   *
+   *       peak |id|   123 mA on   209 mA off    -41%
+   *       rms id     51.1 mA on  78.6 mA off    -35%
+   *
+   * What does not: run the actual foc_dash demo, which spins to terminal
+   * speed and then reverses, and peak phase current is 9326 mA with this on
+   * against 1489 mA with it off. Six times worse. It no longer TRIPS the 15 A
+   * limit - that took fixing a lambda_m 14% high (foc.h) and an anti-windup
+   * that crushed the integrators (below) - but six times the peak current is
+   * not a correction, it is a different bug.
+   *
+   * The cause is the velocity estimate, and it is a gap in the original
+   * analysis rather than a bug in the code. omega_e comes from the position
+   * loop, filtered at ~8 Hz because kd there must not amplify encoder
+   * quantisation. That is a 20 ms lag. Under 1 A of braking this rotor
+   * decelerates at ~16000 electrical rad/s^2, so during a hard reversal
+   * omega_e is wrong by ~320 rad/s, the feedforward is wrong by 0.86 V, and
+   * 0.86 V across an 85 mohm winding is 10.1 A. Measured 9.3 A.
+   *
+   * It is worse than that arithmetic suggests, because at terminal speed
+   * w_e*lambda_m/Vbus is 0.250 against a vmax of 0.250 - the feedforward
+   * alone fills the entire modulation ceiling, so there is no headroom left
+   * for the PI to correct the error quickly.
+   *
+   * The delay compensation was checked against this same lag and is fine: it
+   * uses omega_e for an ANGLE advance, where 320 rad/s is 0.3 degrees. The
+   * feedforward uses it for a VOLTAGE magnitude, where the same error is
+   * volts. Checking one and assuming the other was the mistake.
+   *
+   * What this needs before it goes on by default: an omega_e for the
+   * feedforward that tracks faster than 8 Hz. Not a second estimator that can
+   * disagree with the position loop's - the same encoder differences, filtered
+   * for a different purpose. And re-test with the DEMO, not a short reversal;
+   * a 1.5 s reversal showed 1359 vs 1375 mA and looked like a pass, because
+   * the motor never reached the speed where this bites. */
+  f->decouple = 0U;
+
+  /* Deadtime compensation starts DISABLED, with the theoretical magnitude
+   * loaded but not applied. The sign depends on the current-sense and gate
+   * polarities together and a wrong sign doubles the distortion, so it is
+   * swept and measured on hardware before being trusted - dtc_pm is set to
+   * the winning value once that has been done. */
+  f->dtc_pm      = 0;
+  f->dtc_hyst_ma = FOC_DTC_HYST_MA;
+  f->vd_ff_pm = 0;
+  f->vq_ff_pm = 0;
+
+  /* Seeded for FOC_VBUS_NOM_MV so the feedforward is scaled correctly from
+   * the first ISR tick, before the main loop has measured the bus even once.
+   * Zero here would make the whole feedforward vanish until the first
+   * successful Vbus read, which is a silent wrong-behaviour window. */
+  f->inv_vbus = 1.0f / ((float)FOC_VBUS_NOM_MV * 0.001f);
 
   FOC_Reset(f);
 }
@@ -267,8 +333,31 @@ void FOC_Update(FocState_t *f, int32_t iu_ma, int32_t iw_ma, uint16_t enc_raw,
    *
    * The cost is paid in the TRANSIENT, where the integrator has not caught up
    * yet, and in phase margin as f_e rises - 3.9 degrees here, 18.2 on the
-   * EMRAX at 917 Hz. Judge this with a step in iq_ref and an ISR-rate capture,
-   * not with a steady-state average. */
+   * EMRAX at 917 Hz.
+   *
+   * The step test does not resolve it either, and that is also expected. With
+   * tools/step_trace.sh at ~289 Hz, decoupling left on, 56 ensemble-averaged
+   * steps per condition: peak |id| 46 mA compensated against 57 mA not, with
+   * a post-averaging noise floor of 19-24 mA. The difference is smaller than
+   * the floor. Rep counts of 12, 26 and 56 gave -30%, -23% and -19%, shrinking
+   * as averaging removed noise - the signature of an effect that was never
+   * there rather than one being uncovered.
+   *
+   * Arithmetic says the same thing. After the transient, vq only has to rise
+   * by R*diq = 68 mV; the back-EMF term is unchanged by an iq step. A 5.73
+   * degree misalignment leaks sin(5.73) of that onto d, which is 6.8 mV, or
+   * 16 mA against R + kp*Vbus. Sixteen milliamps under a twenty milliamp
+   * floor is not a measurement this bench can make.
+   *
+   * So this is kept on derivation, not on evidence, and that is the honest
+   * status. What IS verified is the mechanism: the advance is applied
+   * accurately on a spinning rotor (3.90 degrees measured against 3.96
+   * predicted), with the correct sign, and it costs 130 cycles. What scales
+   * to the EMRAX is not the number above but the cross-coupling fraction
+   * sin(theta_err), which goes from 0.10 here to 0.31 at 917 Hz - a factor of
+   * 3.1 on a machine whose axes are far more strongly coupled to begin with.
+   * Do not conclude from the bench nulls that this can be dropped for the HV
+   * build; conclude that 48 V cannot see it. */
   f->omega_e = vel_mech_rads * (float)FOC_POLE_PAIRS;
 
   float   sin_o = f->sin_e;
@@ -315,24 +404,97 @@ void FOC_Update(FocState_t *f, int32_t iu_ma, int32_t iw_ma, uint16_t enc_raw,
   f->vd = ed * f->kp + f->id_integ;
   f->vq = eq * f->kp + f->iq_integ;
 
+  /* ---- cross-coupling decoupling and back-EMF feedforward ------------- *
+   *
+   * The d and q axes are not independent plants. Rotating the frame couples
+   * them, and the magnet adds a speed-proportional voltage on q:
+   *
+   *     vd = R*id + Ld*d(id)/dt - w_e*Lq*iq
+   *     vq = R*iq + Lq*d(iq)/dt + w_e*Ld*id + w_e*lambda_m
+   *
+   * The PI only ever saw the R and L terms. Everything with a w_e in it
+   * arrived as an unexplained disturbance it had to integrate its way out of,
+   * which works while that disturbance is small compared to what the PI can
+   * generate - and stops working when it is not.
+   *
+   * Scale matters here more than structure. On this bench w_e*L is 68 mOhm at
+   * 200 Hz against R = 85 mOhm, so the coupling is merely comparable to the
+   * plant. On the EMRAX at 917 Hz it is 1.47 Ohm against 23.2 mOhm - 63 times
+   * the resistance. No PI rejects a disturbance 63x its own plant gain; it is
+   * not a tuning problem.
+   *
+   * The back-EMF term is the larger one by far. At the top of this bench's
+   * range w_e*lambda_m is 0.248 of normalised duty against a vmax of 0.25, so
+   * without this the integrator has to discover essentially the entire
+   * voltage budget by itself, from zero, on every enable - and it can only do
+   * that as fast as ki allows. Feeding it forward means the PI starts from
+   * roughly the right answer and is left doing what it is good at: correcting
+   * the small remainder.
+   *
+   * These terms are volts; everything else in this function is normalised
+   * duty. inv_vbus does that conversion and comes from the one guarded place
+   * a bus voltage is ever divided - see FOC_SetGainsForVbus.
+   *
+   * Applied BEFORE the vector limit below, so the feedforward is bounded by
+   * the same ceiling as everything else and cannot command a duty the bridge
+   * has no way to produce. One interaction that follows from that and is
+   * worth knowing: at the very top of the speed range the feedforward alone
+   * nearly fills vmax, so the vector limit engages and the back-calculation
+   * scales the integrators even though the PI is not what saturated. That is
+   * correct - there is genuinely no voltage left - and it is not a change,
+   * because without feedforward the integrator reached the same ceiling by
+   * itself. It does mean the drive is out of voltage at 600 rpm either way. */
+  float vd_ff = 0.0f;
+  float vq_ff = 0.0f;
+
+  if (f->decouple != 0U)
+  {
+    vd_ff = -f->omega_e * (FOC_LQ_H * f->iq)                   * f->inv_vbus;
+    vq_ff =  f->omega_e * (FOC_LD_H * f->id + FOC_LAMBDA_M_WB) * f->inv_vbus;
+
+    f->vd += vd_ff;
+    f->vq += vq_ff;
+  }
+  /* The integer mirrors of these two live in the decimated block at the end,
+   * not here. Same reason as everything else there: a float-to-int conversion
+   * that exists only so a debugger can read the value has no business running
+   * 30000 times a second. */
+
   /* Limit the vector magnitude, not each axis separately - clipping d and q
    * independently rotates the applied vector away from where it was asked
    * for. */
   float vmag = fm_sqrtf(f->vd * f->vd + f->vq * f->vq);
   if (vmag > f->vmax)
   {
-    float k = f->vmax / vmag;
-
-    /* Back-calculation anti-windup. Clamping each integrator to +/-vmax
-     * separately is not enough: two axes each at the limit reach 1.41*vmax
-     * combined, so they keep winding past anything the output can deliver and
-     * the loop stops responding. Scaling them by the same factor that limits
-     * the vector holds the integrators at exactly what is achievable. */
-    f->id_integ *= k;
-    f->iq_integ *= k;
+    float k      = f->vmax / vmag;
+    float vd_cmd = f->vd;
+    float vq_cmd = f->vq;
 
     f->vd *= k;
     f->vq *= k;
+
+    /* Back-calculation anti-windup: subtract exactly the voltage that could
+     * NOT be delivered. Clamping each integrator to +/-vmax separately is not
+     * enough - two axes each at the limit reach 1.41*vmax combined, so they
+     * wind past anything the output can produce and the loop stops
+     * responding.
+     *
+     * This used to scale the integrators by k instead, which is only
+     * equivalent while the integrators are the whole of the command. Once the
+     * decoupling feedforward was added they are not, and scaling became
+     * actively wrong: with the feedforward alone at or above vmax, k < 1 on
+     * every tick, so the integrators were multiplied down toward zero
+     * forever and the PI lost all integral authority. Measured on the bench -
+     * vq sat pinned at 0.246 of a 0.25 ceiling for 4 ms after a torque
+     * reversal while the loop failed to reverse the current, and peak current
+     * went from 1.3 A to 4.7 A.
+     *
+     * Subtracting the undelivered part instead lets the integrator absorb an
+     * over-large feedforward: it simply winds negative until PI + ff lands on
+     * what the bridge can actually produce, which is the correct answer and
+     * the behaviour scaling could never reach. */
+    f->id_integ -= (vd_cmd - f->vd);
+    f->iq_integ -= (vq_cmd - f->vq);
   }
 
   /* ---- inverse Park -------------------------------------------------- */
@@ -367,6 +529,36 @@ void FOC_Update(FocState_t *f, int32_t iu_ma, int32_t iw_ma, uint16_t enc_raw,
   f->duty_v = vv + 0.5f;
   f->duty_w = vw + 0.5f;
 
+  /* ---- deadtime compensation ---------------------------------------- *
+   *
+   * Applied per PHASE, not per axis, because that is where the error lives:
+   * each leg's applied volt-seconds are short by t_d*f_sw*Vbus in the
+   * direction its own current is flowing. See the derivation in foc.h.
+   *
+   * After the +0.5 offset and before the clamp, so the compensation is part
+   * of what gets bounded to a producible duty rather than something added on
+   * top of an already-saturated one.
+   *
+   * The hysteresis band matters more than it looks. Inside it no compensation
+   * is applied at all, which leaves a small uncorrected wedge around each
+   * zero crossing - accepted deliberately, because the alternative is taking
+   * the sign from a measurement whose noise floor is comparable to the band
+   * and chattering the correction at the noise frequency. */
+  if (f->dtc_pm != 0)
+  {
+    float dtc = (float)f->dtc_pm      * 0.001f;
+    float h   = (float)f->dtc_hyst_ma * 0.001f;
+
+    if      (f->iu >  h) { f->duty_u += dtc; }
+    else if (f->iu < -h) { f->duty_u -= dtc; }
+
+    if      (f->iv >  h) { f->duty_v += dtc; }
+    else if (f->iv < -h) { f->duty_v -= dtc; }
+
+    if      (f->iw >  h) { f->duty_w += dtc; }
+    else if (f->iw < -h) { f->duty_w -= dtc; }
+  }
+
   if (f->duty_u < 0.0f) { f->duty_u = 0.0f; }
   if (f->duty_v < 0.0f) { f->duty_v = 0.0f; }
   if (f->duty_w < 0.0f) { f->duty_w = 0.0f; }
@@ -400,6 +592,8 @@ void FOC_Update(FocState_t *f, int32_t iu_ma, int32_t iw_ma, uint16_t enc_raw,
     f->vmag_pm   = (int32_t)(fm_sqrtf(f->vd * f->vd + f->vq * f->vq) * 1000.0f);
     f->omega_e_rads_x10  = (int32_t)(f->omega_e * 10.0f);
     f->theta_adv_deg_x10 = (adv * 3600) / (int32_t)FOC_ENC_COUNTS;
+    f->vd_ff_pm  = (int32_t)(vd_ff * 1000.0f);
+    f->vq_ff_pm  = (int32_t)(vq_ff * 1000.0f);
   }
 
   f->updates++;

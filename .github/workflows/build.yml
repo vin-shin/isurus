@@ -1,0 +1,103 @@
+# Build and static analysis on every push.
+#
+# NOT YET RUN. There is no way to execute GitHub Actions from the bench, so
+# this has been written against the documented behaviour of each action and
+# the exact commands that are known to work locally - but the first push is
+# its first real test. Expect to iterate once.
+#
+# It also runs the host test suite for foc.c, including the mutant check that
+# verifies those tests can actually fail. A green suite that has never been
+# seen to go red is not evidence of anything.
+
+name: build
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  firmware:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-arm-none-eabi libnewlib-arm-none-eabi \n                                  cmake ninja-build
+
+      # Both configurations, because they differ in more than optimisation
+      # level: Debug carries the per-file -O2 pins that keep the control ISR
+      # inside its deadline, Release applies -O2 everywhere. A change that
+      # builds under one and not the other is exactly what this should catch.
+      - name: Configure Debug
+        run: >-
+          cmake -S . -B build/Debug -G Ninja
+          -DCMAKE_BUILD_TYPE=Debug
+          -DCMAKE_TOOLCHAIN_FILE=cmake/gcc-arm-none-eabi.cmake
+
+      - name: Build Debug
+        run: cmake --build build/Debug
+
+      - name: Configure Release
+        run: >-
+          cmake -S . -B build/Release -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_TOOLCHAIN_FILE=cmake/gcc-arm-none-eabi.cmake
+
+      - name: Build Release
+        run: cmake --build build/Release
+
+      # Flash and RAM use are worth seeing in the log on every commit - a jump
+      # is usually someone accidentally pulling in printf's float formatting.
+      - name: Report size
+        run: arm-none-eabi-size build/Debug/makolongfin2.elf build/Release/makolongfin2.elf
+
+  hosttests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Native gcc only - foc.c is compiled for the host here, not for ARM.
+      - name: Install gcc
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential
+
+      # --mutants plants the two bugs this project actually shipped (an angle
+      # conversion off by pi, and an anti-windup that scaled the integrators)
+      # and fails the job if the suite does NOT catch them. That guard is the
+      # reason to trust the green tick above it.
+      - name: foc.c host tests
+        run: bash test/host/run.sh --mutants
+
+  analysis:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install cppcheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cppcheck
+
+      # Scoped to Core/Src. The vendor HAL and CMSIS are not this project's to
+      # fix and would drown the signal.
+      #
+      # This step is the one that matters most, and its value is UNVERIFIED.
+      # The work plan's motivating bug is `errors & !MASK` - logical NOT where
+      # bitwise was meant - and that is NOT caught by any GCC warning flag;
+      # this was tested, see CMakeLists.txt. cppcheck is expected to flag it as
+      # a boolean used in a bitwise operation, which is why this step exists,
+      # but that expectation has not been confirmed. Confirm it on the first
+      # run by checking cppcheck actually reports a deliberately planted case,
+      # rather than trusting a green tick.
+      - name: cppcheck
+        run: |
+          cppcheck --enable=warning,style,performance,portability \
+                   --inline-suppr \
+                   --suppress=missingIncludeSystem \
+                   --suppress=unusedFunction \
+                   --error-exitcode=1 \
+                   -I Core/Inc \
+                   Core/Src

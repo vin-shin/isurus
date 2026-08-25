@@ -20,6 +20,7 @@ extern volatile PosState_t   g_pos;
 extern volatile FocState_t   g_foc;
 extern volatile CSenseTelem_t g_cs;
 extern volatile uint32_t     g_faulted;
+#include "drive.h"
 
 /* Set by main.c so CAN and the SWD bench block cannot disagree about whether
  * the bridge is up; see Can_ApplyEnable below. */
@@ -271,7 +272,9 @@ static void Can_Handle(uint8_t cmd, const uint8_t *d, uint8_t len)
       break;
 
     case CAN_CMD_CLEAR_FAULT:
-      g_faulted = 0U;
+      /* Goes through the state machine, which re-runs the self-test rather
+       * than simply dropping the latch - see Drive_ClearFault. */
+      Drive_ClearFault();
       break;
 
     case CAN_CMD_SET_ENABLE:
@@ -458,6 +461,15 @@ void Can_PublishTelem(void)
   wr_i16(d + 4, g_pos.err_deg_x10);
   wr_u16(d + 6, (uint32_t)g_pos.iq_max_ma);
   (void)Can_Send(CAN_ID(CAN_NODE_ID, CAN_MSG_TELEM_STATE), d, 8);
+
+  /* Drive state and the latched cause. See CAN_MSG_TELEM_DRIVE. */
+  d[0] = (uint8_t)g_drive.state;
+  d[1] = (uint8_t)g_drive.fault;
+  d[2] = (uint8_t)g_drive.selftest_fail;
+  d[3] = 0U;
+  wr_u16(d + 4, g_drive.fault_count);
+  wr_u16(d + 6, (g_drive.ms_in_state > 65535U) ? 65535U : g_drive.ms_in_state);
+  (void)Can_Send(CAN_ID(CAN_NODE_ID, CAN_MSG_TELEM_DRIVE), d, 8);
 }
 
 void Can_GetTelem(CanTelem_t *t)

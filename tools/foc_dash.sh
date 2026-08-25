@@ -85,10 +85,19 @@ mww $PMODE 0
 mww $PENA 0
 mww $IQA 0
 mww $IDA 0
-mww $ENA 0
+# Gates and outputs BEFORE the control loop, not after.
+#
+# Clearing \$ENA first stops the loop updating the duty registers while the
+# HRTIM keeps applying the last ones it wrote, and on a spinning rotor that
+# frozen vector sweeps every angle relative to the magnets. Measured at 27.2 A
+# on a motor rated 22 A continuous. The firmware now safes the bridge on that
+# transition by itself, so this is belt and braces - but "gates first on the
+# way down" is the rule main.c enforces everywhere else, and this was the one
+# place that had it backwards.
 mww [expr {$CMDA+20}] 0
 mww [expr {$CMDA+16}] 0
 mww $CMDA 1
+mww $ENA 0
 shutdown
 EOF
 
@@ -247,7 +256,14 @@ if {$DEMO} {
     mww [expr {$CMDA+20}] 1
     mww $CMDA 1
     sleep 200
-    mww $FLTA 0
+    # Clear a latched fault through the state machine, not by poking
+    # g_faulted. That word is now a derived mirror written only by
+    # Drive_Enter, so writing 0 to it does nothing at all - the drive stays in
+    # FAULT and refuses to arm. g_cmd.clear_fault is the one real entry, and
+    # it re-runs the self-test on the way out. See drive.h.
+    mww [expr {$CMDA+36}] 1
+    mww $CMDA 1
+    sleep 300
     # Stand the outer loop down first, so the iq_ref written below is
     # ours and stays ours.
     mww $PMODE 0

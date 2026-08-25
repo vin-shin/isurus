@@ -16,6 +16,9 @@ Target: **STM32G474RET6**, LQFP64, 512 KB flash / 128 KB RAM.
 7. [Three-phase PWM — HRTIM1 and the UCC21330 gate drivers](#7-three-phase-pwm--hrtim1-and-the-ucc21330-gate-drivers)
 8. [Motor parameters and encoder zero calibration](#8-motor-parameters-and-encoder-zero-calibration)
 9. [Debugging heuristic worth remembering](#9-debugging-heuristic-worth-remembering)
+10. [No hardware overcurrent path — requirement for the next board spin](#10-no-hardware-overcurrent-path--requirement-for-the-next-board-spin)
+11. [Safe-state policy — freewheel vs active short circuit](#11-safe-state-policy--freewheel-vs-active-short-circuit)
+12. [Sensor plausibility — what the board cannot currently check](#12-sensor-plausibility--what-the-board-cannot-currently-check)
 
 ---
 
@@ -1034,3 +1037,273 @@ memory), never a crash. Check in this order:
 3. `pc` after `reset halt` — is it even inside `0x08000000`?
 
 Only then start reading C.
+
+---
+
+## 10. No hardware overcurrent path — requirement for the next board spin
+
+### TL;DR
+
+**Every overcurrent trip on this board is software, and slow software at that.**
+There is no comparator on the current-sense path, no HRTIM fault input is
+assigned, and nothing can stop the bridge without the CPU agreeing to. That is
+survivable at 24 V and is not a design that scales to 600 V.
+
+This section exists because the HV work plan asks for the comparator to be
+routed to an HRTIM fault input, and on this board that cannot be done — so it
+is written down as a hardware requirement rather than faked in firmware.
+
+### What is actually there
+
+The sense path has no comparator in it at all (see section 6):
+
+| Phase | Pin | Goes to | Ends at |
+|---|---|---|---|
+| U | PC3 | OPAMP5 follower | ADC5 |
+| W | PA1 | OPAMP3 follower | ADC2 |
+
+Both are pure measurement chains. The trip decision is then made in
+`main.c`, in the `CS_READ_EVERY` block of the **main loop** — not the control
+ISR — at roughly 750 Hz, and calls `MotorPwm_EmergencyStop()`.
+
+`HRTIM1` is configured with `FaultEnable = HRTIM_TIMFAULTENABLE_NONE` and
+`FaultLevel = HRTIM_OUTPUTFAULTLEVEL_NONE`, and **`makolongfin2.ioc` assigns
+no `HRTIM_FLT*` pin at all**. So the hardware protection the HRTIM is capable
+of is not merely unconfigured, it has nothing wired to it.
+
+### Why that is not good enough
+
+Detection latency against the current that builds while you wait, into a
+shorted bridge (`di/dt = Vbus / L`):
+
+| | latency | bench, 24 V / 54.3 uH | EMRAX, 600 V / 255 uH |
+|---|---|---|---|
+| main-loop poll (today) | 1300 us | 575 A — **38x** the 15 A trip | 3059 A — **10x** the 300 A limit |
+| one control ISR period | 33.3 us | 14.7 A | 78 A |
+| HRTIM fault input | ~1 us | 0.4 A | 2.4 A |
+
+The bench number is the one worth sitting with: the present trip threshold is
+15 A, and the present detection path lets the current reach roughly 575 A
+before it looks. It has never mattered because nothing on this bench can
+actually source that — the supply current-limits and the motor is a 22 A
+machine. On a 600 V pack with hundreds of amps available, it is the difference
+between a trip and a fire.
+
+It is also worse than the latency suggests, because it is a **main-loop** poll:
+a firmware hang, a long blocking `Telem_Printf`, or a starved main loop
+removes the protection entirely while the bridge keeps switching. HRTIM
+hardware keeps running through a halted CPU — that is noted in `motor_pwm.c`
+already, and it cuts both ways.
+
+### Requirement for the next board spin
+
+1. **Route a current-limit comparison to an HRTIM fault input** (`FLT1`–`FLT6`).
+   On STM32G4 that fault can be sourced either from an external `HRTIM_FLTx`
+   pin or internally from a comparator output, so either an external
+   comparator driving a FLT pin, or a sense signal landed on a pin that is a
+   `COMPx_INP`, will do.
+2. **Check the COMP input pinout before choosing sense pins.** `PC3` is not a
+   comparator input on this part, so the U phase as currently routed cannot
+   reach a comparator even in principle. Whether `PA1` is a `COMP1_INP` was
+   *not* verified while writing this — confirm against the STM32G474
+   datasheet pin table, not from memory, before relying on it.
+3. **Protect all three phases, not one.** Comparator coverage on a single
+   instrumented phase is not a protection scheme; a fault on an uncovered
+   phase is invisible to it.
+4. **Provide the threshold from a DAC**, not a resistor divider, so the trip
+   level is settable per operating mode and testable in-system.
+5. Once the input exists, configure the fault's **digital filter and
+   blanking** so switching-edge noise cannot trip it, and record the chosen
+   filter setting and why — an overcurrent trip that nuisance-fires is a trip
+   that gets disabled.
+
+Until item 1 exists, the fastest honest improvement available in firmware is
+to move the trip out of the main loop and into the control ISR, which buys
+1300 us -> 33 us. That is a 40x improvement and still 33x slower than the
+hardware would be, so it is a mitigation, not the fix.
+
+---
+
+## 11. Safe-state policy — freewheel vs active short circuit
+
+### TL;DR
+
+There are two ways to make a spinning PMSM drive safe and **neither is
+unconditionally correct**. The choice depends on speed, and the crossover is
+computed rather than chosen:
+
+```
+    freewheel back-charges the pack once   sqrt(3) * w_e * lambda_m  >  Vbus
+    so the crossover is                    w_e = Vbus / (sqrt(3) * lambda_m)
+```
+
+`Drive_ChooseSafeState()` implements exactly that. On this bench it always
+returns freewheel, and that is the right answer here — see below.
+
+### The two states, and what each costs
+
+**Freewheel** — every FET off. This is what `MotorPwm_EmergencyStop()` does,
+and it is the state that requires the least of the hardware to still be
+working: two single-store register writes, no gate driver needed, no
+assumption that any device is healthy.
+
+Its failure mode is the pack. A spinning PMSM does not stop generating because
+the transistors are off — the back-EMF simply rectifies through the body
+diodes instead. Once the line-to-line peak exceeds the DC link, the bridge
+becomes an uncontrolled three-phase rectifier feeding the battery, at whatever
+current the machine's impedance allows and with nothing in the loop able to
+stop it. On a pack already near its charge ceiling, or with the contactors
+open and only the bulk capacitance to absorb it, that is not a safe state at
+all.
+
+**Active short circuit** — all three low-side devices on. The back-EMF is then
+shorted into the winding instead of the pack, and the machine's own impedance
+limits the current. Nothing reaches the DC link.
+
+Its cost is continuous. The steady-state symmetrical short-circuit current is
+
+```
+    |i_sc| = w_e * lambda_m / sqrt(R^2 + (w_e * L)^2)   ->  lambda_m / Ld
+```
+
+and on any machine where `w_e * L >> R` that asymptote is reached almost
+immediately, so ASC current is **essentially flat with speed**. It also needs
+the gate drivers alive and three devices deliberately commanded on, which is a
+lot more trust in the hardware than freewheel asks for.
+
+### The numbers
+
+| | bench 8309 @ 24 V | EMRAX 228 @ 600 V |
+|---|---|---|
+| lambda_m | 2.68 mWb (measured) | >= 60.1 mWb (a bound, not a datasheet value) |
+| L | 54.3 uH | 255 uH |
+| freewheel back-charges above | 5170 rad/s (823 Hz) | 5764 rad/s (917 Hz) |
+| max reachable w_e | ~1820 rad/s (290 Hz) | 5762 rad/s (917 Hz) |
+| ASC current at max speed | 37.4 A | 236 A |
+| ASC asymptote lambda_m/Ld | 49.4 A | 236 A |
+
+Two things fall out of that table.
+
+**On this bench, freewheel is unconditionally correct.** The motor is
+voltage-limited to about 290 Hz electrical and the back-charge crossover is at
+823 Hz, so the hazard freewheel guards against cannot be reached at 24 V. ASC,
+meanwhile, would draw 37.4 A at bench top speed — past the +/-40 A range of the
+CT4022 sensors and roughly twice the motor's 22 A continuous rating. So ASC is
+not merely unnecessary here, it is the more damaging of the two options, and
+the decision logic correctly never selects it.
+
+**On the EMRAX, ASC is survivable but not free.** 236 A is 79% of the 300 A
+rating, drawn continuously and entirely as loss in the winding and the
+low-side devices, with the machine still spinning and no cooling guarantee
+once the drive has faulted. It is a state to coast down from, not a state to
+sit in.
+
+### The part that needs a real number before HV
+
+`lambda_m` for the EMRAX above is a **lower bound**, back-derived from the
+statement that its back-EMF exceeds pack voltage at 5500 rpm. That makes the
+crossover land exactly at maximum speed, which is an artefact of the
+derivation and not a physical coincidence.
+
+It matters which way the real value goes. **A larger lambda_m moves the
+crossover DOWN**, so freewheel becomes unsafe at a lower speed and the ASC
+region gets wider — and the ASC current gets larger with it. Get `lambda_m`
+from the datasheet Kv or a measured back-EMF before setting this threshold on
+HV hardware, and re-run the table. This is the same characterisation task
+`foc.h` asks for in the bandwidth derivation, and it decides two independent
+things.
+
+### What the firmware does with it
+
+`Drive_ChooseSafeState(cause, w_e, vbus)` in `drive.c`, with two rules:
+
+1. **Any fault that implicates the bridge gets freewheel regardless of speed** —
+   overcurrent, watchdog, current-sense failure. ASC requires commanding three
+   devices on through live gate drivers, which is exactly what must not be
+   done when a device or a driver is the thing under suspicion. An ASC into a
+   leg that is already shorted is a shoot-through.
+2. Otherwise it is the speed comparison above, against the **measured** bus, so
+   the threshold tracks a sagging pack instead of assuming nominal.
+
+`Drive_Fault()` freewheels first and unconditionally, then reconsiders. The
+bridge has to be off within microseconds and freewheel is the state that needs
+nothing to still work; putting a float divide between the fault and the FETs
+would be the wrong trade.
+
+**The ASC branch cannot execute on this board.** That is deliberate and is the
+point of developing it here: the transitions, the cause-based override and the
+threshold arithmetic all run and can be reasoned about at 48 V where a mistake
+is a twitch, while the action itself waits for hardware that can survive it.
+One consequence worth knowing — a bug in that branch will not be caught by
+bench testing. One already was not: an early version applied ASC *before*
+entering the FAULT state, and `Drive_Enter()` drops the gate drivers on the
+way into any non-RUN state, so the ASC would have been silently undone. It was
+found by reading, not by running.
+
+---
+
+## 12. Sensor plausibility — what the board cannot currently check
+
+Two of the four checks the HV work plan asks for cannot be implemented on this
+board as it stands. Both are written up here rather than approximated in
+firmware, for the same reason as section 10: a check that cannot actually
+detect the thing it claims to detect is worse than no check, because it gets
+trusted.
+
+### Phase V is not measured, so the sum check is impossible
+
+`i_v` is reconstructed as `-(i_u + i_w)`. That identity is exact for a machine
+with no neutral connection, which is why it is used — but it is also
+unfalsifiable. `i_u + i_v + i_w` is zero **by construction**, so asserting that
+it is near zero tests nothing at all. A failed U or W sensor simply moves the
+error into the reconstructed V and the sum still comes out zero.
+
+Detecting a failed current sensor needs a third independent measurement. There
+is no third sensor in the firmware: `csense.c` starts OPAMP3 and OPAMP5 only,
+and nothing anywhere references a V-phase current.
+
+**Confirmed 2026-08-25: there is no phase-V sensor on this board.** The
+question was open for a while because `makolongfin2.ioc` assigns four OPAMP
+inputs the firmware never touches — PA3 (OPAMP1_VINP), PB0 (OPAMP2_VINP),
+PB11 (OPAMP4_VINP), PB12 (OPAMP6_VINP), plus PA6 (ADC2_IN3) — which looked
+like it might be a third sensor waiting to be brought up. It is not. Those
+pins are routed but carry no phase-current sensor, so no amount of firmware
+turns this into a three-phase measurement.
+
+So this is a hardware requirement for the next board spin, alongside the
+comparator in section 10. A third sensor buys two things, not one: a real sum
+check that can actually detect a failed sensor, and better common-mode
+rejection from the full 3-phase Clarke instead of the 2-phase reconstruction.
+
+Until then the drive cannot detect a failed current sensor at all, and that
+limitation should be stated plainly rather than papered over — the existing
+`i_u + i_v + i_w` identity will always evaluate to zero and must never be
+presented as a check.
+
+### The A1333 frame CRC is unverifiable from here
+
+The work plan asks for the encoder frame's CRC to be checked. `encoder.c`
+reads the angle with the two-frame ANG15 protocol and uses `rx2 & 0x7FFF`,
+discarding bit 15. Whether bit 15 is a parity bit, a status flag, or unused —
+and whether the A1333 offers a CRC-bearing frame format at all — is not
+determinable from anything in this repository, and **the datasheet is required
+before writing that code**. Guessing a polynomial and getting it wrong would
+produce a check that fails on good frames or passes on bad ones.
+
+What has been done instead, and what it does and does not cover:
+
+- **Substitution counting.** `Encoder_ReadAngleFast` has always fallen back to
+  the last good angle when a frame reads `0xFFFF`, which is what a dead MISO
+  line gives. That was silent, so a severed encoder produced a plausible,
+  constant, entirely fictional angle indefinitely — indistinguishable to the
+  control loop from a stalled rotor, and the loop responds by pouring current
+  into a fixed electrical angle. It is now counted, and
+  `ENC_MAX_SUBSTITUTIONS` consecutive substitutions latch `DRIVE_FAULT_ENCODER`.
+- **Kinematic rate limit.** A frame corrupted into a *plausible-looking* angle
+  is caught by the fact that the rotor cannot have moved that far in 33 us.
+  See `POS_ENC_DMAX_COUNTS`.
+
+Neither is a CRC. A frame corrupted into a nearby angle, at a moment when the
+rotor genuinely could have moved that far, still passes — and that is precisely
+the case a CRC would catch. Treat the encoder as *checked for gross failure*,
+not as verified.
