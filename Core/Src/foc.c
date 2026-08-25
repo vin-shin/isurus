@@ -279,8 +279,12 @@ float FOC_IqToTorque(float iq_a)
 
 int32_t FOC_SetTorque(FocState_t *f, int32_t t_mnm)
 {
-  if (f == NULL) { return 0; }
-
+  /* No null check, matching every other entry point in this file: these are
+   * internal APIs always called with a real state, and a defensive test that
+   * cannot fire is noise on the ISR path's own translation unit. It also
+   * pulled in NULL, which foc.c had no other reason to know about - and got
+   * away with it locally only because msys2's headers happen to reach
+   * stddef.h transitively where the CI runner's do not. */
   float iq_a = FOC_TorqueToIq((float)t_mnm * 0.001f);
 
   /* Saturate in CURRENT, not in torque, because the limit is a current limit:
