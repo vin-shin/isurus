@@ -167,14 +167,42 @@ def _find_step(iq):
     The firmware places the edge a fixed STEP_PRE_TICKS after arming, so that
     is the answer unless the capture predates that change - in which case the
     edge is wherever SWD latency dropped it and has to be found.
+
+    This ran the other way round until 2026-08-25: it searched first and used
+    STEP_PRE_TICKS only when it could find no step at all. Two things were
+    wrong with that. The search returns the MIDPOINT crossing, which is
+    mid-rise and not the command instant, so t=0 landed about 4 samples -
+    133 us - late on every hardware capture; and a simulator CSV puts its t=0
+    at the command. Comparing the two then measured 50%->63% on the bench
+    against 0%->63% in the model, and made the hardware current loop look
+    three times faster than the simulator. Aligned properly both are 200 us.
     """
     lo = np.median(iq[:30]) if len(iq) > 40 else iq[0]
     hi = np.median(iq[-100:]) if len(iq) > 200 else iq[-1]
     if abs(hi - lo) < 200:                    # no clear step: keep firmware's
         return STEP_PRE_TICKS
+
+    span = abs(hi - lo)
+    k = STEP_PRE_TICKS
+    # Trust the firmware's index when the capture actually looks like that:
+    # still at the pre-step level just before k, and clearly moved after it.
+    if 20 < k < len(iq) - 30:
+        pre = np.median(iq[k - 20:k])
+        post = np.median(iq[k + 10:k + 30])
+        if abs(pre - lo) < 0.25 * span and abs(post - lo) > 0.25 * span:
+            return k
+
+    # Older capture, where SWD latency put the edge anywhere: find it, then
+    # walk BACK to where it left the pre-step level. The command instant is
+    # the departure, not the half-way point.
     mid = 0.5 * (lo + hi)
     crossing = np.where((iq - mid) * np.sign(hi - lo) > 0)[0]
-    return int(crossing[0]) if len(crossing) else STEP_PRE_TICKS
+    if not len(crossing):
+        return STEP_PRE_TICKS
+    i = int(crossing[0])
+    while i > 0 and abs(iq[i] - lo) > 0.1 * span:
+        i -= 1
+    return i
 
 
 def read_sim_csv(path):
