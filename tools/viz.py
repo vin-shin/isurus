@@ -1,9 +1,21 @@
 #!/usr/bin/env python3
 """Plot control-loop data from the simulator and from the board.
 
-    tools/viz.py trace   <file> [-o out.png]
-    tools/viz.py compare --hw <capture> --sim <csv> [-o out.png]
+    tools/viz.py trace   <file> [--key K] [-o out.pdf] [--csv data.csv]
+    tools/viz.py compare --hw <capture> --sim <csv> [--hw-key K] [-o out.pdf]
     tools/viz.py live    [--seconds N] [-o out.png]
+
+Output format follows the extension. Use .pdf or .svg for anything going into
+a document - they are vector and stay sharp at any size - and .png for chat or
+an issue tracker. --csv writes the plotted numbers alongside, so a colleague
+can re-plot rather than ask for the raw capture.
+
+Every figure is stamped with the operating point and the repo revision it was
+plotted from, marked +dirty if the tree had uncommitted changes. A plot sent
+to someone else is close to worthless without that: "iq overshoots" is a
+rumour until the reader can tell which firmware and which bus, and a figure
+produced from uncommitted work is exactly the one that cannot be reproduced
+later.
 
 Two sources, one representation:
 
@@ -42,6 +54,23 @@ import matplotlib.pyplot as plt
 
 FS_HZ = 30000.0                # control ISR rate; one trace sample per period
 STEP_PRE_TICKS = 60            # firmware places the step here - see main.c
+
+# Report styling. Defaults are tuned for a screen at 100 dpi and look thin and
+# spidery once a figure is scaled into a document, so everything here is
+# nudged up: a plot that has to be zoomed to read is a plot nobody reads.
+REPORT_STYLE = {
+    "font.size": 11,
+    "axes.titlesize": 12,
+    "axes.labelsize": 11,
+    "legend.fontsize": 9,
+    "xtick.labelsize": 10,
+    "ytick.labelsize": 10,
+    "axes.linewidth": 0.9,
+    "lines.linewidth": 1.4,
+    "figure.facecolor": "white",
+    "savefig.facecolor": "white",
+    "savefig.bbox": "tight",
+}
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OPENOCD_SCRIPTS = os.environ.get("OPENOCD_SCRIPTS",
@@ -87,7 +116,12 @@ def read_hw_capture(path):
             for x in tok[1:]:
                 (data if x.lower().startswith("0x") else keys).append(x)
             if kind == "META":
-                meta[tuple(keys[:-1]) if len(keys) > 1 else tuple(keys)] = data
+                # META carries no chunk index, so ALL of its keys identify the
+                # capture. Dropping the last one here silently orphaned every
+                # hardware capture's metadata - the plots still drew, they just
+                # lost the operating point, which is the part that makes a
+                # figure worth sending to anyone.
+                meta[tuple(keys)] = data
             elif kind == "T":
                 # last key is the chunk index; the rest identify the capture
                 cap_key = tuple(keys[:-1])
@@ -183,26 +217,104 @@ def load_any(path):
 # plotting
 # --------------------------------------------------------------------------
 
+def _provenance():
+    """A one-line stamp so a figure can be interpreted and reproduced later.
+
+    A plot mailed to someone else is worth very little without the operating
+    point and the code that produced it - "iq overshoots" is not a finding, it
+    is a rumour, until the reader can tell which firmware and which bus. The
+    repo state is stamped rather than assumed clean, because a graph produced
+    from uncommitted work is exactly the one that later cannot be reproduced.
+    """
+    import datetime
+    stamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+    try:
+        h = subprocess.run(["git", "-C", ROOT, "rev-parse", "--short", "HEAD"],
+                           capture_output=True, text=True).stdout.strip()
+        dirty = subprocess.run(["git", "-C", ROOT, "status", "--porcelain"],
+                               capture_output=True, text=True).stdout.strip()
+        rev = f"{h}{'+dirty' if dirty else ''}" if h else "unknown"
+    except Exception:
+        rev = "unknown"
+    return f"makolongfin2 @ {rev}   plotted {stamp}"
+
+
+def _save(fig, out, dpi, footer_bits):
+    """Write the figure. Format follows the extension - .pdf and .svg are
+    vector and are what belong in a document; .png is for chat and issues."""
+    lines = [b for b in footer_bits if b]
+    lines.append(_provenance())
+    fig.text(0.005, 0.002, "\n".join(lines), fontsize=7, color="0.35",
+             va="bottom", ha="left")
+    fig.savefig(out, dpi=dpi)
+    print(f"wrote {out}")
+
+
+def _write_csv(path, traces):
+    """Ship the numbers next to the picture.
+
+    Someone who disagrees with a plot should be able to re-plot it rather than
+    ask for the raw capture, and a colleague without this repo checked out
+    still gets something they can open.
+    """
+    import csv
+    with open(path, "w", newline="") as fh:
+        w = csv.writer(fh)
+        keys = sorted({k for t in traces for k in t.ch})
+        w.writerow(["trace", "t_ms"] + keys)
+        for t in traces:
+            for i, tm in enumerate(t.t_ms):
+                w.writerow([t.name, f"{tm:.6f}"] +
+                           [f"{t.ch[k][i]:.6f}" if k in t.ch else "" for k in keys])
+    print(f"wrote {path}")
+
+
 def _style(ax, ylabel):
     ax.grid(alpha=0.25, linewidth=0.6)
     ax.set_ylabel(ylabel)
     ax.axvline(0.0, color="0.6", linewidth=0.8, linestyle=":")
 
 
-def _annotate(fig, traces):
-    bits = []
+def _footer_bits(traces):
+    """Condense the operating point into a line or two for the figure footer.
+
+    Captures from one run share a speed and a bus, so they are collapsed
+    rather than listed per trace - twenty identical lines is not provenance,
+    it is noise.
+    """
+    groups = {}
     for t in traces:
         we = t.meta.get("we")
-        if we:
-            bits.append(f"{t.name}: w_e {we:.0f} rad/s ({we/(2*np.pi):.0f} Hz elec)")
+        if we is None:
+            continue
+        tag = t.name.split()[0]
+        g = groups.setdefault(tag, {"we": [], "vb": []})
+        g["we"].append(we)
         vb = t.meta.get("vbus_mv")
         if vb:
-            bits[-1] += f", Vbus {vb/1000.0:.2f} V"
-    if bits:
-        fig.text(0.01, 0.005, "   ".join(bits), fontsize=7, color="0.35")
+            g["vb"].append(vb / 1000.0)
+
+    bits = []
+    for tag, g in groups.items():
+        we = np.array(g["we"])
+        n = len(we)
+        line = f"{tag}: w_e {we.mean():.0f}"
+        # Quote the spread when there is one. Captures in a run are taken
+        # while the machine coasts, so the speed is not identical across them
+        # and pretending otherwise would overstate how controlled the
+        # measurement was.
+        if n > 1 and np.ptp(we) > 5:
+            line += f" (+/-{np.ptp(we)/2:.0f})"
+        line += f" rad/s, {we.mean()/(2*np.pi):.0f} Hz electrical"
+        if g["vb"]:
+            line += f", Vbus {np.mean(g['vb']):.2f} V"
+        if n > 1:
+            line += f", {n} captures"
+        bits.append(line)
+    return bits
 
 
-def plot_traces(traces, out, title):
+def plot_traces(traces, out, title, dpi=200):
     fig, (a1, a2) = plt.subplots(2, 1, sharex=True, figsize=(10, 6.5))
 
     for tr in traces:
@@ -219,13 +331,11 @@ def plot_traces(traces, out, title):
     a1.set_title(title)
     a1.legend(fontsize=7, ncol=2, loc="best")
     a2.legend(fontsize=7, ncol=2, loc="best")
-    _annotate(fig, traces)
-    fig.tight_layout()
-    fig.savefig(out, dpi=130)
-    print(f"wrote {out}")
+    fig.tight_layout(rect=(0, 0.045, 1, 1))
+    _save(fig, out, dpi, _footer_bits(traces))
 
 
-def plot_compare(hw, sim, out):
+def plot_compare(hw, sim, out, dpi=200):
     fig, (a1, a2, a3) = plt.subplots(3, 1, sharex=True, figsize=(10, 8.5))
 
     for tr in hw:
@@ -254,13 +364,11 @@ def plot_compare(hw, sim, out):
     a1.set_title("hardware vs simulator - same firmware source, same step")
     for ax in (a1, a2, a3):
         ax.legend(fontsize=8, loc="best")
-    _annotate(fig, hw + sim)
-    fig.tight_layout()
-    fig.savefig(out, dpi=130)
-    print(f"wrote {out}")
+    fig.tight_layout(rect=(0, 0.055, 1, 1))
+    _save(fig, out, dpi, _footer_bits(hw + sim))
 
 
-def plot_live(t_s, ch, out):
+def plot_live(t_s, ch, out, dpi=200):
     fig, (a1, a2) = plt.subplots(2, 1, sharex=True, figsize=(10, 6.0))
     a1.plot(t_s, ch["iq_a"], linewidth=1.1, label="iq")
     a1.plot(t_s, ch["id_a"], linewidth=1.0, alpha=0.8, label="id")
@@ -272,10 +380,9 @@ def plot_live(t_s, ch, out):
         ax.set_ylabel(lab)
         ax.legend(fontsize=8, loc="best")
     a2.set_xlabel("time  [s]")
-    a1.set_title("live telemetry - integer mirrors, 1 kHz, bridge untouched")
-    fig.tight_layout()
-    fig.savefig(out, dpi=130)
-    print(f"wrote {out}")
+    a1.set_title("live telemetry - integer mirrors, bridge untouched")
+    fig.tight_layout(rect=(0, 0.05, 1, 1))
+    _save(fig, out, dpi, [])
 
 
 # --------------------------------------------------------------------------
@@ -348,7 +455,11 @@ def main():
     p = sub.add_parser("trace", help="plot a saved capture (hardware or sim)")
     p.add_argument("file")
     p.add_argument("--key", default=None, help="keep only captures with this key")
-    p.add_argument("-o", "--out", default="trace.png")
+    p.add_argument("-o", "--out", default="trace.png",
+                   help="format follows the extension: .pdf/.svg vector, .png raster")
+    p.add_argument("--dpi", type=int, default=200)
+    p.add_argument("--csv", default=None, help="also write the plotted data")
+    p.add_argument("--title", default=None)
 
     p = sub.add_parser("compare", help="overlay hardware and simulator")
     p.add_argument("--hw", required=True)
@@ -356,21 +467,31 @@ def main():
     p.add_argument("--hw-key", default=None,
                    help="keep only captures with this key, e.g. the A/B flag value")
     p.add_argument("-o", "--out", default="compare.png")
+    p.add_argument("--dpi", type=int, default=200)
+    p.add_argument("--csv", default=None, help="also write the plotted data")
 
     p = sub.add_parser("live", help="poll telemetry from the board (read-only)")
     p.add_argument("--seconds", type=float, default=5.0)
     p.add_argument("-o", "--out", default="live.png")
+    p.add_argument("--dpi", type=int, default=200)
 
     a = ap.parse_args()
+    plt.rcParams.update(REPORT_STYLE)
 
     if a.cmd == "trace":
         tr = select(load_any(a.file), a.key)
-        plot_traces(tr, a.out, os.path.basename(a.file))
+        plot_traces(tr, a.out, a.title or os.path.basename(a.file), a.dpi)
+        if a.csv:
+            _write_csv(a.csv, tr)
     elif a.cmd == "compare":
-        plot_compare(select(load_any(a.hw), a.hw_key), load_any(a.sim), a.out)
+        hw = select(load_any(a.hw), a.hw_key)
+        sim = load_any(a.sim)
+        plot_compare(hw, sim, a.out, a.dpi)
+        if a.csv:
+            _write_csv(a.csv, hw + sim)
     else:
         t, ch = live_capture(a.seconds)
-        plot_live(t, ch, a.out)
+        plot_live(t, ch, a.out, a.dpi)
 
 
 if __name__ == "__main__":
