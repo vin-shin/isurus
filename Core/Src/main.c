@@ -36,6 +36,7 @@
 #include "position.h"
 #include "can.h"
 #include "haptic.h"
+#include "limits.h"
 #include <stdio.h>
 #include <stdarg.h>
 #include <string.h>
@@ -180,6 +181,7 @@ static   uint32_t s_bridge_up        = 0;
  * or 220000 deg/s - the shaft cannot do that, so anything flagged here is the
  * wire, not the motor. This is the measurement that says whether the SPI
  * clock can be raised. */
+volatile uint32_t g_ov_trips = 0;   /* bus went over LIM_VBUS_MAX_MV */
 volatile uint32_t g_enc_glitch = 0;
 volatile int32_t  g_enc_glitch_max = 0;
 
@@ -476,6 +478,27 @@ int main(void)
       s_cs_div = 0;
       (void)CSense_Read((CSenseTelem_t *)&g_cs);
       g_vbus_read_rc = CSense_ReadVbus((CSenseTelem_t *)&g_cs);
+
+      /* Bus overvoltage. The motor is a 12S pack part - 44.4 V nominal, 50.4 V
+       * on a full charge - and nothing else in this firmware would stop the
+       * supply being wound past that. Treated like an overcurrent: kill the
+       * stage and latch, because the damage from running a motor over its
+       * voltage rating is not something a control loop can back out of.
+       *
+       * This bounds the MOTOR. The board's own ceiling (FET Vds, bulk cap,
+       * gate drive) is not recorded anywhere and has not been verified. */
+      if ((g_vbus_read_rc == 0) && (g_cs.vbus_mv > LIM_VBUS_MAX_MV) &&
+          (g_faulted == 0U))
+      {
+        MotorPwm_EmergencyStop();
+        g_pos.enabled = 0U;
+        g_pos.mode    = MOTION_MODE_IDLE;
+        g_foc.enabled = 0U;
+        g_foc.iq_ref  = 0.0f;
+        g_faulted     = 1U;
+        g_ov_trips++;
+        s_fault_tick  = HAL_GetTick();
+      }
 
       /* Keep the current-loop gains matched to the bus that is actually
        * present. Vbus is the plant gain, so a supply change silently retunes

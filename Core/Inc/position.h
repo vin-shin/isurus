@@ -36,6 +36,7 @@ extern "C" {
 
 #include <stdint.h>
 #include "motor_pwm.h"   /* PWM_FREQ_HZ */
+#include "limits.h"
 
 /* Encoder counts per mechanical revolution (A1333, 15-bit). */
 #define POS_COUNTS_PER_REV   32768
@@ -281,6 +282,9 @@ typedef struct {
   int32_t  vki_x1000;      /* 108 velocity loop A/(rad*s)  x1000           */
   int32_t  vel_ref_dps;    /* 112 ramped velocity reference (telemetry)    */
   int32_t  vel_integ_ma;   /* 116 velocity integrator alone  (telemetry)   */
+  uint32_t clamped;        /* 120 times a command was saturated to a limit  *
+                            *     - see limits.h. Non-zero means something  *
+                            *     asked for more than the machine can do.   */
 
   /* ---- internal ---------------------------------------------------------- */
   int32_t  pos_counts;     /* unwrapped multi-turn count                   */

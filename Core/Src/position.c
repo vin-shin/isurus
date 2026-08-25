@@ -83,6 +83,7 @@ void Position_Init(PosState_t *p)
   p->iq_raw_ma   = 0;
   p->integ_ma    = 0;
   p->turns       = 0;
+  p->clamped     = 0U;
 }
 
 void Position_ZeroHere(PosState_t *p)
@@ -186,6 +187,28 @@ float Position_Step(PosState_t *p, uint16_t enc_raw)
   if (valpha <= 0.0f) { valpha = 0.001f; }
   if (valpha >  1.0f) { valpha = 1.0f;   }
   p->vel_rads += valpha * (raw_vel - p->vel_rads);
+
+  /* Saturate every command to what the hardware can actually do, before any
+   * of it is used. Done here rather than in the transports so that CAN, the
+   * SWD tools and a debugger poking memory by hand are all bounded by the
+   * same code - a limit that only one path enforces is not a limit. */
+  {
+    uint32_t *hits = (uint32_t *)&p->clamped;
+    p->iq_max_ma      = Lim_Clamp(p->iq_max_ma,      0, LIM_IQ_MAX_MA,     hits);
+    p->torque_cmd_ma  = Lim_Clamp(p->torque_cmd_ma,  -p->iq_max_ma, p->iq_max_ma, hits);
+    p->vel_cmd_dps    = Lim_Clamp(p->vel_cmd_dps,    -LIM_VEL_MAX_DPS, LIM_VEL_MAX_DPS, hits);
+    p->vel_max_dps    = Lim_Clamp(p->vel_max_dps,    1, LIM_VEL_MAX_DPS,   hits);
+    p->cmd_deg_x10    = Lim_Clamp(p->cmd_deg_x10,    -LIM_POS_MAX_DEG_X10, LIM_POS_MAX_DEG_X10, hits);
+    p->accel_max_dps2 = Lim_Clamp(p->accel_max_dps2, LIM_ACCEL_MIN_DPS2, LIM_ACCEL_MAX_DPS2, hits);
+    p->jerk_max_dps3  = Lim_Clamp(p->jerk_max_dps3,  0, LIM_JERK_MAX_DPS3, hits);
+    p->kp_x1000       = Lim_Clamp(p->kp_x1000,       0, LIM_KP_X1000_MAX,  hits);
+    p->ki_x1000       = Lim_Clamp(p->ki_x1000,       0, LIM_KI_X1000_MAX,  hits);
+    p->kd_x1000       = Lim_Clamp(p->kd_x1000,       0, LIM_KD_X1000_MAX,  hits);
+    p->vkp_x1000      = Lim_Clamp(p->vkp_x1000,      0, LIM_VKP_X1000_MAX, hits);
+    p->vki_x1000      = Lim_Clamp(p->vki_x1000,      0, LIM_VKI_X1000_MAX, hits);
+    p->out_lpf_hz     = Lim_Clamp(p->out_lpf_hz,     0, (int32_t)(PWM_FREQ_HZ / 4U), hits);
+    p->vel_filt_x1000 = Lim_Clamp(p->vel_filt_x1000, 1, 1000,              hits);
+  }
 
   float iq_max_a = (float)p->iq_max_ma * 0.001f;
 

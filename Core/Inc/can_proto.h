@@ -11,7 +11,14 @@
   * ---------------------------------------------------------------------------
   * Physical layer
   * ---------------------------------------------------------------------------
-  *   Classic CAN (not FD), 1 Mbit/s, 11-bit standard identifiers.
+  *   CAN 2.0A: classic CAN frames, 11-bit standard identifiers, 1 Mbit/s.
+  *   Not CAN FD. The FDCAN peripheral is configured with FrameFormat set to
+  *   FDCAN_FRAME_CLASSIC and IdType to FDCAN_STANDARD_ID, so nothing on the
+  *   wire is an FD frame and any 2.0 node can read every frame here.
+  *
+  *   Classic rather than FD because every message below fits in 8 bytes, and
+  *   2.0 talks to every analyser, transceiver and node in existence. Moving to
+  *   FD later would change only the frame format, not the protocol.
   *   FDCAN1 on PA12 (TX) and PB8 (RX). Note PB8 is also BOOT0 - see
   *   HARDWARE_NOTES.md section 1 before assuming a dead board is a firmware
   *   problem.
@@ -63,6 +70,30 @@
   *   3600 is one full turn and there is no wrap to reason about. Velocity is
   *   whole mechanical degrees per second. Current is milliamps of q-axis
   *   current, which for this motor is torque-producing current.
+  *
+  * ---------------------------------------------------------------------------
+  * Limits
+  * ---------------------------------------------------------------------------
+  *   A host cannot command past what the machine can physically do. Every
+  *   setpoint and limit is saturated into the bounds in limits.h before it is
+  *   used - in the motion loop, not here, so the same bounds apply to the SWD
+  *   tools and to anything a debugger writes by hand.
+  *
+  *   Saturation is silent by nature, so it is also counted. A frame carrying a
+  *   value outside the bounds is still ACCEPTED and applied at the limit, and
+  *   increments rx_out_of_range. A host that increments that counter is asking
+  *   for something impossible and should be fixed; it is not an error the
+  *   drive can resolve for you.
+  *
+  *   The headline bounds, all traceable to hardware:
+  *
+  *       current    12 A   below the 15 A bench overcurrent trip, itself well
+  *                         below the motor's 22 A continuous and the sensors'
+  *                         +/-40 A measuring range
+  *       bus       50.4 V  a full 12S pack, the motor's ceiling. Exceeding it
+  *                         latches the fault path and kills the stage.
+  *       speed     3600 deg/s
+  *       position  +/-100 turns
   *
   * ---------------------------------------------------------------------------
   * Safety

@@ -26,6 +26,10 @@ typedef struct {
   uint32_t rx_ignored;     /* frames for another node              */
   uint32_t rx_bad_len;     /* right command, wrong payload length  */
   uint32_t rx_bad_cmd;     /* unknown command id                   */
+  uint32_t rx_out_of_range;/* accepted, but a field was out of range and
+                            * got saturated - see limits.h. A host that
+                            * increments this is asking for more than the
+                            * machine can do and should be fixed.   */
   uint32_t tx_frames;      /* telemetry frames queued              */
   uint32_t tx_errors;      /* queue rejected the frame             */
   uint32_t timeouts;       /* times the command watchdog fired     */

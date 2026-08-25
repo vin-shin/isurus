@@ -6,6 +6,7 @@
   */
 
 #include "haptic.h"
+#include "limits.h"
 
 #define DEG_X10_PER_COUNT   (3600.0f / (float)HAPTIC_COUNTS_PER_REV)
 
@@ -46,6 +47,15 @@ static float sin_pi(float x)
 
 float Haptic_Torque(HapticState_t *h, int32_t pos_counts, float vel_dps)
 {
+  /* Same rule as the motion loop: bound the request, not the caller. A dial
+   * preset is just numbers in memory and anything can write them. */
+  h->detent_count  = Lim_Clamp(h->detent_count,  0, LIM_DETENT_COUNT_MAX, 0);
+  h->torque_max_ma = Lim_Clamp(h->torque_max_ma, 0, LIM_IQ_MAX_MA, 0);
+  h->detent_ma     = Lim_Clamp(h->detent_ma,     -LIM_IQ_MAX_MA, LIM_IQ_MAX_MA, 0);
+  h->friction_ma   = Lim_Clamp(h->friction_ma,   0, LIM_IQ_MAX_MA, 0);
+  h->endstop_ma_per_deg_x100 = Lim_Clamp(h->endstop_ma_per_deg_x100,
+                                         0, LIM_ENDSTOP_K_MAX, 0);
+
   float pos_deg_x10 = (float)pos_counts * DEG_X10_PER_COUNT;
   float ma = 0.0f;
 

@@ -12,6 +12,7 @@
 #include "foc.h"
 #include "csense.h"
 #include "motor_pwm.h"
+#include "limits.h"
 #include <string.h>
 
 /* Owned by main.c. */
@@ -190,6 +191,17 @@ static void Can_Estop(void)
   MotorPwm_EmergencyStop();
 }
 
+/* Note a request that lies outside what the hardware can do.
+ *
+ * The motion loop saturates every command regardless, so this changes no
+ * behaviour - it exists so the condition is VISIBLE. A host quietly asking
+ * for 40 A and quietly getting 12 looks identical to a host asking for 12,
+ * and the difference matters when something does not move as expected. */
+static void Can_RangeCheck(int32_t v, int32_t lo, int32_t hi)
+{
+  if ((v < lo) || (v > hi)) { s_t.rx_out_of_range++; }
+}
+
 static void Can_Handle(uint8_t cmd, const uint8_t *d, uint8_t len)
 {
   switch (cmd)
@@ -206,27 +218,34 @@ static void Can_Handle(uint8_t cmd, const uint8_t *d, uint8_t len)
 
     case CAN_CMD_SET_TORQUE:
       if (len < 4U) { s_t.rx_bad_len++; return; }
+      Can_RangeCheck(rd_i32(d), -LIM_IQ_MAX_MA, LIM_IQ_MAX_MA);
       g_pos.torque_cmd_ma = rd_i32(d);
       break;
 
     case CAN_CMD_SET_VELOCITY:
       if (len < 4U) { s_t.rx_bad_len++; return; }
+      Can_RangeCheck(rd_i32(d), -LIM_VEL_MAX_DPS, LIM_VEL_MAX_DPS);
       g_pos.vel_cmd_dps = rd_i32(d);
       break;
 
     case CAN_CMD_SET_POSITION:
       if (len < 4U) { s_t.rx_bad_len++; return; }
+      Can_RangeCheck(rd_i32(d), -LIM_POS_MAX_DEG_X10, LIM_POS_MAX_DEG_X10);
       g_pos.cmd_deg_x10 = rd_i32(d);
       break;
 
     case CAN_CMD_SET_LIMITS:
       if (len < 8U) { s_t.rx_bad_len++; return; }
+      Can_RangeCheck(rd_i32(d),     0, LIM_IQ_MAX_MA);
+      Can_RangeCheck(rd_i32(d + 4), 1, LIM_VEL_MAX_DPS);
       g_pos.iq_max_ma  = rd_i32(d);
       g_pos.vel_max_dps = rd_i32(d + 4);
       break;
 
     case CAN_CMD_SET_PROFILE:
       if (len < 8U) { s_t.rx_bad_len++; return; }
+      Can_RangeCheck(rd_i32(d),     LIM_ACCEL_MIN_DPS2, LIM_ACCEL_MAX_DPS2);
+      Can_RangeCheck(rd_i32(d + 4), 0, LIM_JERK_MAX_DPS3);
       g_pos.accel_max_dps2 = rd_i32(d);
       g_pos.jerk_max_dps3  = rd_i32(d + 4);
       break;
