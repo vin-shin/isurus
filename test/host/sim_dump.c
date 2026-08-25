@@ -3,6 +3,13 @@
   * @file    test/host/sim_dump.c
   * @brief   Run a scenario through the simulated drive and write CSV.
   *
+  *          step     <lo_ma> <hi_ma> <we> [ms]   speed HELD, current loop only
+  *          sweep    <iq_ma> <we>                steady state, ripple and dq
+  *          reversal <iq_ma> [spin_ms] [rev_ms]  rotor FREE, the decouple case
+  *
+  *          opts: decouple= delay= vmax= lambda_err= L_err= vel_alpha=
+  *                vel_ideal=
+  *
   *          Same harness the assertions use (sim.h), so a plot cannot show
   *          behaviour the tests never exercised.
   *
@@ -104,6 +111,21 @@ static void apply_opts(Sim_t *s, int argc, char **argv, int from)
       s->m.Ld = (double)FOC_LD_H / v;
       s->m.Lq = (double)FOC_LQ_H / v;
     }
+    else if (!strncmp(a, "vel_alpha=", 10) && v > 0.0)
+    {
+      /* The EMA the position loop applies to the 1 kHz encoder difference.
+       * POS_VEL_ALPHA (0.05) is the shipped 8 Hz corner; how far that can be
+       * raised is the whole question the reversal scenario exists to ask. */
+      s->vel_alpha = v;
+    }
+    else if (!strncmp(a, "vel_ideal=", 10))
+    {
+      /* Bypass the modelled velocity path and hand the loop the model's exact
+       * omega_m. Not physical - it is the control this failure is measured
+       * against, showing what the feedforward is worth when its omega_e has
+       * no lag and no quantisation. */
+      s->vel_ideal = (int)v;
+    }
     else { fprintf(stderr, "ignoring unknown option '%s'\n", a); }
   }
 }
@@ -156,6 +178,44 @@ int main(int argc, char **argv)
     double t0 = s.t;
     for (long i = 0; i < lround(0.02 / SIM_TS); i++)
     { hold_speed(&s, we); sim_step(&s, 0.0); emit_row(&s, t0); }
+    return 0;
+  }
+
+  if (strcmp(argv[1], "reversal") == 0 && argc >= 3)
+  {
+    /* The case that keeps f->decouple switched off.
+     *
+     * Spin up FREE - no hold_speed - until back-EMF meets the modulation
+     * ceiling, then command the opposite current and let the rotor actually
+     * decelerate through zero and reverse. That is where omega_e's lag turns
+     * the feedforward into a disturbance: braking at this current decelerates
+     * the rotor at roughly 16000 electrical rad/s^2, so an omega_e running
+     * 20 ms behind is wrong by ~320 rad/s, and 320 rad/s of lambda_m across
+     * an 85 mOhm winding is about 10 A.
+     *
+     * A SHORT reversal does not show this and reads as a pass - see the work
+     * plan. The rotor has to have reached the speed where it bites. */
+    double iq      = atof(argv[2]) / 1000.0;
+    double spin_ms = (argc > 3 && !strchr(argv[3], '=')) ? atof(argv[3]) : 500.0;
+    double rev_ms  = (argc > 4 && !strchr(argv[4], '=')) ? atof(argv[4]) : 400.0;
+
+    /* This scenario exists to study omega_e's lag, so it needs the modelled
+     * velocity path rather than the model's exact speed. Set before
+     * apply_opts so vel_ideal= can still override it. */
+    s.vel_ideal = 0;
+    apply_opts(&s, argc, argv, 3);
+
+    s.f.iq_ref = (float)iq;
+    for (long i = 0; i < lround(spin_ms / 1000.0 / SIM_TS); i++) { sim_step(&s, 0.0); }
+
+    emit_header();
+    double t0 = s.t;
+    for (long i = 0; i < lround(0.002 / SIM_TS); i++)
+    { sim_step(&s, 0.0); emit_row(&s, t0 + 0.002); }
+
+    s.f.iq_ref = -(float)iq;
+    for (long i = 0; i < lround(rev_ms / 1000.0 / SIM_TS); i++)
+    { sim_step(&s, 0.0); emit_row(&s, t0 + 0.002); }
     return 0;
   }
 

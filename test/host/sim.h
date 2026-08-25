@@ -40,6 +40,7 @@
 #include "foc.h"
 #include "main.h"
 #include "pmsm.h"
+#include "position.h"
 
 #include <math.h>
 #include <string.h>
@@ -47,12 +48,38 @@
 #define SIM_TS      (1.0 / 30000.0)
 #define SIM_TWO_PI  6.283185307179586
 
+/* Velocity as the CONTROL sees it, not as the model knows it.
+ *
+ * This used to hand FOC_Update the model's exact instantaneous omega_m, which
+ * made the feedforward perfect by construction and hid the one failure that
+ * keeps f->decouple switched off on the bench: the omega_e the firmware
+ * actually has is a 1 kHz encoder difference through an EMA, and during a
+ * reversal it lags far enough to turn the feedforward into a disturbance.
+ * A model that cannot reproduce that cannot be used to fix it.
+ *
+ * So the path here is position.c's, step for step - difference the QUANTISED
+ * encoder count at POS_DECIM, low-pass with the same EMA - which brings the
+ * lag and the quantisation noise with it. Both matter: the whole design
+ * question is how far the corner can be raised before the noise it lets
+ * through costs more than the lag it removes. */
 typedef struct {
   Pmsm_t     m;
   FocState_t f;
   double     d_u, d_v, d_w;   /* duties in flight, applied next step */
   double     t;               /* seconds since sim_init */
+
+  /* The position loop's velocity path, modelled. */
+  double     vel_filt;        /* EMA state, mechanical rad/s              */
+  double     vel_alpha;       /* EMA alpha at POS_RATE_HZ; POS_VEL_ALPHA  */
+  long       enc_accum;       /* unwrapped encoder counts                 */
+  long       enc_at_last;     /* accumulator at the previous decimation   */
+  int        enc_prev;        /* last raw 15-bit count, for unwrapping    */
+  unsigned   vel_decim;       /* counts up to POS_DECIM                   */
+  int        vel_ideal;       /* 1 = bypass all of it and use omega_m     */
 } Sim_t;
+
+/* position.c keeps this private; same expression, same source constant. */
+#define SIM_RAD_PER_COUNT   (SIM_TWO_PI / (double)POS_COUNTS_PER_REV)
 
 static inline void sim_init(Sim_t *s)
 {
@@ -63,6 +90,51 @@ static inline void sim_init(Sim_t *s)
   FOC_SetGainsForVbus(&s->f, (int32_t)(s->m.vbus * 1000.0));
   s->d_u = s->d_v = s->d_w = 0.5;    /* zero volts */
   s->t = 0.0;
+
+  s->vel_filt    = 0.0;
+  s->vel_alpha   = (double)POS_VEL_ALPHA;   /* the shipped 8 Hz corner */
+  s->enc_accum   = 0;
+  s->enc_at_last = 0;
+  s->enc_prev    = Pmsm_EncoderCount(&s->m);
+  s->vel_decim   = 0U;
+
+  /* DEFAULTS TO IDEAL, and that is a compromise worth reading.
+   *
+   * The modelled path is the physical one and ought to be the default. It is
+   * not, because switching it on globally made the suite WEAKER: run.sh
+   * --mutants stopped catching the anti-windup mutant, which it had been
+   * catching by a single test. Shipping a simulator change that quietly
+   * removes mutant coverage is precisely the failure --mutants exists to
+   * report, so the modelled path is opt-in until the anti-windup tests are
+   * strong enough not to depend on which omega_e they are handed.
+   *
+   * That the coverage was that marginal is itself the finding. See
+   * docs/BENCH-2026-08-25.md. */
+  s->vel_ideal   = 1;
+}
+
+/* One step of position.c's velocity path. Called every control tick; does the
+ * work only on the POS_DECIM boundary, exactly as Position_Step does. */
+static inline void sim_velocity_step(Sim_t *s)
+{
+  int cnt = Pmsm_EncoderCount(&s->m);
+  int d   = cnt - s->enc_prev;
+  if (d >  16384) { d -= 32768; }          /* unwrap the 15-bit count */
+  if (d < -16384) { d += 32768; }
+  s->enc_prev   = cnt;
+  s->enc_accum += d;
+
+  if (++s->vel_decim < POS_DECIM) { return; }
+  s->vel_decim = 0U;
+
+  double raw_vel = (double)(s->enc_accum - s->enc_at_last)
+                 * SIM_RAD_PER_COUNT * (double)POS_RATE_HZ;
+  s->enc_at_last = s->enc_accum;
+
+  double a = s->vel_alpha;
+  if (a <= 0.0) { a = 0.001; }
+  if (a >  1.0) { a = 1.0;   }
+  s->vel_filt += a * (raw_vel - s->vel_filt);
 }
 
 static inline void sim_step(Sim_t *s, double t_load)
@@ -74,11 +146,12 @@ static inline void sim_step(Sim_t *s, double t_load)
   Pmsm_Step(&s->m, vd, vq, t_load, SIM_TS);
 
   Pmsm_Phases(&s->m, &iu, &iv, &iw);
+  sim_velocity_step(s);
   FOC_Update(&s->f,
              (int32_t)lround(iu * 1000.0),
              (int32_t)lround(iw * 1000.0),
              (uint16_t)Pmsm_EncoderCount(&s->m),
-             (float)s->m.omega_m);
+             (float)(s->vel_ideal ? s->m.omega_m : s->vel_filt));
 
   s->d_u = s->f.duty_u;
   s->d_v = s->f.duty_v;
