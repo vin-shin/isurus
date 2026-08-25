@@ -40,7 +40,7 @@
   *          Blink codes, all on a repeating cycle:
   *
   *              INIT       solid
-  *              SELFTEST   fast flicker, ~10 Hz
+  *              SELFTEST   dark - see below
   *              READY      1 blip, then a pause
   *              RUN        2 blips, then a pause
   *              FAULT      N blips, then a pause, where N is the fault cause
@@ -51,6 +51,15 @@
   *          Counting flashes is a poor interface and the right one here: it
   *          needs no second device, survives being read across a workshop, and
   *          the cause is the thing a bench note can be written against.
+  *
+  *          SELFTEST is DARK, and deliberately so. An undervoltage bus keeps
+  *          it retrying indefinitely, so with the supply off this is the
+  *          drive's resting state rather than a passing phase - it was briefly
+  *          a 10 Hz flicker and that is intolerable to sit next to. Nothing is
+  *          lost: PB1 still flashes once a second to say the firmware is
+  *          alive, and anything that genuinely failed latches to FAULT and
+  *          blinks its cause. Dark means "not ready yet", lit means something
+  *          worth reading.
   *
   *  ---- reading the pair together -----------------------------------------
   *
@@ -87,7 +96,6 @@ extern "C" {
 #define LED_BLIP_ON_MS         140U
 #define LED_BLIP_OFF_MS        220U
 #define LED_BLIP_GAP_MS       1100U
-#define LED_FLICKER_MS          50U   /* SELFTEST half-period, ~10 Hz */
 
 void Led_Init(void);
 

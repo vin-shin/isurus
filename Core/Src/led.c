@@ -74,7 +74,19 @@ void Led_StepMain(uint32_t now_ms)
 
   if (st == (uint32_t)DRIVE_SELFTEST)
   {
-    led_write(LED_STATUS_PIN, ((now_ms / LED_FLICKER_MS) & 1U) ? 1U : 0U);
+    /* DARK, not a flicker.
+     *
+     * This was a 10 Hz flicker on the reasoning that a self-test lasts
+     * milliseconds and the pattern would never really be seen. That was wrong
+     * twice over: an undervoltage bus keeps SELFTEST retrying indefinitely, so
+     * with the supply off this is the drive's RESTING state, and a permanent
+     * 10 Hz strobe on a bench is intolerable to sit next to.
+     *
+     * Dark is the right answer anyway. Waiting for a bus is benign, PB1 is
+     * still flashing once a second to say the firmware is alive, and anything
+     * that actually failed latches to FAULT and blinks its cause. So dark
+     * means "not ready yet", lit means something worth reading. */
+    led_write(LED_STATUS_PIN, 0U);
     return;
   }
 
