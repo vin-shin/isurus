@@ -13,20 +13,21 @@
 # Usage:  tools/pos_listen.sh [seconds_per_setting]      (default 5)
 #
 # What you are listening for: the position loop's PID runs at 1 kHz while the
-# current loop consumes its output at 20 kHz, so any dither in the PID output
-# reaches the motor as a 1 kHz staircase - right in the audible band. The
-# dominant source at standstill is kd multiplying the velocity estimate's
+# current loop consumes its output at the PWM rate, so any dither in the PID
+# output reaches the motor as a 1 kHz staircase - right in the audible band.
+# The dominant source at standstill is kd multiplying the velocity estimate's
 # quantisation noise. Both knobs below attack that:
 #
 #   vel_filt   how hard the velocity estimate is filtered before kd sees it.
 #              This is the big lever. Lower = quieter, but it adds phase lag
 #              to the damping term, so overshoot creeps up.
-#   out_lpf    a low-pass on the current command itself, at the 20 kHz rate.
+#   out_lpf    a low-pass on the current command itself, at the full PWM rate.
 #              Rounds off the staircase edges whatever made them.
 #
 # Anything still audible with BOTH at their most aggressive is not the position
 # loop: the current loop alone measures ~148 mA pp of ripple at zero command
-# from ADC noise and PWM ripple, and the 20 kHz switching tone is inherent.
+# from ADC noise and PWM ripple. The switching tone itself is no longer a
+# candidate - at 30 kHz it is above hearing.
 
 set -euo pipefail
 
@@ -50,6 +51,7 @@ sym() {
 POS=$(sym g_pos); FOC=$(sym g_foc); CMD=$(sym g_cmd); FLT=$(sym g_faulted)
 PENA=$(printf "0x%x" $((POS+0)));  PZER=$(printf "0x%x" $((POS+36)))
 PLPF=$(printf "0x%x" $((POS+80))); PVF=$(printf "0x%x" $((POS+84)))
+PMODE=$(printf "0x%x" $((POS+92)))   # MOTION_MODE_POSITION == 3
 PBASE=$(printf "0x%x" $POS)
 IDA=$(printf "0x%x" $((FOC+0)));   IQA=$(printf "0x%x" $((FOC+4)))
 FENA=$(printf "0x%x" $((FOC+112)))
@@ -64,6 +66,7 @@ source [find target/stm32g4x.cfg]
 reset_config none
 adapter speed 4000
 init
+mww $PMODE 0
 mww $PENA 0
 mww $IQA 0
 mww $IDA 0
@@ -114,6 +117,9 @@ mww $IDA 0
 mww $IQA 0
 mww $FENA 1
 sleep 200
+# Hold position explicitly; see the note in pos_dash.sh - the mode is sticky
+# and another tool may have left it at IDLE.
+mwi $PMODE 3
 mww $PENA 1
 sleep 200
 mww $PZER 1

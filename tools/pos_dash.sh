@@ -65,6 +65,7 @@ PACC=$(printf "0x%x" $((POS+24)))    # accel_max_dps2
 PJRK=$(printf "0x%x" $((POS+28)))    # jerk_max_dps3
 PIMX=$(printf "0x%x" $((POS+32)))    # iq_max_ma
 PZER=$(printf "0x%x" $((POS+36)))    # zero_here
+PMODE=$(printf "0x%x" $((POS+92)))   # mode: MOTION_MODE_POSITION == 3
 
 FENA=$(printf "0x%x" $((FOC+112)))
 FISR=$(printf "0x%x" $((FOC+108)))
@@ -91,6 +92,7 @@ source [find target/stm32g4x.cfg]
 reset_config none
 adapter speed 4000
 init
+mww $PMODE 0
 mww $PENA 0
 mww $IQA 0
 mww $IDA 0
@@ -309,6 +311,13 @@ if {$DEMO} {
     mwi $PKI 30000
     mwi $PKD 120
     mwi $PIMX 1000
+    # Select position control EXPLICITLY rather than inheriting whatever the
+    # last tool left behind. This script predates the mode selector, and
+    # motor_ctl.py and dial.py both leave g_pos.mode at IDLE on the way out -
+    # so the demo would bring the bridge up, enable the servo, and then run all
+    # twenty moves commanding zero current. It only appeared to work straight
+    # after a reset, where the mode defaults to position.
+    mwi $PMODE 3
     mww $PENA 1
     sleep 100
     mww $PZER 1
