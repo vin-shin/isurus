@@ -125,6 +125,7 @@ def spark(avg, span, rows=7, label=""):
 
 def main():
     path, iq_lo, iq_hi = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+    flag = sys.argv[4] if len(sys.argv) > 4 else "decouple"
     chunks, meta = load(path)
     windows, rej = extract(chunks, iq_lo, iq_hi)
     dropped = sum(rej.values())
@@ -140,10 +141,11 @@ def main():
         if not ms:
             continue
         om = mean([m[0] for m in ms]) / 10.0
-        print(f"  decouple={dc}: {om:7.1f} elec rad/s ({om / (2 * math.pi):5.1f} Hz), "
+        adv = mean([m[5] for m in ms]) / 10.0 if len(ms[0]) > 5 else 0.0
+        print(f"  {flag}={dc}: {om:7.1f} elec rad/s ({om / (2 * math.pi):5.1f} Hz), "
               f"vq_ff {mean([m[1] for m in ms]) / 1000.0:+.3f} of bus, "
-              f"Vbus {mean([m[4] for m in ms]):.0f} mV, "
-              f"{sum(1 for m in ms if m[2] == 1)}/{len(ms)} captures complete")
+              f"advance {adv:+.2f} deg, Vbus {mean([m[4] for m in ms]):.0f} mV, "
+              f"{sum(1 for m in ms if m[2] == 1)}/{len(ms)} complete")
 
     print()
     print(f"  d-axis response to a {iq_lo} -> {iq_hi} mA step in iq_ref.")
@@ -152,7 +154,7 @@ def main():
     print(f"  averaged waveform BEFORE the step, which is what is left of the")
     print(f"  random part after averaging and the bar any peak has to clear.")
     print()
-    print(f"  {'decouple':<10}{'reps':>6}{'peak |id|':>12}{'rms id':>10}"
+    print(f"  {flag:<12}{'reps':>6}{'peak |id|':>12}{'rms id':>10}"
           f"{'noise':>9}{'peak/noise':>12}")
     print(f"  {'-' * 59}")
 
@@ -165,14 +167,14 @@ def main():
         pre = avg[:PRE]
         pk, rm, nz = max(abs(v) for v in post), rms(post), rms(pre)
         agg[dc] = (pk, rm, nz, avg)
-        print(f"  {dc:<10}{n:>6}{pk:>12.0f}{rm:>10.1f}{nz:>9.1f}"
+        print(f"  {dc:<12}{n:>6}{pk:>12.0f}{rm:>10.1f}{nz:>9.1f}"
               f"{(pk / nz if nz else 0):>12.1f}")
 
     if 1 in agg and 0 in agg:
         pk1, rm1, _, _ = agg[1]
         pk0, rm0, _, _ = agg[0]
         print()
-        print(f"  decoupling ON vs OFF:  peak {100 * (pk1 - pk0) / pk0:+.0f}%"
+        print(f"  {flag} ON vs OFF:  peak {100 * (pk1 - pk0) / pk0:+.0f}%"
               f"   rms {100 * (rm1 - rm0) / rm0:+.0f}%")
         if min(agg[1][2], agg[0][2]) > 0 and max(pk1, pk0) / max(agg[1][2], agg[0][2]) < 3.0:
             print("  Both peaks are within 3x the post-averaging noise floor -")
@@ -182,7 +184,7 @@ def main():
     for dc in (1, 0):
         if dc in agg:
             spark(agg[dc][3], span,
-                  label=f"id, decouple={dc}   (shared scale +/-{span:.0f} mA, 3 ms wide)")
+                  label=f"id, {flag}={dc}   (shared scale +/-{span:.0f} mA, 3 ms wide)")
 
 
 if __name__ == "__main__":

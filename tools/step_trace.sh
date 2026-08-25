@@ -11,7 +11,12 @@
 # back-EMF meets the modulation ceiling, which on this bench is about 600 rpm.
 # Clear the bench first.
 #
-# Usage:  tools/step_trace.sh --run [iq_lo_ma] [iq_hi_ma] [reps]
+# Usage:  tools/step_trace.sh --run [iq_lo_ma] [iq_hi_ma] [reps] [flag]
+#
+# flag selects which correction is toggled: "decouple" (default) or
+# "delay_comp". The OTHER one is left at its default of on, because the
+# question being asked is what each is worth in the loop as it actually
+# ships, not in isolation from the rest of it.
 #
 # reps defaults to 12. One step per condition is one sample of a noisy thing:
 # rotor position, ripple phase and speed all differ between trials, so the
@@ -46,6 +51,7 @@ shift
 IQ_LO_MA="${1:-400}"
 IQ_HI_MA="${2:-1200}"
 REPS="${3:-12}"
+FLAG="${4:-decouple}"
 
 NM="${NM:-arm-none-eabi-nm}"
 command -v "$NM" >/dev/null 2>&1 || \
@@ -74,6 +80,14 @@ CMDA=$(printf "0x%x" $CMD);        FLTA=$(printf "0x%x" $FLT)
 TARM=$(printf "0x%x" $((TRC+0)));  TDONE=$(printf "0x%x" $((TRC+4)))
 TDECIM=$(printf "0x%x" $((TRC+12))); TBUF=$((TRC+20))
 
+ADV=$(printf "0x%x" $((FOC+204)))     # theta_adv_deg_x10
+
+case "$FLAG" in
+  decouple)   FLAGA="$DEC" ;;
+  delay_comp) FLAGA="$DC"  ;;
+  *) echo "flag must be 'decouple' or 'delay_comp', got '$FLAG'" >&2; exit 1 ;;
+esac
+
 IQ_LO=$(fbits "$(python -c "print($IQ_LO_MA/1000.0)")")
 IQ_HI=$(fbits "$(python -c "print($IQ_HI_MA/1000.0)")")
 
@@ -91,6 +105,7 @@ mww $IQA 0
 mww $IDA 0
 mww $ENA 0
 mww $DEC 1
+mww $DC 1
 mww $TARM 0
 mww [expr {$CMDA+20}] 0
 mww [expr {$CMDA+16}] 0
@@ -107,7 +122,7 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-echo "Spinning up on ${IQ_LO_MA} mA, then stepping to ${IQ_HI_MA} mA. Ctrl-C stops it."
+echo "Spinning up on ${IQ_LO_MA} mA, stepping to ${IQ_HI_MA} mA, toggling ${FLAG}. Ctrl-C stops it."
 sleep 1
 
 {
@@ -140,7 +155,7 @@ for dc in 1 0; do
   # Spin up once per condition, then step repeatedly from the same base
   # current. Re-accelerating between every rep would drift the speed and make
   # the reps incomparable.
-  echo "mww $DEC $dc"
+  echo "mww $FLAGA $dc"
   echo "mww $IQA $IQ_LO"
   echo "sleep 2500"
   for rep in $(seq 1 "$REPS"); do
@@ -149,7 +164,7 @@ for dc in 1 0; do
     echo "mww $STEPIQ $IQ_HI_MA"
     echo "mww $STEPRQ 1"
     echo "sleep 60"
-    echo "echo \"META $dc $rep [expr {[read_memory $OM 32 1]}] [expr {[read_memory $VQFF 32 1]}] [expr {[read_memory $TDONE 32 1]}] [expr {[read_memory $TCOUNT 32 1]}] [expr {[read_memory $VBUSU 32 1]}]\""
+    echo "echo \"META $dc $rep [expr {[read_memory $OM 32 1]}] [expr {[read_memory $VQFF 32 1]}] [expr {[read_memory $TDONE 32 1]}] [expr {[read_memory $TCOUNT 32 1]}] [expr {[read_memory $VBUSU 32 1]}] [expr {[read_memory $ADV 32 1]}]\""
     for i in $(seq 0 15); do
       echo "echo \"T $dc $rep $i [read_memory [expr {$TBUF + $i*256}] 16 128]\""
     done
@@ -160,6 +175,7 @@ done
 
 cat <<EOF
 mww $DEC 1
+mww $DC 1
 mww $IQA 0
 mww $IDA 0
 sleep 300
@@ -176,4 +192,4 @@ openocd -s "${OPENOCD_SCRIPTS:-C:/msys64/mingw64/share/openocd/scripts}" -d0 -f 
 [ -s "$TMP/raw.txt" ] || { echo "No trace captured." >&2; exit 1; }
 
 cp "$TMP/raw.txt" "${STEP_TRACE_RAW:-$ROOT/step_trace_raw.txt}"
-python "$ROOT/tools/step_trace_analyze.py" "$TMP/raw.txt" "$IQ_LO_MA" "$IQ_HI_MA"
+python "$ROOT/tools/step_trace_analyze.py" "$TMP/raw.txt" "$IQ_LO_MA" "$IQ_HI_MA" "$FLAG"

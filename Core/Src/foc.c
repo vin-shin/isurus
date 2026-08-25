@@ -288,8 +288,31 @@ void FOC_Update(FocState_t *f, int32_t iu_ma, int32_t iw_ma, uint16_t enc_raw,
    *
    * The cost is paid in the TRANSIENT, where the integrator has not caught up
    * yet, and in phase margin as f_e rises - 3.9 degrees here, 18.2 on the
-   * EMRAX at 917 Hz. Judge this with a step in iq_ref and an ISR-rate capture,
-   * not with a steady-state average. */
+   * EMRAX at 917 Hz.
+   *
+   * The step test does not resolve it either, and that is also expected. With
+   * tools/step_trace.sh at ~289 Hz, decoupling left on, 56 ensemble-averaged
+   * steps per condition: peak |id| 46 mA compensated against 57 mA not, with
+   * a post-averaging noise floor of 19-24 mA. The difference is smaller than
+   * the floor. Rep counts of 12, 26 and 56 gave -30%, -23% and -19%, shrinking
+   * as averaging removed noise - the signature of an effect that was never
+   * there rather than one being uncovered.
+   *
+   * Arithmetic says the same thing. After the transient, vq only has to rise
+   * by R*diq = 68 mV; the back-EMF term is unchanged by an iq step. A 5.73
+   * degree misalignment leaks sin(5.73) of that onto d, which is 6.8 mV, or
+   * 16 mA against R + kp*Vbus. Sixteen milliamps under a twenty milliamp
+   * floor is not a measurement this bench can make.
+   *
+   * So this is kept on derivation, not on evidence, and that is the honest
+   * status. What IS verified is the mechanism: the advance is applied
+   * accurately on a spinning rotor (3.90 degrees measured against 3.96
+   * predicted), with the correct sign, and it costs 130 cycles. What scales
+   * to the EMRAX is not the number above but the cross-coupling fraction
+   * sin(theta_err), which goes from 0.10 here to 0.31 at 917 Hz - a factor of
+   * 3.1 on a machine whose axes are far more strongly coupled to begin with.
+   * Do not conclude from the bench nulls that this can be dropped for the HV
+   * build; conclude that 48 V cannot see it. */
   f->omega_e = vel_mech_rads * (float)FOC_POLE_PAIRS;
 
   float   sin_o = f->sin_e;
