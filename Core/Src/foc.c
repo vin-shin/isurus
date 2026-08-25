@@ -130,6 +130,15 @@ void FOC_SetGainsForVbus(FocState_t *f, int32_t vbus_mv)
   f->kp = (FOC_BW_RADS * FOC_L_H)   / vbus;
   f->ki = (FOC_BW_RADS * FOC_R_OHM) / vbus;
 
+  /* The decoupling feedforward is computed in volts and applied as normalised
+   * duty, so it needs 1/Vbus. It is derived HERE, from the same reading that
+   * has already passed the sanity window above, rather than anywhere else -
+   * a second place that divides by a bus voltage is a second place that can
+   * divide by zero and put NaN into the duty registers. If the reading is bad
+   * this function has already returned and inv_vbus keeps its last good
+   * value, which is the same protection kp and ki get. */
+  f->inv_vbus = 1.0f / vbus;
+
   f->vbus_used_mv = vbus_mv;
   f->kp_x10000    = (int32_t)(f->kp * 10000.0f);
   f->ki_x100      = (int32_t)(f->ki * 100.0f);
@@ -189,6 +198,18 @@ void FOC_Init(FocState_t *f)
   f->omega_e    = 0.0f;
   f->omega_e_rads_x10  = 0;
   f->theta_adv_deg_x10 = 0;
+
+  /* Same reasoning as delay_comp: the decoupled loop is the correct one, so
+   * it is what runs unless someone turns it off to measure the difference. */
+  f->decouple = 1U;
+  f->vd_ff_pm = 0;
+  f->vq_ff_pm = 0;
+
+  /* Seeded for FOC_VBUS_NOM_MV so the feedforward is scaled correctly from
+   * the first ISR tick, before the main loop has measured the bus even once.
+   * Zero here would make the whole feedforward vanish until the first
+   * successful Vbus read, which is a silent wrong-behaviour window. */
+  f->inv_vbus = 1.0f / ((float)FOC_VBUS_NOM_MV * 0.001f);
 
   FOC_Reset(f);
 }
@@ -315,6 +336,62 @@ void FOC_Update(FocState_t *f, int32_t iu_ma, int32_t iw_ma, uint16_t enc_raw,
   f->vd = ed * f->kp + f->id_integ;
   f->vq = eq * f->kp + f->iq_integ;
 
+  /* ---- cross-coupling decoupling and back-EMF feedforward ------------- *
+   *
+   * The d and q axes are not independent plants. Rotating the frame couples
+   * them, and the magnet adds a speed-proportional voltage on q:
+   *
+   *     vd = R*id + Ld*d(id)/dt - w_e*Lq*iq
+   *     vq = R*iq + Lq*d(iq)/dt + w_e*Ld*id + w_e*lambda_m
+   *
+   * The PI only ever saw the R and L terms. Everything with a w_e in it
+   * arrived as an unexplained disturbance it had to integrate its way out of,
+   * which works while that disturbance is small compared to what the PI can
+   * generate - and stops working when it is not.
+   *
+   * Scale matters here more than structure. On this bench w_e*L is 68 mOhm at
+   * 200 Hz against R = 85 mOhm, so the coupling is merely comparable to the
+   * plant. On the EMRAX at 917 Hz it is 1.47 Ohm against 23.2 mOhm - 63 times
+   * the resistance. No PI rejects a disturbance 63x its own plant gain; it is
+   * not a tuning problem.
+   *
+   * The back-EMF term is the larger one by far. At the top of this bench's
+   * range w_e*lambda_m is 0.248 of normalised duty against a vmax of 0.25, so
+   * without this the integrator has to discover essentially the entire
+   * voltage budget by itself, from zero, on every enable - and it can only do
+   * that as fast as ki allows. Feeding it forward means the PI starts from
+   * roughly the right answer and is left doing what it is good at: correcting
+   * the small remainder.
+   *
+   * These terms are volts; everything else in this function is normalised
+   * duty. inv_vbus does that conversion and comes from the one guarded place
+   * a bus voltage is ever divided - see FOC_SetGainsForVbus.
+   *
+   * Applied BEFORE the vector limit below, so the feedforward is bounded by
+   * the same ceiling as everything else and cannot command a duty the bridge
+   * has no way to produce. One interaction that follows from that and is
+   * worth knowing: at the very top of the speed range the feedforward alone
+   * nearly fills vmax, so the vector limit engages and the back-calculation
+   * scales the integrators even though the PI is not what saturated. That is
+   * correct - there is genuinely no voltage left - and it is not a change,
+   * because without feedforward the integrator reached the same ceiling by
+   * itself. It does mean the drive is out of voltage at 600 rpm either way. */
+  float vd_ff = 0.0f;
+  float vq_ff = 0.0f;
+
+  if (f->decouple != 0U)
+  {
+    vd_ff = -f->omega_e * (FOC_LQ_H * f->iq)                   * f->inv_vbus;
+    vq_ff =  f->omega_e * (FOC_LD_H * f->id + FOC_LAMBDA_M_WB) * f->inv_vbus;
+
+    f->vd += vd_ff;
+    f->vq += vq_ff;
+  }
+  /* The integer mirrors of these two live in the decimated block at the end,
+   * not here. Same reason as everything else there: a float-to-int conversion
+   * that exists only so a debugger can read the value has no business running
+   * 30000 times a second. */
+
   /* Limit the vector magnitude, not each axis separately - clipping d and q
    * independently rotates the applied vector away from where it was asked
    * for. */
@@ -400,6 +477,8 @@ void FOC_Update(FocState_t *f, int32_t iu_ma, int32_t iw_ma, uint16_t enc_raw,
     f->vmag_pm   = (int32_t)(fm_sqrtf(f->vd * f->vd + f->vq * f->vq) * 1000.0f);
     f->omega_e_rads_x10  = (int32_t)(f->omega_e * 10.0f);
     f->theta_adv_deg_x10 = (adv * 3600) / (int32_t)FOC_ENC_COUNTS;
+    f->vd_ff_pm  = (int32_t)(vd_ff * 1000.0f);
+    f->vq_ff_pm  = (int32_t)(vq_ff * 1000.0f);
   }
 
   f->updates++;

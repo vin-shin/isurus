@@ -61,6 +61,55 @@ extern "C" {
 #define FOC_L_H             54.3e-6f   /* phase inductance             */
 #define FOC_VBUS_NOM_MV     15550      /* bus the defaults were sized at */
 
+/* d- and q-axis inductances, for the decoupling terms.
+ *
+ * Both are FOC_L_H. The bench motor is an EaglePower 8309, a surface-magnet
+ * outrunner, so the magnets sit in the airgap and the rotor presents the same
+ * reluctance whichever way it is pointing - Ld = Lq, and there is no
+ * reluctance torque to chase. Named separately anyway because the decoupling
+ * equations are written in terms of both, and because the EMRAX 228 is also
+ * surface-PM (axial flux) so the same equality carries over rather than being
+ * a bench-only simplification that has to be revisited.
+ *
+ * If a motor with saliency is ever fitted, these are the two numbers to
+ * measure, and MTPA stops being id = 0 - see the note in phase 5. */
+#define FOC_LD_H            FOC_L_H
+#define FOC_LQ_H            FOC_L_H
+
+/* Rotor flux linkage, Wb (peak, per phase). Derived from the nameplate Kv.
+ *
+ * The motor is an EaglePower 8309 KV90, and FOC_POLE_PAIRS = 20.
+ *
+ * Kv is no-load rpm per volt of DC bus. At no load the drive has to produce a
+ * phase-voltage amplitude equal to the back-EMF amplitude w_e * lambda_m, and
+ * the largest amplitude a bus Vdc can deliver with the min/max injection this
+ * firmware already does is Vdc/sqrt(3). (The same relation falls out of the
+ * six-step view: line-to-line peak reaches Vdc, and for a sinusoidal machine
+ * E_ll_peak = sqrt(3) * w_e * lambda_m.) So
+ *
+ *     w_e * lambda_m = Vdc / sqrt(3),   w_e = p * N * 2*pi/60,   N = Kv * Vdc
+ *     => lambda_m = 60 / (2*pi*sqrt(3)*p*Kv)
+ *                 = 60 / (2*pi*1.7320508*20*90)
+ *                 = 3.063 mWb
+ *
+ * That gives Kt = 1.5*p*lambda_m = 0.092 N.m per amp of iq.
+ *
+ * Kv figures are a well-known source of factor-of-sqrt(3) errors, so this was
+ * checked against something the bench already does rather than trusted. At
+ * LIM_VEL_MAX_DPS (3600 deg/s = 600 rpm = 200 Hz electrical) the predicted
+ * back-EMF amplitude is w_e*lambda_m = 3.849 V, and the modulation ceiling
+ * allows FOC_VMAX_DEFAULT * 15.55 V = 3.888 V. The ratio is 0.99: this motor
+ * runs out of voltage within 1% of exactly where it is observed to. A
+ * sqrt(3) error either way would have put that ratio at 0.57 or 1.71 and the
+ * bench would top out somewhere else entirely.
+ *
+ * Worth seeing what that means for phase 1b: at the top of the bench's range
+ * the back-EMF term alone is w_e*lambda_m/Vbus = 0.248 of normalised duty,
+ * against a vmax of 0.25. Essentially the whole voltage budget is spent
+ * opposing back-EMF, and without feedforward the integrator is what has to
+ * find it - from zero, every time. */
+#define FOC_LAMBDA_M_WB     3.063e-3f
+
 /* Sanity window for the measured bus. Outside it the reading is not trusted
  * and the gains are left alone: a bus of 0 would otherwise divide to infinity
  * and put NaN into the duty registers, which is the single worst thing that
@@ -154,6 +203,12 @@ typedef struct {
   uint32_t delay_comp;        /* 1 = advance the inverse Park (default on) */
   int32_t  omega_e_rads_x10;  /* omega_e for SWD readout, tenths of rad/s  */
   int32_t  theta_adv_deg_x10; /* applied advance, tenths of a degree       */
+
+  /* Cross-coupling decoupling and back-EMF feedforward. At the END as ever. */
+  uint32_t decouple;          /* 1 = apply the feedforward (default on)    */
+  float    inv_vbus;          /* 1/Vbus, volts^-1. See FOC_SetGainsForVbus */
+  int32_t  vd_ff_pm;          /* d-axis feedforward, per-mille of bus      */
+  int32_t  vq_ff_pm;          /* q-axis feedforward, per-mille of bus      */
 } FocState_t;
 
 void FOC_Init(FocState_t *f);
