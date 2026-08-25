@@ -200,6 +200,89 @@ extern "C" {
  * is 58% of the bus, so 14% of it is 8% of the entire supply. */
 #define FOC_LAMBDA_M_WB     2.68e-3f
 
+/* ---- deadtime compensation ---------------------------------------------
+ *
+ * During the gate-driver deadtime both devices in a leg are off and the phase
+ * is clamped by whichever body diode the current is already flowing through.
+ * The applied volt-seconds therefore differ from the commanded ones by a
+ * fixed amount whose SIGN follows the phase current:
+ *
+ *     v_error = -sign(i_phase) * t_d * f_sw * Vbus
+ *
+ * so adding +sign(i_phase) * t_d * f_sw to each phase duty cancels it.
+ *
+ * On this board the deadtime is not the MCU's - HRTIM inserts none, the
+ * UCC21330's own 20 kohm RDT sets it (HARDWARE_NOTES section 7):
+ *
+ *     t_d = 8.6 * 20 + 13 = 185 ns
+ *     t_d * f_sw = 185e-9 * 30000 = 0.0056 = 5.6 per-mille of bus
+ *
+ * The work plan expects this to be invisible at 48 V and only matter at
+ * 600 V. That is wrong for THIS machine, and the reason is the winding, not
+ * the voltage: 5.6 per-mille of a 22.4 V bus is 0.124 V, and across an 85
+ * mohm phase resistance that is 1.5 A - against a 1.0 A command. Low
+ * impedance is what makes a small voltage error a large current error.
+ *
+ * Measured before compensating, during a reversal at ~320 Hz electrical, the
+ * iq ripple has its largest component at 1917 Hz = 6.0 x f_e with 105 mA
+ * amplitude. Sixth harmonic is the deadtime signature - the error is a square
+ * wave in phase with sign(i) on each of three phases - and 1917 Hz is nearly
+ * twice the 1 kHz loop bandwidth, so the current loop has almost no gain left
+ * to reject it. Open-loop the same 0.124 V into |R + jwL| = 0.66 ohm at that
+ * frequency would give 188 mA, so the loop is removing roughly half.
+ *
+ * dtc_pm is SIGNED and runtime-settable rather than compiled in, because the
+ * sign depends on the polarity of the current sense and the gate drive
+ * together, and getting it backwards DOUBLES the distortion instead of
+ * cancelling it.
+ *
+ * ---- measured, and it does not pay here ----
+ *
+ * Swept on the bench at ~247 Hz electrical, 0.5 A, two independent runs,
+ * reading the 6th-harmonic amplitude of iq and the total ripple rms:
+ *
+ *     dtc_pm     6th harmonic (mA)      ripple rms (mA)
+ *       -6         87  /  105             76  /  82
+ *        0        104  /  101             82  /  86
+ *       +3        118  /  121            105  / 101
+ *       +9        111  /  137            143  / 197
+ *
+ * The WRONG sign reproduces perfectly: positive dtc_pm makes both the 6th
+ * harmonic and the total ripple monotonically worse, which is the expected
+ * signature of adding the deadtime error to itself instead of subtracting it.
+ *
+ * The RIGHT sign buys nothing measurable. -6 came out 87 mA in one run and
+ * 105 mA in the other against 104 and 101 with compensation off - a spread as
+ * large as the effect, so the first run's apparent 17% improvement was noise.
+ *
+ * So the ~100 mA of 6th harmonic on this machine is NOT mostly deadtime.
+ * Theory says 185 ns should contribute 188 mA open-loop, or roughly 105 mA
+ * after loop rejection; the measured contribution is indistinguishable from
+ * zero. Something in that chain over-predicts - most likely the effective
+ * diode-conduction window is much shorter than the driver's nominal RDT time
+ * at these currents. What is left is almost certainly the motor's own
+ * back-EMF harmonic content and cogging, which no amount of deadtime
+ * compensation touches.
+ *
+ * Kept, defaulted OFF, because none of the above transfers to the HV
+ * inverter: 600 V with a ~500 ns deadtime is 9 V per phase, against an EMRAX
+ * winding of 23 mohm. There the term is not negotiable. The code, the
+ * hysteresis reasoning and the sign-determination method are what this phase
+ * produced; the bench simply cannot show the benefit. */
+#define FOC_DTC_PM_THEORY   6      /* t_d * f_sw = 5.6 per-mille, rounded */
+
+/* Hysteresis band around zero phase current, mA.
+ *
+ * The compensation's sign comes from the sign of the phase current, and near
+ * a zero crossing that sign is whatever the noise says. position.h records
+ * the current loop's own noise floor as ~148 mA pp from ADC noise and PWM
+ * ripple, so a band narrower than that would have the compensation chattering
+ * between +dtc and -dtc at the noise frequency - injecting exactly the kind of
+ * broadband disturbance it exists to remove. 150 mA covers that floor and is
+ * 15% of a 1 A command, so the uncompensated wedge around each zero crossing
+ * stays small. */
+#define FOC_DTC_HYST_MA     150
+
 /* Sanity window for the measured bus. Outside it the reading is not trusted
  * and the gains are left alone: a bus of 0 would otherwise divide to infinity
  * and put NaN into the duty registers, which is the single worst thing that
@@ -299,6 +382,12 @@ typedef struct {
   float    inv_vbus;          /* 1/Vbus, volts^-1. See FOC_SetGainsForVbus */
   int32_t  vd_ff_pm;          /* d-axis feedforward, per-mille of bus      */
   int32_t  vq_ff_pm;          /* q-axis feedforward, per-mille of bus      */
+
+  /* Deadtime compensation. At the END like everything else. */
+  int32_t  dtc_pm;            /* per-mille of bus added per phase, SIGNED;
+                               * 0 disables. See FOC_DTC_PM_THEORY.          */
+  int32_t  dtc_hyst_ma;       /* +/- band around zero current where no
+                               * compensation is applied                     */
 } FocState_t;
 
 void FOC_Init(FocState_t *f);

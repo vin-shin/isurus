@@ -239,6 +239,14 @@ void FOC_Init(FocState_t *f)
    * a 1.5 s reversal showed 1359 vs 1375 mA and looked like a pass, because
    * the motor never reached the speed where this bites. */
   f->decouple = 0U;
+
+  /* Deadtime compensation starts DISABLED, with the theoretical magnitude
+   * loaded but not applied. The sign depends on the current-sense and gate
+   * polarities together and a wrong sign doubles the distortion, so it is
+   * swept and measured on hardware before being trusted - dtc_pm is set to
+   * the winning value once that has been done. */
+  f->dtc_pm      = 0;
+  f->dtc_hyst_ma = FOC_DTC_HYST_MA;
   f->vd_ff_pm = 0;
   f->vq_ff_pm = 0;
 
@@ -520,6 +528,36 @@ void FOC_Update(FocState_t *f, int32_t iu_ma, int32_t iw_ma, uint16_t enc_raw,
   f->duty_u = vu + 0.5f;
   f->duty_v = vv + 0.5f;
   f->duty_w = vw + 0.5f;
+
+  /* ---- deadtime compensation ---------------------------------------- *
+   *
+   * Applied per PHASE, not per axis, because that is where the error lives:
+   * each leg's applied volt-seconds are short by t_d*f_sw*Vbus in the
+   * direction its own current is flowing. See the derivation in foc.h.
+   *
+   * After the +0.5 offset and before the clamp, so the compensation is part
+   * of what gets bounded to a producible duty rather than something added on
+   * top of an already-saturated one.
+   *
+   * The hysteresis band matters more than it looks. Inside it no compensation
+   * is applied at all, which leaves a small uncorrected wedge around each
+   * zero crossing - accepted deliberately, because the alternative is taking
+   * the sign from a measurement whose noise floor is comparable to the band
+   * and chattering the correction at the noise frequency. */
+  if (f->dtc_pm != 0)
+  {
+    float dtc = (float)f->dtc_pm      * 0.001f;
+    float h   = (float)f->dtc_hyst_ma * 0.001f;
+
+    if      (f->iu >  h) { f->duty_u += dtc; }
+    else if (f->iu < -h) { f->duty_u -= dtc; }
+
+    if      (f->iv >  h) { f->duty_v += dtc; }
+    else if (f->iv < -h) { f->duty_v -= dtc; }
+
+    if      (f->iw >  h) { f->duty_w += dtc; }
+    else if (f->iw < -h) { f->duty_w -= dtc; }
+  }
 
   if (f->duty_u < 0.0f) { f->duty_u = 0.0f; }
   if (f->duty_v < 0.0f) { f->duty_v = 0.0f; }
