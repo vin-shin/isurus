@@ -862,6 +862,18 @@ int main(void)
 
     Drive_Step(now);
 
+    /* Torque plausibility, from the MAIN LOOP rather than the control ISR.
+     * The bound is 100 ms and this loop runs at ~750 Hz, so the sampling adds
+     * about 1.3 ms of jitter to it - immaterial - and the 30 kHz ISR, which
+     * is the budget that actually binds at 74% loaded, pays nothing.
+     *
+     * Fed from the integer mirrors rather than the floats: they are already
+     * maintained for the SWD tools, and reading them here costs no conversion
+     * on the ISR side. */
+    Drive_TorqueMonitor((int32_t)g_foc.iq_ref_ma, (int32_t)g_foc.iq_ma,
+                        (int32_t)g_foc.vmag_pm,   (int32_t)g_foc.vmax_pm,
+                        now);
+
     /* Front panel. PB2 carries the drive state and, in FAULT, the cause as a
      * blink count - see led.h. This replaces the old 1 Hz heartbeat toggle,
      * which proved only that the main loop was running and could say nothing

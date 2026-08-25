@@ -120,10 +120,30 @@ a torque request from the VCU.
   clamped to negative values and to a magnitude bound in `limits.h`. Develop it
   here by lowering `FOC_VMAX_DEFAULT` artificially to force early saturation at
   bench speeds.
-- **Torque plausibility monitor.** FSAE EV rules require detecting an
-  implausible torque command and reaching a safe state within a bounded time.
-  Implement the monitor and its timing, and put the rule reference in the
-  comment. `DRIVE_FAULT_COMMAND` is already reserved for it.
+- ~~**Torque plausibility monitor.**~~ Done 2026-08-25. `Drive_TorqueMonitor`
+  in `drive.c`, 100 ms bound, faults as `DRIVE_FAULT_COMMAND`. Six host tests
+  and three mutants. Runs from the MAIN LOOP, not the control ISR: measured
+  before 24.77 us / 74.3%, after 24.81 us / 74.4% — five cycles, noise.
+
+  Two design points worth knowing before touching it:
+
+  - **A voltage-limited drive is not an implausible command.** At terminal
+    speed this bench saturates (measured `w_e·λ_m/Vbus` 0.242–0.244 against a
+    `vmax` of 0.250), and a saturated drive cannot deliver the current it was
+    asked for. A naive requested-vs-delivered monitor would trip every time
+    the car reaches top speed. The accumulator is HELD while the vector limit
+    is active — held, not cleared, so an implausible command cannot hide
+    behind intermittent saturation — and the held time is counted separately.
+  - **A scheduling gap is not evidence either.** If the monitor is not called
+    for a while, the elapsed time is not charged; it re-baselines. Otherwise
+    one 100 ms hiccup in the main loop is a false trip, and a safety monitor
+    that fires spuriously is one that gets disabled.
+
+  **The rule number is deliberately not cited.** The requirement is stable but
+  the numbering moves between rulebook years, and a stale citation in a safety
+  comment reads as though someone checked. Fill it in from the edition the car
+  is entered under, and check the 2000 mA band and the 100 ms bound against
+  that edition — they are engineering defaults, not quotations.
 
 Note that field weakening will interact with the anti-windup and the vector
 limit, which is exactly where the last two control changes went wrong. Put it

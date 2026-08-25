@@ -315,6 +315,115 @@ static void test_gate_never_precedes_outputs(void)
         "arming never raises the gate drivers before the outputs", d);
 }
 
+
+/* ---- torque plausibility monitor ---------------------------------------- */
+
+/* Bring the drive to RUN with a healthy board, ready to be fed commands. */
+static void run_armed(void)
+{
+  Stub_Reset();
+  boot();
+  (void)Drive_Arm();
+}
+
+/* Feed the monitor for `ms` at 1 ms steps, so the bound is exercised in the
+ * units it is specified in rather than in loop iterations. */
+static void feed(int32_t req, int32_t act, int32_t vmag, int32_t vmax, uint32_t ms)
+{
+  for (uint32_t i = 0; i < ms; i++)
+  {
+    Host_AdvanceTick(1U);
+    Drive_TorqueMonitor(req, act, vmag, vmax, HAL_GetTick());
+  }
+}
+
+static void test_torque_tracking_does_not_trip(void)
+{
+  run_armed();
+  feed(4000, 4000 - (DRIVE_TORQ_DEV_MA / 2), 100, 250, 10U * DRIVE_TORQ_DEV_MS);
+  expect(DRIVE_RUN, DRIVE_FAULT_NONE,
+         "a delivered torque inside the band never trips the monitor");
+}
+
+static void test_implausible_command_trips_within_the_bound(void)
+{
+  run_armed();
+  /* Just under the bound: still running. */
+  feed(8000, 0, 100, 250, DRIVE_TORQ_DEV_MS - 5U);
+  int still_running = (g_drive.state == (uint32_t)DRIVE_RUN);
+
+  feed(8000, 0, 100, 250, 10U);          /* over the bound */
+
+  char d[192];
+  snprintf(d, sizeof(d), "still RUN at %u ms: %d; then %s/%s after the bound",
+           (unsigned)(DRIVE_TORQ_DEV_MS - 5U), still_running,
+           Drive_StateName(g_drive.state), cause_name(g_drive.fault));
+  check(still_running &&
+        g_drive.state == (uint32_t)DRIVE_FAULT &&
+        g_drive.fault == (uint32_t)DRIVE_FAULT_COMMAND,
+        "an implausible command faults as COMMAND, and not before the bound", d);
+}
+
+static void test_monitor_trip_safes_the_bridge(void)
+{
+  run_armed();
+  unsigned estop_before = g_stub.estop;
+  feed(8000, 0, 100, 250, DRIVE_TORQ_DEV_MS + 10U);
+
+  char d[192];
+  snprintf(d, sizeof(d), "estop %u -> %u, outputs_live %d, gate_live %d",
+           estop_before, g_stub.estop, g_stub.outputs_live, g_stub.gate_live);
+  check(g_stub.estop > estop_before &&
+        !g_stub.outputs_live && !g_stub.gate_live,
+        "a monitor trip reaches the safe state, not just the fault flag", d);
+}
+
+static void test_saturation_holds_rather_than_trips(void)
+{
+  run_armed();
+  /* Out of volts and therefore short of the commanded current - which is the
+   * inverter doing its best, measured on this bench at terminal speed. */
+  feed(8000, 0, 250, 250, 20U * DRIVE_TORQ_DEV_MS);
+
+  char d[192];
+  snprintf(d, sizeof(d), "state %s, dev_ms %u, held_ms %u",
+           Drive_StateName(g_drive.state),
+           (unsigned)g_drive.torq_dev_ms, (unsigned)g_drive.torq_held_ms);
+  check(g_drive.state == (uint32_t)DRIVE_RUN &&
+        g_drive.torq_held_ms > 0U,
+        "a voltage-limited drive is held, not tripped, and the hold is counted", d);
+}
+
+static void test_saturation_does_not_reset_the_accumulator(void)
+{
+  run_armed();
+  /* Most of the way to the bound, then saturate briefly, then carry on. An
+   * implausible command must not be able to hide behind intermittent
+   * saturation by having the timer cleared each time. */
+  feed(8000, 0, 100, 250, DRIVE_TORQ_DEV_MS - 10U);
+  feed(8000, 0, 250, 250, 500U);          /* saturated: held */
+  int survived_hold = (g_drive.state == (uint32_t)DRIVE_RUN);
+  feed(8000, 0, 100, 250, 15U);           /* the remaining few ms */
+
+  char d[192];
+  snprintf(d, sizeof(d), "survived the hold: %d; ended %s/%s",
+           survived_hold, Drive_StateName(g_drive.state),
+           cause_name(g_drive.fault));
+  check(survived_hold &&
+        g_drive.state == (uint32_t)DRIVE_FAULT &&
+        g_drive.fault == (uint32_t)DRIVE_FAULT_COMMAND,
+        "saturation holds the accumulator without clearing it", d);
+}
+
+static void test_monitor_inactive_outside_run(void)
+{
+  Stub_Reset();
+  boot();                                  /* READY, bridge down */
+  feed(8000, 0, 100, 250, 20U * DRIVE_TORQ_DEV_MS);
+  expect(DRIVE_READY, DRIVE_FAULT_NONE,
+         "the monitor is inert while the bridge is down");
+}
+
 int main(void)
 {
   printf("\ndrive.c fault injection\n-----------------------\n");
@@ -333,6 +442,12 @@ int main(void)
   test_arm_refused_while_faulted();
   test_first_fault_wins();
   test_gate_never_precedes_outputs();
+  test_torque_tracking_does_not_trip();
+  test_implausible_command_trips_within_the_bound();
+  test_monitor_trip_safes_the_bridge();
+  test_saturation_holds_rather_than_trips();
+  test_saturation_does_not_reset_the_accumulator();
+  test_monitor_inactive_outside_run();
   printf("-----------------------\n%d passed, %d failed\n\n", g_pass, g_fail);
   return g_fail == 0 ? 0 : 1;
 }
