@@ -136,11 +136,31 @@ Done: warnings-as-errors, a real Release build, CI, and a host harness for
 
 Left:
 
-- **Fault injection against `drive.c`.** The plan's list — encoder freeze,
-  encoder jump, sensor rail, phase open, Vbus collapse — asserting the state
-  machine lands in `FAULT` with the right cause each time. `pmsm.h` already
-  carries the injection flags; nothing consumes them yet. This needs `drive.c`
-  and its `motor_pwm` calls stubbed the way `foc.c`'s CORDIC was.
+- ~~**Fault injection against `drive.c`.**~~ Done 2026-08-25.
+  `test/host/test_drive.c`, 15 tests, `drive.c` compiled as it ships with
+  `drive_stubs.c` supplying the gate driver, both sensors and the clock.
+  Covers silent encoder, all-ones frame, current-sense zero in and out of
+  tolerance, bus collapse, overvoltage, failed bus read, and the machine's own
+  rules: FAULT latches, a clear re-runs the checks, arming is refused while
+  latched, the first cause wins, the gate never precedes the outputs.
+
+  Four `drive.c` mutants guard it and **two of them escaped the first version
+  of these tests** — worth recording, because both looked covered:
+
+  - the clear-goes-straight-to-READY mutant survived because the assertion was
+    tautological. The discriminating case is clearing while the cause is still
+    true, which must land back in `FAULT`; asserting only the healthy clear
+    cannot tell the two apart, since both end in `READY`.
+  - the no-EmergencyStop mutant survived because `Drive_Enter` *also* takes the
+    bridge down on the way into any non-RUN state. "The bridge ended up down"
+    is therefore not evidence the fault path ran. The property with teeth is
+    that `MotorPwm_EmergencyStop` was called at all — freewheel first,
+    unconditionally, before any bookkeeping.
+
+  Closed-loop injection through the PMSM model is still open: `pmsm.h`'s flags
+  (`enc_frozen`, `enc_jump`, `sensor_rail_u`, `phase_open_u`) remain unused.
+  Those exercise the RUN-time detectors, which live in `main.c` and
+  `position.c` rather than `drive.c` and so need a different harness.
 - ~~**Verify cppcheck actually catches `errors & !MASK`.**~~ Done 2026-08-25.
   Planted in `encoder.c`'s A1333 ready-bit test on a scratch branch: the
   firmware job compiled it clean and cppcheck went red with `clarifyCondition`

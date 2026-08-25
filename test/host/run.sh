@@ -50,6 +50,22 @@ rc=$?
 "$CC" -std=gnu11 -O2 -g -Wall -Wextra -Werror "${INC[@]}"       "$ROOT/test/host/sim_dump.c" "$ROOT/test/host/pmsm.c"       "$ROOT/test/host/cordic_model.c" "$ROOT/Core/Src/foc.c"       -o "$OUT/sim_dump.exe" -lm
 echo "sim_dump: $OUT/sim_dump.exe"
 
+# ---- drive.c: the state machine and the fault paths ----------------------
+#
+# Separate binary rather than more tests in test_foc.exe, because the two need
+# different stubs: foc.c wants a CORDIC and nothing else, drive.c wants the
+# gate driver, both sensors and a clock. Linking one set of stubs into both
+# would make each suite depend on scaffolding the other needs.
+DSRC=( "$ROOT/test/host/test_drive.c" "$ROOT/test/host/drive_stubs.c"
+       "$ROOT/test/host/cordic_model.c" "$ROOT/Core/Src/foc.c" )
+dbuild() { "$CC" -std=gnu11 -O2 -g -Wall -Wextra -Werror "${INC[@]}" "${DSRC[@]}" "$1" -o "$2" -lm; }
+
+dbuild "$ROOT/Core/Src/drive.c" "$OUT/test_drive.exe"
+"$OUT/test_drive.exe"
+drc=$?
+[ "$rc" -eq 0 ] || drc=$rc
+rc=$drc
+
 if [ "${1:-}" = "--mutants" ]; then
   echo "verifying the tests can fail"
   echo "---------------------------"
@@ -62,7 +78,35 @@ if [ "${1:-}" = "--mutants" ]; then
       -e 's|f->iq_integ -= (vq_cmd - f->vq);|f->iq_integ *= k;|' \
       "$ROOT/Core/Src/foc.c" > "$OUT/mut_aw.c"
 
+  # ---- drive.c mutants --------------------------------------------------
+  #
+  # Each is a bug this state machine could plausibly have, and two of them it
+  # actually used to: re-arming straight to READY after a clear, and the
+  # undervoltage case latching instead of retrying.
+  #
+  # 3. Clearing a fault goes straight back to READY without re-running the
+  #    checks. This is the behaviour drive.h records as removed.
+  sed 's|^  Drive_SelfTest();$|  Drive_Enter(DRIVE_READY);|'       "$ROOT/Core/Src/drive.c" > "$OUT/mut_clear.c"
+  # 4. The bridge is not safed on the way into FAULT - cause still latches, so
+  #    only an assertion about the OUTPUTS can catch this one.
+  sed 's|^  Drive_SafeState();$||' "$ROOT/Core/Src/drive.c" > "$OUT/mut_nosafe.c"
+  # 5. A dead MISO line reads 0xFFFF; drop the check that notices.
+  sed 's|else if (raw == 0xFFFFU)               { bad = DRIVE_FAULT_ENCODER; }||'       "$ROOT/Core/Src/drive.c" > "$OUT/mut_miso.c"
+  # 6. Latch on an undervoltage bus instead of retrying, so the drive never
+  #    comes up on its own when the supply arrives.
+  sed 's|    return;   /\* stay in SELFTEST; Drive_Step retries \*/|    ;|'       "$ROOT/Core/Src/drive.c" > "$OUT/mut_uvlatch.c"
+
   fails=0
+  for m in clear nosafe miso uvlatch; do
+    "$CC" -std=gnu11 -O2 "${INC[@]}" "${DSRC[@]}" "$OUT/mut_$m.c"           -o "$OUT/mut_$m.exe" -lm 2>/dev/null
+    if "$OUT/mut_$m.exe" >"$OUT/mut_$m.log" 2>&1; then
+      echo "  NOT CAUGHT  drive mutant '$m' passed - the tests are too weak"
+      fails=$((fails + 1))
+    else
+      echo "  caught      drive mutant '$m': $(grep -c '  FAIL' "$OUT/mut_$m.log") test(s) failed"
+    fi
+  done
+
   for m in pi aw; do
     # Mutants are built without -Werror: they leave variables unused by
     # construction, and that is not what is being checked.
