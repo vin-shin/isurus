@@ -199,7 +199,14 @@ def select(traces, key):
     """
     if key is None:
         return traces
-    hits = [t for t in traces if key in t.name.split()]
+    # Match the FLAG field only - the first key after the source tag - not any
+    # field. `key in t.name.split()` also matched the REP number, so --hw-key 1
+    # quietly pulled rep 1 of the decouple=0 arm into the decouple=1 average:
+    # 13 captures out of a 12-rep run, one of them from the wrong firmware
+    # configuration. That is precisely the blend the docstring above says is
+    # worse than not comparing at all, so it failed silently in the direction
+    # this function exists to prevent.
+    hits = [t for t in traces if t.name.split()[1:2] == [key]]
     if not hits:
         avail = sorted({k for t in traces for k in t.name.split()[1:]})
         sys.exit(f"no captures matching '{key}'. keys present: {' '.join(avail)}")
