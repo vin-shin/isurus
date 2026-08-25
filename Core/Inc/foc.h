@@ -200,6 +200,30 @@ extern "C" {
  * is 58% of the bus, so 14% of it is 8% of the entire supply. */
 #define FOC_LAMBDA_M_WB     2.68e-3f
 
+/* ---- torque interface ---------------------------------------------------
+ *
+ * The bench interface is a current, iq_ref in milliamps. The HV inverter's is
+ * a TORQUE request from the VCU, so the map between them belongs here rather
+ * than in whatever transport happens to carry it.
+ *
+ * For a surface-magnet machine the map is one multiply:
+ *
+ *     T = 1.5 * p * lambda_m * iq        (Nm)
+ *
+ * DO NOT IMPLEMENT AN IPM MTPA SOLVER FOR THIS. The general expression carries
+ * a reluctance term, 1.5*p*(lambda_m*iq + (Ld - Lq)*id*iq), and maximum
+ * torque per amp on a salient machine means solving for the id that best
+ * exploits it. Both this bench motor and the EMRAX 228 are axial-flux
+ * SURFACE-magnet: Ld = Lq (foc.h defines both as FOC_L_H), the reluctance
+ * term is identically zero, and MTPA collapses to id = 0. Any id other than
+ * zero costs copper loss and buys no torque - the one exception being field
+ * weakening, which spends id deliberately to buy SPEED, not torque, and is a
+ * separate mechanism.
+ *
+ * So: id_ref = 0, and iq_ref = T / kt.
+ */
+#define FOC_KT_NM_PER_A     (1.5f * (float)FOC_POLE_PAIRS * FOC_LAMBDA_M_WB)
+
 /* ---- deadtime compensation ---------------------------------------------
  *
  * During the gate-driver deadtime both devices in a leg are off and the phase
@@ -391,6 +415,22 @@ typedef struct {
 } FocState_t;
 
 void FOC_Init(FocState_t *f);
+
+/* Pure conversions, both directions. Torque in Nm, current in A. */
+float FOC_TorqueToIq(float t_nm);
+float FOC_IqToTorque(float iq_a);
+
+/* Apply a torque request, in milli-newton-metres. Sets id_ref = 0 and iq_ref
+ * to the current that produces it, both saturated to LIM_IQ_MAX_MA.
+ *
+ * RETURNS THE TORQUE ACTUALLY ACCEPTED, in mNm, which is not always the one
+ * asked for. That return value is the point of the function rather than a
+ * convenience: a VCU asking for more than the machine can produce gets its
+ * request clamped, and the torque plausibility monitor compares delivered
+ * against COMMANDED. If the monitor were shown the raw request instead, every
+ * over-ask would look like an implausible command and fault the drive for
+ * asking politely. See Drive_TorqueMonitor. */
+int32_t FOC_SetTorque(FocState_t *f, int32_t t_mnm);
 
 /* Recompute kp/ki for the measured bus voltage, holding the closed-loop
  * bandwidth at FOC_BW_RADS regardless of what the supply is set to.

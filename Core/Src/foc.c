@@ -6,6 +6,7 @@
   */
 
 #include "foc.h"
+#include "limits.h"   /* LIM_IQ_MAX_MA, for the torque map's clamp */
 #include "main.h"
 #include "motor_pwm.h"   /* PWM_FREQ_HZ: the rate this loop actually runs at */
 #include "fastmath.h"
@@ -257,6 +258,50 @@ void FOC_Init(FocState_t *f)
   f->inv_vbus = 1.0f / ((float)FOC_VBUS_NOM_MV * 0.001f);
 
   FOC_Reset(f);
+}
+
+/* ---- torque interface ---------------------------------------------------
+ *
+ * Command path, not ISR path: these run when a request arrives, at whatever
+ * rate the transport delivers, and none of them is called from FOC_Update.
+ * The 30 kHz loop still works in amps.
+ */
+
+float FOC_TorqueToIq(float t_nm)
+{
+  return t_nm / FOC_KT_NM_PER_A;
+}
+
+float FOC_IqToTorque(float iq_a)
+{
+  return iq_a * FOC_KT_NM_PER_A;
+}
+
+int32_t FOC_SetTorque(FocState_t *f, int32_t t_mnm)
+{
+  if (f == NULL) { return 0; }
+
+  float iq_a = FOC_TorqueToIq((float)t_mnm * 0.001f);
+
+  /* Saturate in CURRENT, not in torque, because the limit is a current limit:
+   * LIM_IQ_MAX_MA is what the sensors, the FETs and the machine's thermal
+   * budget allow. Converting the clamp back into torque afterwards keeps the
+   * two consistent by construction - clamping a torque figure against a
+   * torque bound derived from the same kt would be the same arithmetic done
+   * twice, with two places to get it wrong. */
+  int32_t iq_ma = (int32_t)(iq_a * 1000.0f);
+  if (iq_ma >  LIM_IQ_MAX_MA) { iq_ma =  LIM_IQ_MAX_MA; }
+  if (iq_ma < -LIM_IQ_MAX_MA) { iq_ma = -LIM_IQ_MAX_MA; }
+
+  f->iq_ref = (float)iq_ma * 0.001f;
+
+  /* Surface magnet: MTPA is id = 0. See the note in foc.h before changing
+   * this - the reluctance term it would exploit is identically zero here.
+   * Field weakening drives id negative through a different path, and would
+   * overwrite this deliberately. */
+  f->id_ref = 0.0f;
+
+  return (int32_t)(FOC_IqToTorque((float)iq_ma * 0.001f) * 1000.0f);
 }
 
 void FOC_Update(FocState_t *f, int32_t iu_ma, int32_t iw_ma, uint16_t enc_raw,

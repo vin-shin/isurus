@@ -113,9 +113,24 @@ static lag error, and there is currently no measured effect for it to fix.
 The interface is currently `iq_ref` in milliamps. The HV inverter's interface is
 a torque request from the VCU.
 
-- Torque → (i_d, i_q) map. The EMRAX 228 is axial-flux surface-PM, so
-  L_d ≈ L_q and MTPA collapses to i_d = 0 — say this explicitly in a comment so
-  the next person does not implement an IPM MTPA solver for nothing.
+- ~~Torque → (i_d, i_q) map.~~ Done 2026-08-25. `FOC_TorqueToIq` /
+  `FOC_IqToTorque` / `FOC_SetTorque` in `foc.c`, with `FOC_KT_NM_PER_A` derived
+  from `FOC_POLE_PAIRS` and `FOC_LAMBDA_M_WB` rather than written down. The
+  "do not implement an IPM MTPA solver" note is in `foc.h` and a mutant
+  (`torqid`) fails the suite if anyone drives `id` off zero.
+
+  Reachable as **CAN `0x0A SET_TORQUE_MNM`**, milli-newton-metres.
+  `0x02 SET_TORQUE` keeps its existing meaning — milliamps of iq, whatever its
+  name suggests. Redefining 0x02 would have been tidier and genuinely
+  dangerous: same identifier, same four-byte length, silently different
+  meaning, and a host still sending `1000` goes from asking for 1 A to asking
+  for ~12 A with nothing reporting an error.
+
+  `FOC_SetTorque` returns **the torque it accepted**, not the one requested,
+  and that return value is load-bearing: the plausibility monitor compares
+  delivered against *commanded*, so a VCU over-asking would otherwise look
+  implausible and fault a drive that was behaving correctly. Mutant
+  `torqecho` covers it.
 - **Field weakening:** a PI on (vmax − |v|) whose output drives i_d negative,
   clamped to negative values and to a magnitude bound in `limits.h`. Develop it
   here by lowering `FOC_VMAX_DEFAULT` artificially to force early saturation at
