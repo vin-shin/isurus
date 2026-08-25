@@ -53,33 +53,60 @@ to go looking for. See the comments in `foc.h`, `drive.h`, `led.h` and
 `HARDWARE_NOTES.md` sections 10–12 for what was found and why the numbers are
 what they are.
 
-## A. Finish 1b — the decoupling is implemented and disabled
+## A. 1b — PARKED. The premise did not survive measurement
 
-`f->decouple` defaults to 0. It works when the parameters are right: in
-simulation, peak |id| through an iq step is 121 mA off against 8 mA on, and on
-the bench it measured −41% peak and −35% rms d-axis disturbance.
+`f->decouple` defaults to 0 and should stay there for now, but not for the
+reason this section used to give.
 
-It is off because it costs 6× peak current on a reversal at terminal speed —
-9326 mA against 1489 mA — and the cause is understood:
+**What still holds.** The decoupling works. Measured 2026-08-25 on a step at
+matched operating points, 12 reps per arm:
 
-- `omega_e` comes from the position loop, filtered at ~8 Hz, a 20 ms lag.
-- Under 1 A of braking this rotor decelerates at ~16 000 electrical rad/s², so
-  during a reversal `omega_e` is wrong by ~320 rad/s.
-- That is 0.86 V of feedforward error, and 0.86 V across an 85 mΩ winding is
-  10.1 A. Measured 9.3.
-- There is no headroom to correct it: at terminal speed `w_e·λ_m/Vbus` is
-  0.250 against a `vmax` of 0.250.
+| step | decouple off | decouple on | benefit |
+|---|---|---|---|
+| 400 → 1200 mA | 245 mA | 105 mA | −57% peak, −55% rms |
+| 400 → 2400 mA | 336 mA | 106 mA | −68% peak, −59% rms |
 
-**What it needs:** an `omega_e` for the feedforward that tracks faster than
-8 Hz. Not a second estimator that can disagree with the position loop's — the
-same encoder differences, filtered for a different purpose. The simulator can
-now explore this directly: the filter constant is settable and there is no
-noise floor to hide behind.
+The benefit grows with current, as `w_e·Lq·iq` predicts, and the simulator
+reproduces both the effect and the trend (−64% / −70%). See
+`docs/BENCH-2026-08-25.md`.
 
-**Re-test with the demo, not a short reversal.** A 1.5 s reversal showed 1359
-vs 1375 mA and looked like a pass, because the motor never reached the speed
-where this bites. The bar is: d-axis disturbance down **and** peak current on a
-full `foc_dash --demo` cycle no worse than with the flag off.
+**What does not hold: the 6× reversal penalty.** It was re-measured at
+terminal speed and does not reproduce.
+
+| capture | decouple off | decouple on | ratio |
+|---|---|---|---|
+| decim 24, 83% of terminal | 1224 mA | 1421 mA | 1.16× |
+| decim 24, at terminal | 1227 mA | 1761 mA | 1.43× |
+| **full ISR rate, at terminal** | **2333 ± 253 mA** | **2340 ± 372 mA** | **1.00×** |
+
+Three answers from the same bench in one sitting. The only variables were the
+sampling rate and how close to terminal the rotor was, and neither is visible
+in the number. The last row is the trustworthy one: the damaging transient
+sits at t = 4 ms — the step itself — and lasts a few ISR ticks, so a decimated
+capture records its true peak only by luck. That aliasing is what produced the
+apparent penalty, and the apparent divergence across reps with it.
+
+The stated mechanism does not survive either:
+
+- **Integrators do not accumulate.** Captured at both rep boundaries,
+  `id_integ` entering each rep is bounded with no trend and headroom is
+  0.006–0.009 on every rep, outliers included.
+- **The arithmetic assumes volts that a saturated drive cannot apply.**
+  "0.86 V across an 85 mΩ winding is 10.1 A" requires those volts to reach the
+  winding. This section says two sentences earlier that there is no headroom —
+  `w_e·λ_m/Vbus` 0.250 against a `vmax` of 0.250 — and the vector limiter
+  clips the command. Both cannot be true.
+- The 1489 mA baseline does not reproduce either. A direct terminal-speed
+  reversal peaks at ~2.3 A with everything off.
+
+**Before anyone reopens this**, the one thing not replicated is the demo's
+actual profile — 0 → ±0.5 → ±1.0 with dwells, rather than a direct ±1 A flip.
+That is the only place the 9326 mA can still be hiding. Capture it at **full
+ISR rate**, and quote the sampling rate and the pre-step `w_e·λ_m/Vbus` with
+any number that comes out. Without both, a figure for this test means nothing.
+
+Do not write the faster `omega_e` on the strength of the old text. It targets a
+static lag error, and there is currently no measured effect for it to fix.
 
 ## B. Phase 5 — torque interface and field weakening (not started)
 
