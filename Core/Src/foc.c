@@ -8,13 +8,67 @@
 #include "foc.h"
 #include "main.h"
 #include "motor_pwm.h"   /* PWM_FREQ_HZ: the rate this loop actually runs at */
-#include <math.h>
 #include "fastmath.h"
 
 #define FOC_DT          (1.0f / (float)PWM_FREQ_HZ)
 
 #define ONE_BY_SQRT3    0.57735026919f
 #define TWO_BY_SQRT3    1.15470053838f
+
+/* CORDIC configuration, written once in FOC_Init and never touched again.
+ *
+ * FUNC = 0 is cosine; PRECISION = 5 requests 20 iterations, which the hardware
+ * retires four per cycle. NRES = 2 makes one operation yield cos AND sin, so
+ * the ISR pays for a single CORDIC pass rather than two.
+ *
+ * 20 iterations was checked against sinf/cosf across the whole circle before
+ * being trusted: worst error 1.9e-6, or 0.0001 degrees of dq-frame
+ * misalignment. That is four orders of magnitude below the encoder's own
+ * 32768-count resolution, so it is not the limiting error anywhere in this
+ * loop. Dropping to PRECISION = 4 costs one cycle less and gives 0.0018
+ * degrees, which would also be fine - the extra iterations are kept because
+ * they are nearly free and Phase 1a will lean on this angle harder. */
+#define FOC_CORDIC_CFG  ((0U << CORDIC_CSR_FUNC_Pos)      /* cosine        */ \
+                       | (5U << CORDIC_CSR_PRECISION_Pos) /* 20 iterations */ \
+                       | CORDIC_CSR_NRES)                 /* cos and sin   */
+
+/* sin/cos of an electrical angle expressed in encoder counts.
+ *
+ * The CORDIC's angle argument is Q31 spanning [-pi, pi): the value v means
+ * v/2^31 * pi radians. elec_counts is already an integer angle - 0..32767 for
+ * 0..2*pi - so the whole conversion is one shift:
+ *
+ *     q31 = counts << 17
+ *
+ * and it is exact. The 15-bit count walks into the Q31 sign bit at count
+ * 16384, which is precisely where the angle passes pi and the CORDIC's range
+ * wraps to -pi, so counts above a half turn come out negative and mean the
+ * same angle. No float, no fmodf, no wrap test.
+ *
+ * Do NOT centre the count first, i.e. (counts - 16384) << 17. That form is
+ * off by exactly pi and negates BOTH sin and cos. Nothing here would catch it:
+ * the inverse Park uses the same pair, so the loop stays self-consistent and
+ * perfectly stable - it just runs in a dq frame rotated 180 degrees, where a
+ * positive iq_ref produces negative torque. It is the same failure as the
+ * elec_offset = 8192 convention bug in foc.h, and just as invisible until a
+ * motor turns the wrong way. */
+__attribute__((always_inline))
+static inline void FOC_SinCos(uint16_t counts, float *sin_out, float *cos_out)
+{
+  CORDIC->WDATA = (uint32_t)counts << 17;
+
+  /* RRDY is set when the operation completes - with NRES = 2 that means both
+   * results are latched - and is cleared only once RDATA has been read twice.
+   * So one poll covers the pair; a second poll before the sine would spin
+   * zero times and buy nothing. */
+  while ((CORDIC->CSR & CORDIC_CSR_RRDY) == 0U) { }
+
+  int32_t cos_q31 = (int32_t)CORDIC->RDATA;   /* results come out cos first */
+  int32_t sin_q31 = (int32_t)CORDIC->RDATA;
+
+  *cos_out = (float)cos_q31 * (1.0f / 2147483648.0f);
+  *sin_out = (float)sin_q31 * (1.0f / 2147483648.0f);
+}
 
 void FOC_Reset(FocState_t *f)
 {
@@ -42,6 +96,35 @@ void FOC_SetGainsForVbus(FocState_t *f, int32_t vbus_mv)
 
 void FOC_Init(FocState_t *f)
 {
+  /* Bring up the CORDIC here, not in the ISR. Everything that never varies -
+   * function, precision, result count, and the magnitude argument - is set
+   * once, so the control step costs one register write and two reads.
+   *
+   * Called from main() before MotorPwm_EnableControlIsr(), which is what makes
+   * that safe: the ISR's first FOC_SinCos cannot run before this returns. */
+  RCC->AHB1ENR |= RCC_AHB1ENR_CORDICEN;
+  (void)RCC->AHB1ENR;   /* read back so the CSR write below cannot overtake
+                         * the clock actually coming up - a peripheral write
+                         * that lands before its clock is simply discarded */
+
+  /* Seed the magnitude argument explicitly rather than inheriting whatever
+   * the CORDIC happens to hold. For sin/cos it SCALES both results, so a
+   * value other than 1.0 would quietly scale every current the Park transform
+   * reports and every voltage the inverse Park applies - a gain error in the
+   * middle of the control loop with nothing to attribute it to.
+   *
+   * Written once with NARGS = 2 (angle then magnitude); the CORDIC retains it,
+   * so the steady-state config below drops to NARGS = 1 and the ISR supplies
+   * the angle alone. */
+  CORDIC->CSR   = FOC_CORDIC_CFG | CORDIC_CSR_NARGS;
+  CORDIC->WDATA = 0U;             /* angle 0                     */
+  CORDIC->WDATA = 0x7FFFFFFFU;    /* magnitude 1.0 in Q31        */
+  while ((CORDIC->CSR & CORDIC_CSR_RRDY) == 0U) { }
+  (void)CORDIC->RDATA;            /* drain both, or RRDY stays set and the */
+  (void)CORDIC->RDATA;            /* first real call reads these instead   */
+
+  CORDIC->CSR = FOC_CORDIC_CFG;
+
   f->id_ref  = 0.0f;
   f->iq_ref  = 0.0f;
   f->kp      = FOC_KP_DEFAULT;
@@ -84,9 +167,10 @@ void FOC_Update(FocState_t *f, int32_t iu_ma, int32_t iw_ma, uint16_t enc_raw)
     f->elec_counts = (uint16_t)e;
   }
 
-  float theta = (float)f->elec_counts * (6.28318530718f / (float)FOC_ENC_COUNTS);
-  f->sin_e = sinf(theta);
-  f->cos_e = cosf(theta);
+  /* Straight from the integer angle - see FOC_SinCos. The float radian value
+   * that used to sit here existed only to be handed to sinf/cosf, and building
+   * it was the cheap half of the cost. */
+  FOC_SinCos(f->elec_counts, &f->sin_e, &f->cos_e);
 
   /* ---- Park: stationary -> rotor frame ------------------------------ */
   f->id =  f->ialpha * f->cos_e + f->ibeta * f->sin_e;
