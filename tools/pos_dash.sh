@@ -401,10 +401,10 @@ while {1} {
     # ---- header -----------------------------------------------------------
     set out "\${ESC}\[H"
     if {\$DEMO} {
-        append out [format "  \${ESC}\[1;97mPOSITION  makolongfin2\${ESC}\[0m   \${ESC}\[1;95mDEMO %2d/%-2d %-18s\${ESC}\[0m\${ESC}\[90mctrl-c to quit\${ESC}\[0m\r\n" \\
+        append out [format "  \${ESC}\[1;97mPOSITION  Isurus\${ESC}\[0m   \${ESC}\[1;95mDEMO %2d/%-2d %-18s\${ESC}\[0m\${ESC}\[90mctrl-c to quit\${ESC}\[0m\r\n" \\
                     \$demo_n \$demo_total \$demo_lbl]
     } else {
-        append out "  \${ESC}\[1;97mPOSITION  makolongfin2\${ESC}\[0m                                \${ESC}\[90mctrl-c to quit\${ESC}\[0m\r\n"
+        append out "  \${ESC}\[1;97mPOSITION  Isurus\${ESC}\[0m                                \${ESC}\[90mctrl-c to quit\${ESC}\[0m\r\n"
     }
     if {\$flt} {
         append out "  \${ESC}\[1;101;97m OVERCURRENT TRIP \${ESC}\[0m\r\n"

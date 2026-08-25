@@ -399,7 +399,7 @@ def build_frame(name, desc, idx, torque, endstop, angle, vel, params, msg,
     ]
 
     lines = []
-    lines.append("  %sHAPTIC DIAL%s  makolongfin2      %s%-9s%s %s%s%s" % (
+    lines.append("  %sHAPTIC DIAL%s  Isurus      %s%-9s%s %s%s%s" % (
         ESC + "[1;97m", ESC + "[0m", ESC + "[1;95m", name, ESC + "[0m",
         ESC + "[90m", desc, ESC + "[0m"))
     lines.append("")

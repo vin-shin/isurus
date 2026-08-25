@@ -1,8 +1,13 @@
-# makolongfin2
+# Isurus
 
-Field-oriented motor controller firmware for an STM32G474RET6 driving a
-three-phase BLDC through a UCC21330 gate-driver stage, with an Allegro A1333
-magnetic encoder for rotor feedback and a CAN control interface.
+Isurus is the motor control stack: the FOC current loop, the motion and haptic
+loops, the CAN interface, the SWD tooling and the host harness. It is meant to
+move between boards, so each hardware target gets its own branch named for the
+board rather than its own repository.
+
+The board here is **Mako Longfin** - an STM32G474RET6 driving a three-phase
+BLDC through a UCC21330 gate-driver stage, with an Allegro A1333 magnetic
+encoder for rotor feedback and a CAN control interface.
 
 Torque, velocity, position and haptic control all run off one 30 kHz current
 loop.
@@ -67,7 +72,9 @@ cmake --preset Debug
 cmake --build --preset Debug
 ```
 
-Output is `build/Debug/makolongfin2.elf`.
+Output is `build/Debug/makolongfin2.elf`. The CMake target, the ELF and
+`makolongfin2.ioc` still carry the old name on purpose: renaming them moves the
+artifact every tool in `tools/` resolves symbols from, for no functional gain.
 
 Files on the ISR path (`foc.c`, `position.c`, `haptic.c`, `csense.c`,
 `encoder.c`, `motor_pwm.c`, `main.c`) are built at `-O2` while the rest of the

@@ -1,4 +1,4 @@
-# Hardware Notes — makolongfin2
+# Hardware Notes — Mako Longfin
 
 Board-level quirks for this motor controller that are **not** derivable from the
 source tree. Read this before debugging a board that "doesn't run".

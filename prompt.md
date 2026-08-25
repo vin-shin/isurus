@@ -1,4 +1,4 @@
-# makolongfin — HV-readiness work plan
+# Isurus — HV-readiness work plan
 
 Read `CLAUDE.md` and `HARDWARE_NOTES.md` before touching anything. Both contain
 constraints that are not obvious from the code.

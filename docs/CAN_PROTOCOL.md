@@ -1,4 +1,4 @@
-# CAN protocol — makolongfin2
+# CAN protocol — Isurus
 
 Wire format for controlling this drive over CAN.
 
