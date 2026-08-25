@@ -159,39 +159,46 @@ extern "C" {
 #define FOC_LD_H            FOC_L_H
 #define FOC_LQ_H            FOC_L_H
 
-/* Rotor flux linkage, Wb (peak, per phase). Derived from the nameplate Kv.
+/* Rotor flux linkage, Wb (peak, per phase). MEASURED, not derived.
  *
- * The motor is an EaglePower 8309 KV90, and FOC_POLE_PAIRS = 20.
+ * 2.68 mWb, measured on the bench 2026-08-25 by spinning the motor with the
+ * feedforward disabled and reading back what voltage the loop actually needed:
  *
- * Kv is no-load rpm per volt of DC bus. At no load the drive has to produce a
- * phase-voltage amplitude equal to the back-EMF amplitude w_e * lambda_m, and
- * the largest amplitude a bus Vdc can deliver with the min/max injection this
- * firmware already does is Vdc/sqrt(3). (The same relation falls out of the
- * six-step view: line-to-line peak reaches Vdc, and for a sinusoidal machine
- * E_ll_peak = sqrt(3) * w_e * lambda_m.) So
+ *     vq * Vbus = w_e * lambda_m + R * iq    (steady state, id ~ 0)
  *
- *     w_e * lambda_m = Vdc / sqrt(3),   w_e = p * N * 2*pi/60,   N = Kv * Vdc
- *     => lambda_m = 60 / (2*pi*sqrt(3)*p*Kv)
- *                 = 60 / (2*pi*1.7320508*20*90)
- *                 = 3.063 mWb
+ * Five operating points, of which the three below the modulation ceiling are
+ * the trustworthy ones:
  *
- * That gives Kt = 1.5*p*lambda_m = 0.092 N.m per amp of iq.
+ *     iq_cmd   vq(norm)   iq(mA)   w_e     lambda_m
+ *      0.30     0.0704      299     623     2.639 mWb
+ *      0.45     0.1551      587    1344     2.697 mWb
+ *      0.60     0.2344      575    2021     2.727 mWb
  *
- * Kv figures are a well-known source of factor-of-sqrt(3) errors, so this was
- * checked against something the bench already does rather than trusted. At
- * LIM_VEL_MAX_DPS (3600 deg/s = 600 rpm = 200 Hz electrical) the predicted
- * back-EMF amplitude is w_e*lambda_m = 3.849 V, and the modulation ceiling
- * allows FOC_VMAX_DEFAULT * 15.55 V = 3.888 V. The ratio is 0.99: this motor
- * runs out of voltage within 1% of exactly where it is observed to. A
- * sqrt(3) error either way would have put that ratio at 0.57 or 1.71 and the
- * bench would top out somewhere else entirely.
+ * Spread about 2%. Kt = 1.5 * p * lambda_m = 0.080 N.m per amp of iq.
  *
- * Worth seeing what that means for phase 1b: at the top of the bench's range
- * the back-EMF term alone is w_e*lambda_m/Vbus = 0.248 of normalised duty,
- * against a vmax of 0.25. Essentially the whole voltage budget is spent
- * opposing back-EMF, and without feedforward the integrator is what has to
- * find it - from zero, every time. */
-#define FOC_LAMBDA_M_WB     3.063e-3f
+ * This replaces 3.063 mWb, which was DERIVED from the nameplate KV90 as
+ * 60/(2*pi*sqrt(3)*p*Kv) and was 14% too high. The measurement corresponds to
+ * Kv = 103 rather than 90, which is an ordinary amount for a hobby motor
+ * nameplate to be out by.
+ *
+ * How that error survived is worth recording, because the check that should
+ * have caught it did not. Reading g_foc.vq_ff_pm back off the target and
+ * finding it matched w_e*lambda_m/Vbus to 1% proved nothing at all: the
+ * firmware COMPUTES vq_ff from this constant, so that comparison can only
+ * ever confirm the arithmetic, never the number. A parameter that describes
+ * the motor has to be measured against the MOTOR - here, against the voltage
+ * the loop demands when it is left to find that voltage by itself.
+ *
+ * What the error cost: at 2133 rad/s the feedforward came out at 0.276 of the
+ * bus against a vmax of 0.25, so the feedforward ALONE exceeded the entire
+ * modulation ceiling. The 0.82 V of excess drives 9.6 A through an 85 mohm
+ * winding on its own. See the anti-windup comment in foc.c for the second
+ * half of that failure.
+ *
+ * For the EMRAX this is the same warning as the bandwidth derivation below:
+ * measure lambda_m, do not take it from a nameplate. The back-EMF term there
+ * is 58% of the bus, so 14% of it is 8% of the entire supply. */
+#define FOC_LAMBDA_M_WB     2.68e-3f
 
 /* Sanity window for the measured bus. Outside it the reading is not trusted
  * and the gains are left alone: a bus of 0 would otherwise divide to infinity

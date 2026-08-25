@@ -199,9 +199,31 @@ void FOC_Init(FocState_t *f)
   f->omega_e_rads_x10  = 0;
   f->theta_adv_deg_x10 = 0;
 
-  /* Same reasoning as delay_comp: the decoupled loop is the correct one, so
-   * it is what runs unless someone turns it off to measure the difference. */
-  f->decouple = 1U;
+  /* OFF by default, which is a deliberate reversal of how this shipped.
+   *
+   * The decoupled loop is still the correct one in principle, and on the HV
+   * machine it is not optional at all - see the bandwidth derivation in
+   * foc.h. But as first shipped it made this bench materially WORSE, and it
+   * did so quietly: a torque reversal that peaked at 1.3 A with the
+   * feedforward off peaked at 4.7 A with it on, and running the foc_dash demo
+   * tripped the 15 A overcurrent at 27 A on a motor rated for 22 A
+   * continuous.
+   *
+   * Two causes, both now fixed - a lambda_m that was 14% high (foc.h) and an
+   * anti-windup that scaled the integrators to zero whenever the feedforward
+   * alone reached vmax (above). Neither fix has been measured on the motor
+   * yet, and a correction that has already been wrong once does not get to
+   * default itself back on untested.
+   *
+   * To re-validate, and to turn this back on if it passes:
+   *
+   *     tools/step_trace.sh --run 400 1200 12 decouple
+   *
+   * plus a torque reversal peak-current check with the flag both ways. It
+   * should show d-axis disturbance down, as it did before, AND peak current
+   * during a reversal no higher than with the flag off - which is the part
+   * that was never checked the first time. */
+  f->decouple = 0U;
   f->vd_ff_pm = 0;
   f->vq_ff_pm = 0;
 
@@ -421,18 +443,35 @@ void FOC_Update(FocState_t *f, int32_t iu_ma, int32_t iw_ma, uint16_t enc_raw,
   float vmag = fm_sqrtf(f->vd * f->vd + f->vq * f->vq);
   if (vmag > f->vmax)
   {
-    float k = f->vmax / vmag;
-
-    /* Back-calculation anti-windup. Clamping each integrator to +/-vmax
-     * separately is not enough: two axes each at the limit reach 1.41*vmax
-     * combined, so they keep winding past anything the output can deliver and
-     * the loop stops responding. Scaling them by the same factor that limits
-     * the vector holds the integrators at exactly what is achievable. */
-    f->id_integ *= k;
-    f->iq_integ *= k;
+    float k      = f->vmax / vmag;
+    float vd_cmd = f->vd;
+    float vq_cmd = f->vq;
 
     f->vd *= k;
     f->vq *= k;
+
+    /* Back-calculation anti-windup: subtract exactly the voltage that could
+     * NOT be delivered. Clamping each integrator to +/-vmax separately is not
+     * enough - two axes each at the limit reach 1.41*vmax combined, so they
+     * wind past anything the output can produce and the loop stops
+     * responding.
+     *
+     * This used to scale the integrators by k instead, which is only
+     * equivalent while the integrators are the whole of the command. Once the
+     * decoupling feedforward was added they are not, and scaling became
+     * actively wrong: with the feedforward alone at or above vmax, k < 1 on
+     * every tick, so the integrators were multiplied down toward zero
+     * forever and the PI lost all integral authority. Measured on the bench -
+     * vq sat pinned at 0.246 of a 0.25 ceiling for 4 ms after a torque
+     * reversal while the loop failed to reverse the current, and peak current
+     * went from 1.3 A to 4.7 A.
+     *
+     * Subtracting the undelivered part instead lets the integrator absorb an
+     * over-large feedforward: it simply winds negative until PI + ff lands on
+     * what the bridge can actually produce, which is the correct answer and
+     * the behaviour scaling could never reach. */
+    f->id_integ -= (vd_cmd - f->vd);
+    f->iq_integ -= (vq_cmd - f->vq);
   }
 
   /* ---- inverse Park -------------------------------------------------- */

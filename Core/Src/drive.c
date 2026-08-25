@@ -27,6 +27,10 @@ extern volatile CSenseTelem_t g_cs;
 extern volatile uint32_t g_faulted;
 
 static uint32_t s_state_t0 = 0U;
+static uint32_t s_selftest_tick = 0U;
+
+/* How often SELFTEST re-checks while waiting for the bus to come up. */
+#define DRIVE_SELFTEST_RETRY_MS   500U
 
 const char *Drive_StateName(uint32_t s)
 {
@@ -183,10 +187,10 @@ void Drive_Fault(DriveFault_t cause)
        * devices conduct. See motor_pwm.c.
        *
        * NOT REACHABLE ON THIS BENCH, and deliberately so. The crossover here
-       * is Vbus/(sqrt(3)*lambda_m) = 4524 rad/s at 24 V, and the motor is
+       * is Vbus/(sqrt(3)*lambda_m) = 5170 rad/s at 24 V, and the motor is
        * voltage-limited to about 1820 rad/s electrical, so this branch cannot
        * be entered at 48 V. That is the correct outcome rather than a gap in
-       * coverage - an ASC at bench top speed would draw 42.8 A through +/-40 A
+       * coverage - an ASC at bench top speed would draw 37.4 A through +/-40 A
        * sensors and a 22 A motor. The decision logic is what is being
        * developed here; the action itself waits for HV hardware. */
       MotorPwm_GateEnable();
@@ -266,6 +270,25 @@ void Drive_SelfTest(void)
   }
 
   g_drive.selftest_fail = (uint32_t)bad;
+  s_selftest_tick = HAL_GetTick();
+
+  /* An undervoltage bus is a PRECONDITION that is not met yet, not a fault to
+   * latch. The commonest way to see it is the bench supply simply not being
+   * switched on, and latching there means the drive still refuses to arm
+   * after power arrives until someone sends a clear - which is friction with
+   * no safety value, since a dead bus cannot hurt anything.
+   *
+   * So this one case stays in SELFTEST and retries. Everything else latches:
+   * a bad current-sense zero or a silent encoder will not fix itself, and
+   * quietly retrying those would turn a hard fault into an intermittent one.
+   *
+   * Note this is only the STARTUP check. An undervoltage that appears while
+   * running is a different event on a different path and is not softened
+   * here. */
+  if (bad == DRIVE_FAULT_UNDERVOLT)
+  {
+    return;   /* stay in SELFTEST; Drive_Step retries */
+  }
 
   if (bad != DRIVE_FAULT_NONE) { Drive_Fault(bad); }
   else                         { Drive_Enter(DRIVE_READY); }
@@ -310,6 +333,16 @@ void Drive_Step(uint32_t now_ms)
   if (g_drive.state == (uint32_t)DRIVE_INIT)
   {
     Drive_SelfTest();
+  }
+  else if (g_drive.state == (uint32_t)DRIVE_SELFTEST)
+  {
+    /* Only reachable when the last attempt stopped on an undervoltage bus -
+     * every other outcome leaves SELFTEST immediately. Retry on a timer so
+     * the drive becomes READY on its own once the supply arrives. */
+    if ((now_ms - s_selftest_tick) >= DRIVE_SELFTEST_RETRY_MS)
+    {
+      Drive_SelfTest();
+    }
   }
 }
 

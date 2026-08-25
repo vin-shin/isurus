@@ -1174,19 +1174,19 @@ lot more trust in the hardware than freewheel asks for.
 
 | | bench 8309 @ 24 V | EMRAX 228 @ 600 V |
 |---|---|---|
-| lambda_m | 3.063 mWb | >= 60.1 mWb (a bound, not a datasheet value) |
+| lambda_m | 2.68 mWb (measured) | >= 60.1 mWb (a bound, not a datasheet value) |
 | L | 54.3 uH | 255 uH |
-| freewheel back-charges above | 4524 rad/s (720 Hz) | 5764 rad/s (917 Hz) |
+| freewheel back-charges above | 5170 rad/s (823 Hz) | 5764 rad/s (917 Hz) |
 | max reachable w_e | ~1820 rad/s (290 Hz) | 5762 rad/s (917 Hz) |
-| ASC current at max speed | 42.8 A | 236 A |
-| ASC asymptote lambda_m/Ld | 56.4 A | 236 A |
+| ASC current at max speed | 37.4 A | 236 A |
+| ASC asymptote lambda_m/Ld | 49.4 A | 236 A |
 
 Two things fall out of that table.
 
 **On this bench, freewheel is unconditionally correct.** The motor is
 voltage-limited to about 290 Hz electrical and the back-charge crossover is at
-720 Hz, so the hazard freewheel guards against cannot be reached at 24 V. ASC,
-meanwhile, would draw 42.8 A at bench top speed — past the +/-40 A range of the
+823 Hz, so the hazard freewheel guards against cannot be reached at 24 V. ASC,
+meanwhile, would draw 37.4 A at bench top speed — past the +/-40 A range of the
 CT4022 sensors and roughly twice the motor's 22 A continuous rating. So ASC is
 not merely unnecessary here, it is the more damaging of the two options, and
 the decision logic correctly never selects it.
