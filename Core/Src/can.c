@@ -27,7 +27,10 @@ extern volatile uint32_t g_can_wants_bridge;
 
 static CanTelem_t s_t;
 static uint32_t   s_telem_tick;
+static uint32_t   s_norm_tick;      /* normal-rate slot, for suppression count */
 static uint8_t    s_timed_out;
+static uint8_t    s_bus_off_seen;   /* sticky; cleared only by Can_Init */
+static uint32_t   s_recover_tick;
 
 /* ---- little-endian payload helpers -------------------------------------- *
  *
@@ -67,17 +70,30 @@ static void wr_u16(uint8_t *p, uint32_t v)
 int32_t Can_Init(uint8_t loopback)
 {
   memset(&s_t, 0, sizeof(s_t));
+  s_bus_off_seen = 0U;
+  s_recover_tick = 0U;
+  s_timed_out    = 0U;
 
   hfdcan1.Instance                  = FDCAN1;
   hfdcan1.Init.ClockDivider         = FDCAN_CLOCK_DIV1;
   hfdcan1.Init.FrameFormat          = FDCAN_FRAME_CLASSIC;
   hfdcan1.Init.Mode                 = loopback ? FDCAN_MODE_INTERNAL_LOOPBACK
                                                : FDCAN_MODE_NORMAL;
-  /* Retransmit on arbitration loss or error. A dropped setpoint is not
-   * catastrophic on its own, but a dropped ESTOP is, and the watchdog cannot
-   * distinguish "nobody is talking" from "the one frame that mattered was
-   * lost". Let the peripheral do what CAN is designed to do. */
-  hfdcan1.Init.AutoRetransmission   = ENABLE;
+  /* SINGLE-SHOT transmission. This was ENABLE, on the reasoning that a
+   * dropped ESTOP is catastrophic - but this node never TRANSMITS an ESTOP.
+   * ESTOP is host -> drive; everything this node puts on the wire is periodic
+   * telemetry, which is replaced 20 ms later by a fresher copy of itself.
+   * Retransmission was therefore protecting nothing and costing a great deal:
+   * an unacknowledged frame is retried as fast as the bus allows, each attempt
+   * adding 8 to the transmit error counter, so a bus with nobody listening
+   * drives this node to BUS-OFF in milliseconds - and a bus-off node stops
+   * receiving too, ESTOP included.
+   *
+   * One attempt per frame turns that into 8 counts per published frame, which
+   * the backoff in Can_PublishTelem can then actually outrun. The cost is that
+   * a frame losing arbitration is dropped rather than retried; at 1.3% bus
+   * load per drive that is rare, and the next telemetry frame is 20 ms away. */
+  hfdcan1.Init.AutoRetransmission   = DISABLE;
   hfdcan1.Init.TransmitPause        = DISABLE;
   hfdcan1.Init.ProtocolException    = DISABLE;
 
@@ -304,28 +320,120 @@ void Can_Poll(void)
   }
 }
 
+/* Stand the motion down without dropping the bridge.
+ *
+ * Silence is not consent to keep driving, but it is not a reason to disarm
+ * either: leaving the stage up means a host that comes back resumes without
+ * re-arming, and the motor makes no torque in the meantime. Shared by the
+ * command watchdog and by bus-off, which are the same event - the control
+ * link is gone - discovered two different ways. */
+static void Can_StandDown(void)
+{
+  s_timed_out  = 1U;
+  g_pos.mode   = MOTION_MODE_IDLE;
+  g_foc.iq_ref = 0.0f;
+}
+
 void Can_CheckTimeout(void)
 {
   if ((s_t.init_rc != 0) || (s_t.armed == 0U) || (s_timed_out != 0U)) { return; }
 
   if ((HAL_GetTick() - s_t.last_rx_tick) >= CAN_CMD_TIMEOUT_MS)
   {
-    /* Silence is not consent to keep driving. Drop to idle but leave the
-     * bridge up, so a host that comes back can resume without re-arming - the
-     * motor is making no torque in the meantime. */
-    s_timed_out = 1U;
     s_t.timeouts++;
-    g_pos.mode   = MOTION_MODE_IDLE;
-    g_foc.iq_ref = 0.0f;
+    Can_StandDown();
   }
+}
+
+void Can_CheckBus(void)
+{
+  if (s_t.init_rc != 0) { return; }
+
+  FDCAN_ProtocolStatusTypeDef ps;
+  FDCAN_ErrorCountersTypeDef  ec;
+
+  (void)HAL_FDCAN_GetProtocolStatus(&hfdcan1, &ps);
+  (void)HAL_FDCAN_GetErrorCounters(&hfdcan1, &ec);
+
+  s_t.tec         = ec.TxErrorCnt;
+  s_t.rec         = ec.RxErrorCnt;
+  s_t.bus_warn    = ps.Warning;
+  s_t.bus_passive = ps.ErrorPassive;
+
+  if (ps.BusOff == 0U)
+  {
+    s_t.bus_off = 0U;
+    return;
+  }
+
+  /* Entering bus-off. Count it once per episode, not once per poll. */
+  if (s_t.bus_off == 0U)
+  {
+    s_t.bus_off = 1U;
+    s_t.bus_off_events++;
+    s_bus_off_seen = 1U;
+
+    /* The control link is provably gone - a bus-off node receives nothing.
+     * Arm-gated exactly like the command watchdog, so a bench drive being
+     * driven over SWD with a transceiver attached and no host is not stopped
+     * by a bus it was never using. */
+    if ((s_t.armed != 0U) && (s_timed_out == 0U))
+    {
+      Can_StandDown();
+    }
+
+    /* Recover immediately the first time; the cooldown only paces retries. */
+    s_recover_tick = HAL_GetTick() - CAN_BUSOFF_RETRY_MS;
+  }
+
+  if ((HAL_GetTick() - s_recover_tick) < CAN_BUSOFF_RETRY_MS) { return; }
+  s_recover_tick = HAL_GetTick();
+
+  /* Bus-off sets CCCR.INIT in hardware; clearing it is what starts the
+   * recovery sequence (129 x 11 recessive bits), after which the error
+   * counters reset and the node is error-active again.
+   *
+   * Done by hand rather than through HAL_FDCAN_Start, which refuses unless
+   * the handle is in state READY - and after a bus-off the handle is still
+   * BUSY, because nothing told the HAL that the hardware stopped. This is the
+   * one line of that function that matters here. */
+  CLEAR_BIT(hfdcan1.Instance->CCCR, FDCAN_CCCR_INIT);
+  s_t.bus_recoveries++;
 }
 
 void Can_PublishTelem(void)
 {
   if (s_t.init_rc != 0) { return; }
 
-  uint32_t now = HAL_GetTick();
-  if ((now - s_telem_tick) < (1000U / CAN_TELEM_HZ)) { return; }
+  /* Back off once the error counters say nobody is acknowledging, and stop
+   * entirely while bus-off: nothing leaves a bus-off node, and queueing into
+   * one only fills the TX FIFO with frames that are stale by the time it
+   * recovers.
+   *
+   * At 50 Hz, single-shot, an unlistened bus costs 8 error counts per frame
+   * and 800 per second - bus-off in about a third of a second. At
+   * CAN_TELEM_PROBE_HZ that is 16 per second, which turns the same margin into
+   * roughly ten, and every successful transmission takes one back off again.
+   * The node keeps announcing itself either way. */
+  uint32_t now       = HAL_GetTick();
+  uint32_t normal_ms = 1000U / CAN_TELEM_HZ;
+  uint32_t period_ms = normal_ms;
+
+  if (s_t.bus_off != 0U)                                     { period_ms = 0U; }
+  else if ((s_t.bus_warn != 0U) || (s_t.bus_passive != 0U))  { period_ms = 1000U / CAN_TELEM_PROBE_HZ; }
+
+  /* What the backoff costs, counted in FRAMES. This function is called every
+   * pass of the main loop - tens of thousands per second - so counting here
+   * on entry would count polls, not messages. The normal-rate slot gets its
+   * own tick for exactly that reason. */
+  if ((now - s_norm_tick) >= normal_ms)
+  {
+    s_norm_tick = now;
+    if (period_ms != normal_ms) { s_t.tx_suppressed += 2U; }
+  }
+
+  if (period_ms == 0U) { return; }
+  if ((now - s_telem_tick) < period_ms) { return; }
   s_telem_tick = now;
 
   uint8_t d[8];
@@ -336,10 +444,13 @@ void Can_PublishTelem(void)
   (void)Can_Send(CAN_ID(CAN_NODE_ID, CAN_MSG_TELEM_MOTION), d, 8);
 
   uint8_t flags = 0U;
-  if (g_pos.enabled)  { flags |= CAN_FLAG_ENABLED; }
-  if (g_foc.enabled)  { flags |= CAN_FLAG_FOC_ON; }
-  if (g_faulted)      { flags |= CAN_FLAG_FAULTED; }
-  if (s_timed_out)    { flags |= CAN_FLAG_CMD_TIMEOUT; }
+  if (g_pos.enabled)     { flags |= CAN_FLAG_ENABLED; }
+  if (g_foc.enabled)     { flags |= CAN_FLAG_FOC_ON; }
+  if (g_faulted)         { flags |= CAN_FLAG_FAULTED; }
+  if (s_timed_out)       { flags |= CAN_FLAG_CMD_TIMEOUT; }
+  if (s_t.bus_warn)      { flags |= CAN_FLAG_BUS_WARN; }
+  if (s_t.bus_passive)   { flags |= CAN_FLAG_BUS_PASSIVE; }
+  if (s_bus_off_seen)    { flags |= CAN_FLAG_BUS_OFF_SEEN; }
 
   d[0] = (uint8_t)g_pos.mode;
   d[1] = flags;

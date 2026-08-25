@@ -19,14 +19,10 @@
   *   Classic rather than FD because every message below fits in 8 bytes, and
   *   2.0 talks to every analyser, transceiver and node in existence. Moving to
   *   FD later would change only the frame format, not the protocol.
+  *
   *   FDCAN1 on PA12 (TX) and PB8 (RX). Note PB8 is also BOOT0 - see
   *   HARDWARE_NOTES.md section 1 before assuming a dead board is a firmware
   *   problem.
-  *
-  *   Classic frames rather than FD because every command here fits in 8 bytes
-  *   and classic CAN talks to every analyser, transceiver and node in
-  *   existence. Nothing about the protocol below would need to change to move
-  *   to FD later; only the frame format.
   *
   * ---------------------------------------------------------------------------
   * Addressing
@@ -107,6 +103,33 @@
   *
   *   The timeout only arms after the first frame, so a drive being driven
   *   over SWD with no CAN host present is unaffected.
+  *
+  * ---------------------------------------------------------------------------
+  * Bus health
+  * ---------------------------------------------------------------------------
+  *   A CAN node that transmits into a bus nobody is acknowledging counts its
+  *   way to BUS-OFF, and a bus-off FDCAN sets CCCR.INIT in hardware and stops
+  *   transmitting AND RECEIVING. That last part is what makes this a safety
+  *   matter rather than a diagnostics one: a drive that has counted itself off
+  *   the bus can no longer be reached by an ESTOP.
+  *
+  *   Nothing about that is hypothetical here. This node publishes telemetry
+  *   from boot whether or not a host exists, so an unplugged host, an
+  *   unterminated bus or a single-node bench is enough to trigger it.
+  *
+  *   Three mechanisms keep it survivable, in order of when they act:
+  *
+  *     1. Transmission is SINGLE-SHOT. A frame gets one attempt; a failure
+  *        costs 8 transmit-error counts and the frame is dropped rather than
+  *        retried into the same silence.
+  *     2. Telemetry BACKS OFF to CAN_TELEM_PROBE_HZ once the error counters
+  *        pass the warning limit, which turns a third of a second of margin
+  *        into about ten seconds and leaves the node announcing itself.
+  *     3. If it reaches bus-off anyway, the drive RECOVERS ITSELF - clearing
+  *        INIT starts the hardware recovery sequence - and retries no faster
+  *        than every CAN_BUSOFF_RETRY_MS.
+  *
+  *   All of it is counted and published; see CAN_FLAG_BUS_* below.
   ******************************************************************************
   */
 #ifndef CAN_PROTO_H
@@ -196,11 +219,32 @@ extern "C" {
 
 #define CAN_TELEM_HZ            50U
 
+/* Reduced telemetry rate used while the bus error counters are past the
+ * warning limit - see "Bus health" above. Still fast enough that a host
+ * arriving on a repaired bus finds the drive without asking. */
+#define CAN_TELEM_PROBE_HZ      1U
+
+/* Minimum interval between bus-off recovery attempts. The hardware recovery
+ * sequence itself is 129 x 11 recessive bits, about 1.4 ms at 1 Mbit/s; this
+ * is much longer so that a permanently broken bus is retried calmly rather
+ * than hammered. */
+#define CAN_BUSOFF_RETRY_MS     200U
+
 #define CAN_FLAG_ENABLED        (1U << 0)   /* servo engaged                */
 #define CAN_FLAG_FOC_ON         (1U << 1)   /* current loop running         */
 #define CAN_FLAG_FAULTED        (1U << 2)   /* overcurrent latch set        */
 #define CAN_FLAG_GATES_ON       (1U << 3)   /* gate drivers enabled         */
 #define CAN_FLAG_CMD_TIMEOUT    (1U << 4)   /* dropped to idle on silence   */
+#define CAN_FLAG_BUS_WARN       (1U << 5)   /* an error counter >= 96       */
+#define CAN_FLAG_BUS_PASSIVE    (1U << 6)   /* error-passive                */
+#define CAN_FLAG_BUS_OFF_SEEN   (1U << 7)   /* has been bus-off since init  */
+
+/* Note that BUS_OFF_SEEN is STICKY, and deliberately so. A node in bus-off
+ * cannot transmit, so a live "I am bus-off right now" bit could never reach a
+ * host - the one state most worth reporting is the one state that cannot be
+ * reported. The sticky form survives the recovery and tells a host, on the
+ * first frame after it, that this drive dropped off the bus and came back.
+ * The live state is in CanTelem_t for whoever is on the debugger. */
 
 #ifdef __cplusplus
 }

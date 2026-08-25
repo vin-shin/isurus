@@ -177,9 +177,9 @@ static   uint32_t s_bridge_up        = 0;
 /* Encoder integrity. A corrupted SPI frame that is not 0xFFFF passes the
  * fast read's only sanity check and comes out as a plausible-looking angle,
  * so the way to catch it is kinematic: count position steps too large to be
- * physically possible in one 50 us tick. 1000 counts is 11 degrees per tick,
- * or 220000 deg/s - the shaft cannot do that, so anything flagged here is the
- * wire, not the motor. This is the measurement that says whether the SPI
+ * physically possible in one 33.3 us tick. 1000 counts is 11 degrees per tick,
+ * which at 30 kHz is 330000 deg/s - the shaft cannot do that, so anything
+ * flagged here is the wire, not the motor. This is the measurement that says whether the SPI
  * clock can be raised. */
 volatile uint32_t g_ov_trips = 0;   /* bus went over LIM_VBUS_MAX_MV */
 volatile uint32_t g_enc_glitch = 0;
@@ -247,7 +247,7 @@ static void Telem_Printf(const char *fmt, ...)
 
 static inline int32_t g_enc_abs(int32_t v) { return (v < 0) ? -v : v; }
 
-/* Control ISR - HRTIM Timer A repetition, 20 kHz, phase-locked to the PWM.
+/* Control ISR - HRTIM Timer A repetition, 30 kHz, phase-locked to the PWM.
  *
  * Everything time-critical lives here: fresh current from the HRTIM-triggered
  * ADCs, a fast encoder read, the FOC step, and the duty update. It runs only
@@ -706,6 +706,9 @@ int main(void)
 
     Can_Poll();
     Can_CheckTimeout();
+    /* Before PublishTelem, so a bus-off is known before anything is queued
+     * into it - and so the node recovers itself rather than staying deaf. */
+    Can_CheckBus();
     Can_PublishTelem();
     Can_GetTelem((CanTelem_t *)&g_can);
 
