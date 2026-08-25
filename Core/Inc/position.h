@@ -35,13 +35,17 @@ extern "C" {
 #endif
 
 #include <stdint.h>
+#include "motor_pwm.h"   /* PWM_FREQ_HZ */
 
 /* Encoder counts per mechanical revolution (A1333, 15-bit). */
 #define POS_COUNTS_PER_REV   32768
 
-/* Outer-loop rate. POS_DECIM must be 20000 / POS_RATE_HZ. */
+/* Outer-loop rate. The decimation is DERIVED from the switching frequency
+ * rather than written out: these two have to agree, and when they silently
+ * disagree the position loop runs at the wrong rate while every gain that
+ * depends on dt is quietly wrong with it. */
 #define POS_RATE_HZ          1000.0f
-#define POS_DECIM            20U
+#define POS_DECIM            (PWM_FREQ_HZ / 1000U)
 
 /* Velocity is a first difference of a quantised position, so it is noisy:
  * one count over one 1 ms tick is already 0.19 rad/s. This EMA puts a ~35 Hz

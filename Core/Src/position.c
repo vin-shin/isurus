@@ -7,6 +7,9 @@
 
 #include "position.h"
 #include "haptic.h"
+
+extern volatile uint32_t g_enc_glitch;
+extern volatile int32_t  g_enc_glitch_max;
 #include <math.h>
 #include "fastmath.h"
 
@@ -116,6 +119,17 @@ float Position_Step(PosState_t *p, uint16_t enc_raw)
   p->last_raw    = raw;
   p->pos_counts += d;
 
+  /* See g_enc_glitch in main.c: a jump this large is not mechanically
+   * possible, so it is a corrupted encoder frame. */
+  {
+    int32_t ad = (d < 0) ? -d : d;
+    if (ad > 1000)
+    {
+      g_enc_glitch++;
+      if (ad > g_enc_glitch_max) { g_enc_glitch_max = ad; }
+    }
+  }
+
   if (p->zero_here != 0U)
   {
     p->zero_here = 0U;
@@ -141,13 +155,14 @@ float Position_Step(PosState_t *p, uint16_t enc_raw)
    * 1 kHz staircase. Running the filter out here - on every tick, not the
    * decimated one - is what turns those steps into a continuous command.
    *
-   * The alpha is the small-angle form of 1 - exp(-2*pi*f/fs); at 300 Hz of
-   * 20 kHz that is 0.094, where the approximation is still good. */
+   * The alpha is the small-angle form of 1 - exp(-2*pi*f/fs), which stays good
+   * while the corner is well below the sample rate - it is 0.031 for 150 Hz at
+   * 30 kHz. fs is the PWM rate because this runs every ISR tick. */
   {
     float a = 1.0f;
     if (p->out_lpf_hz > 0)
     {
-      a = (6.28318530718f * (float)p->out_lpf_hz) * (1.0f / 20000.0f);
+      a = (6.28318530718f * (float)p->out_lpf_hz) * (1.0f / (float)PWM_FREQ_HZ);
       if (a > 1.0f) { a = 1.0f; }
     }
     p->iq_out += a * (p->iq_raw - p->iq_out);

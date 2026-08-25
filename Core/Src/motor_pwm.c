@@ -346,7 +346,13 @@ static int MotorPwm_ConfigAdcTrigger(void)
   /* Trigger EARLY enough that the conversion has finished before the control
    * ISR reads DR at the period event - see PWM_ADC_TRIG_PERMILLE. CMP4 is used
    * because Timer A's CMP1/CMP3 now carry W's centred pulse edges. */
-  MotorPwm_SetAdcTriggerPoint((s_period * PWM_ADC_TRIG_PERMILLE) / 1000U);
+  /* Trigger a fixed time before the period event, not a fixed fraction of it -
+   * see PWM_ADC_LEAD_NS. Guard against a period shorter than the lead itself. */
+  {
+    uint32_t lead = PWM_ADC_LEAD_COUNTS;
+    if (lead > (s_period / 2U)) { lead = s_period / 2U; }
+    MotorPwm_SetAdcTriggerPoint(s_period - lead);
+  }
 
   pADCTriggerCfg.UpdateSource = HRTIM_ADCTRIGGERUPDATE_TIMER_A;
   pADCTriggerCfg.Trigger      = HRTIM_ADCTRIGGEREVENT13_TIMERA_CMP4;

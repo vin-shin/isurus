@@ -32,10 +32,21 @@ extern "C" {
 
 #include <stdint.h>
 
-/* 20 kHz switching. HRTIM kernel clock is the APB2 timer clock (128 MHz here,
+/* 30 kHz switching. HRTIM kernel clock is the APB2 timer clock (128 MHz here,
  * APB2 prescaler is 1), and PRESCALERRATIO_MUL8 gives a 1.024 GHz counter, so
- * one period is 51200 counts and the duty resolution is about 0.98 ns. */
-#define PWM_FREQ_HZ         20000U
+ * one period is 34133 counts and the duty resolution is about 0.98 ns.
+ *
+ * Raised from 20 kHz, which sits right at the top of the audible range and was
+ * part of what could be heard from the motor. 30 kHz is inaudible outright,
+ * cuts current ripple by a third (ripple goes as 1/fsw), and costs 1.5x the
+ * switching loss - where 40 kHz would have cost 2x and, more to the point, did
+ * not fit: the control ISR measures ~28 us and a 40 kHz period is 25 us.
+ *
+ * ANYTHING that assumes a control-loop rate must derive it from this symbol.
+ * Three places used to hardcode 20000 - both FOC integrators and the position
+ * loop's output filter - and none of them would have failed loudly; they would
+ * have silently run with the wrong gain. */
+#define PWM_FREQ_HZ         30000U
 #define PWM_HRTIM_MUL       8U
 
 /* Minimum usable compare value.
@@ -65,14 +76,21 @@ extern "C" {
 #define GATE_EN_PORT        GPIOC
 #define GATE_EN_PIN         GPIO_PIN_5
 
-/* Where in the PWM period the ADC is triggered, as a fraction of the period.
+/* How long BEFORE the period event the ADC is triggered.
  *
  * This is a DEADLINE, not a preference. The control ISR fires at the period
  * event and reads the ADC data register on its first instruction, so the
  * conversion must already be complete by then. With 8x oversampling at 6.5
  * cycle sampling on a PCLK/4 ADC clock, one reading costs 8 x 19 = 152 ADC
- * cycles, about 4.75 us. 900 per-mille leaves 10% of a 50 us period = 5 us of
- * lead, which just covers it.
+ * cycles, about 4.75 us.
+ *
+ * Expressed in nanoseconds rather than as a fraction of the period, because
+ * the conversion takes a fixed amount of time and does not care how long the
+ * period is. This was 900 per-mille, which happened to be 5 us at 20 kHz - but
+ * the same 900 per-mille at 30 kHz is only 3.33 us, i.e. less than the
+ * conversion needs, and the failure would have been the exact silent one
+ * described below. 5000 ns reproduces the validated 20 kHz behaviour bit for
+ * bit and stays correct as the switching frequency moves.
  *
  * Do NOT move this to the period event to "sample in the zero vector". That
  * makes the trigger simultaneous with the ISR, so DR is stale by a period or
@@ -85,7 +103,10 @@ extern "C" {
  * in-line TMR phase sensors, not shunts, so they read phase current in every
  * switching state. The zero vector only matters for landing on the ripple
  * average, which 900 per-mille approximates well for duty up to ~0.8. */
-#define PWM_ADC_TRIG_PERMILLE  900U
+#define PWM_ADC_LEAD_NS        5000U
+
+/* Counts of lead at the 1.024 GHz HRTIM counter. */
+#define PWM_ADC_LEAD_COUNTS    ((PWM_ADC_LEAD_NS * 1024U) / 1000U)
 
 typedef struct {
   uint32_t period;        /* HRTIM period in counts                 */

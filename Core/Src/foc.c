@@ -7,8 +7,11 @@
 
 #include "foc.h"
 #include "main.h"
+#include "motor_pwm.h"   /* PWM_FREQ_HZ: the rate this loop actually runs at */
 #include <math.h>
 #include "fastmath.h"
+
+#define FOC_DT          (1.0f / (float)PWM_FREQ_HZ)
 
 #define ONE_BY_SQRT3    0.57735026919f
 #define TWO_BY_SQRT3    1.15470053838f
@@ -52,6 +55,7 @@ void FOC_Init(FocState_t *f)
   f->ki_x100      = (int32_t)(f->ki * 100.0f);
   f->updates = 0U;
   f->isr_max = 0U;
+  f->mirror_div = 0U;
   FOC_Reset(f);
 }
 
@@ -92,8 +96,11 @@ void FOC_Update(FocState_t *f, int32_t iu_ma, int32_t iw_ma, uint16_t enc_raw)
   float ed = f->id_ref - f->id;
   float eq = f->iq_ref - f->iq;
 
-  f->id_integ += ed * f->ki * (1.0f / 20000.0f);
-  f->iq_integ += eq * f->ki * (1.0f / 20000.0f);
+  /* dt is the PWM period, because this runs once per period. Derived from
+   * PWM_FREQ_HZ rather than written out, so changing the switching frequency
+   * cannot silently rescale the integrator gain. */
+  f->id_integ += ed * f->ki * FOC_DT;
+  f->iq_integ += eq * f->ki * FOC_DT;
 
   f->vd = ed * f->kp + f->id_integ;
   f->vq = eq * f->kp + f->iq_integ;
@@ -153,21 +160,31 @@ void FOC_Update(FocState_t *f, int32_t iu_ma, int32_t iw_ma, uint16_t enc_raw)
   if (f->duty_v > 1.0f) { f->duty_v = 1.0f; }
   if (f->duty_w > 1.0f) { f->duty_w = 1.0f; }
 
-  /* Integer mirrors for SWD readout. */
-  f->id_ma     = (int32_t)(f->id * 1000.0f);
-  f->iq_ma     = (int32_t)(f->iq * 1000.0f);
-  f->iu_ma     = iu_ma;
-  f->iw_ma     = iw_ma;
-  f->vd_mv     = (int32_t)(f->vd * 1000.0f);
-  f->vq_mv     = (int32_t)(f->vq * 1000.0f);
-  f->duty_u_pm = (int32_t)(f->duty_u * 1000.0f);
-  f->duty_v_pm = (int32_t)(f->duty_v * 1000.0f);
-  f->duty_w_pm = (int32_t)(f->duty_w * 1000.0f);
-  f->iq_ref_ma = (int32_t)(f->iq_ref * 1000.0f);
-  f->id_ref_ma = (int32_t)(f->id_ref * 1000.0f);
-  f->elec_deg_x10 = (int32_t)(((uint32_t)f->elec_counts * 3600U) / FOC_ENC_COUNTS);
-  f->vmax_pm   = (int32_t)(f->vmax * 1000.0f);
-  f->vmag_pm   = (int32_t)(fm_sqrtf(f->vd * f->vd + f->vq * f->vq) * 1000.0f);
+  /* Integer mirrors for SWD readout - decimated to 1 kHz.
+   *
+   * About twenty float-to-int conversions that exist only so a debugger can
+   * read this state. Nothing in the control path uses them, and no debugger
+   * samples faster than a few hundred hertz, so running them every switching
+   * period was spending real ISR budget on nobody's behalf. At 30 kHz that
+   * budget is no longer spare. */
+  if (++f->mirror_div >= (PWM_FREQ_HZ / 1000U))
+  {
+    f->mirror_div = 0U;
+    f->id_ma     = (int32_t)(f->id * 1000.0f);
+    f->iq_ma     = (int32_t)(f->iq * 1000.0f);
+    f->iu_ma     = iu_ma;
+    f->iw_ma     = iw_ma;
+    f->vd_mv     = (int32_t)(f->vd * 1000.0f);
+    f->vq_mv     = (int32_t)(f->vq * 1000.0f);
+    f->duty_u_pm = (int32_t)(f->duty_u * 1000.0f);
+    f->duty_v_pm = (int32_t)(f->duty_v * 1000.0f);
+    f->duty_w_pm = (int32_t)(f->duty_w * 1000.0f);
+    f->iq_ref_ma = (int32_t)(f->iq_ref * 1000.0f);
+    f->id_ref_ma = (int32_t)(f->id_ref * 1000.0f);
+    f->elec_deg_x10 = (int32_t)(((uint32_t)f->elec_counts * 3600U) / FOC_ENC_COUNTS);
+    f->vmax_pm   = (int32_t)(f->vmax * 1000.0f);
+    f->vmag_pm   = (int32_t)(fm_sqrtf(f->vd * f->vd + f->vq * f->vq) * 1000.0f);
+  }
 
   f->updates++;
 }

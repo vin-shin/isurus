@@ -173,6 +173,16 @@ volatile int32_t  g_can_tx_arg2      = 0;   /* second int32, for the 8-byte form
 static   uint32_t s_bridge_up        = 0;
 
 /* ISR stage timings, DWT cycles. 128 cycles = 1 us. */
+/* Encoder integrity. A corrupted SPI frame that is not 0xFFFF passes the
+ * fast read's only sanity check and comes out as a plausible-looking angle,
+ * so the way to catch it is kinematic: count position steps too large to be
+ * physically possible in one 50 us tick. 1000 counts is 11 degrees per tick,
+ * or 220000 deg/s - the shaft cannot do that, so anything flagged here is the
+ * wire, not the motor. This is the measurement that says whether the SPI
+ * clock can be raised. */
+volatile uint32_t g_enc_glitch = 0;
+volatile int32_t  g_enc_glitch_max = 0;
+
 volatile uint32_t g_isr_enc_cyc = 0, g_isr_enc_max = 0;
 volatile uint32_t g_isr_ctrl_cyc = 0, g_isr_ctrl_max = 0;
 volatile uint32_t g_oc_trips  = 0;   /* overcurrent trip count */

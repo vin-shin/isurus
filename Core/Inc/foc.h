@@ -144,6 +144,10 @@ typedef struct {
   int32_t  vbus_used_mv;      /* bus the live gains were computed for    */
   int32_t  kp_x10000;         /* live kp, for SWD readout                */
   int32_t  ki_x100;           /* live ki, for SWD readout                */
+
+  /* Decimation counter for the integer mirrors below the control maths.
+   * Appended at the END so the fixed byte offsets the tools use do not move. */
+  uint32_t mirror_div;
 } FocState_t;
 
 void FOC_Init(FocState_t *f);
