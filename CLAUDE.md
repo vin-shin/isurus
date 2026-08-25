@@ -1,4 +1,4 @@
-# makolongfin2 — working notes for Claude Code
+# Isurus — working notes for Claude Code
 
 ## Commit and PR convention
 

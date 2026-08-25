@@ -1,4 +1,4 @@
-# makolongfin — HV-readiness work plan
+# Isurus — HV-readiness work plan
 
 Read `CLAUDE.md` and `HARDWARE_NOTES.md` before touching anything. Both contain
 constraints that are not obvious from the code.
@@ -52,7 +52,8 @@ was found and why the numbers are what they are.
 
 ## A. Merge the branch stack
 
-Phase 0 is on `main`. The rest is a dependent stack, none of it reviewed:
+Phase 0 is on `mako-longfin` (the trunk, formerly `main`). The rest is a
+dependent stack, none of it reviewed:
 
     phase1a-delay-comp → phase1b-decoupling → phase1c-bandwidth
       → phase2-fault-path → foc-decouple-fix
