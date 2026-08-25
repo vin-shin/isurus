@@ -11,10 +11,27 @@
   *
   *          The transport delay is modelled: duties computed on step k are
   *          applied on step k+1. That one-step buffer plus the inherent
-  *          half-period of zero-order hold is the 1.5 periods
-  *          FOC_DELAY_PERIODS is derived from, so foc.c's delay compensation
-  *          is tested against a plant that actually has the delay it
-  *          compensates for.
+  *          half-period of zero-order hold is 1.5 periods, so foc.c's delay
+  *          compensation is tested against a plant that actually has a delay
+  *          rather than against an instantaneous one.
+  *
+  *          KNOWN FIDELITY LIMIT, and it matters for one thing only. The
+  *          firmware compensates FOC_DELAY_PERIODS = 1.65 periods, because on
+  *          the target the ADC is triggered PWM_ADC_LEAD_NS *before* the
+  *          period boundary and that lead adds 0.15 of a period. This model
+  *          samples exactly at the boundary, so its true delay is 1.5 and the
+  *          firmware over-compensates it by 0.15 periods - about half a degree
+  *          electrical at 1670 rad/s.
+  *
+  *          Consequence: numbers from this model may be used to judge the
+  *          DECOUPLING, which does not depend on the delay, and must NOT be
+  *          used to judge the delay compensation itself, which is measured
+  *          here against a plant whose delay is deliberately not the one it
+  *          was designed for. Enabling delay compensation in the model makes
+  *          the d-axis transient slightly worse for exactly that reason, and
+  *          that is an artefact of this file rather than a finding about
+  *          foc.c. Modelling the sub-period sampling instant would fix it and
+  *          has not been done.
   ******************************************************************************
   */
 #ifndef SIM_H

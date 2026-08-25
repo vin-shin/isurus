@@ -7,8 +7,23 @@
   *          behaviour the tests never exercised.
   *
   *          Usage:
-  *            sim_dump step  <iq_lo_mA> <iq_hi_mA> <w_e> [ms]   > out.csv
-  *            sim_dump sweep <iq_mA>    <w_e>                   > out.csv
+  *            sim_dump step  <iq_lo_mA> <iq_hi_mA> <w_e> [ms] [opts] > out.csv
+  *            sim_dump sweep <iq_mA>    <w_e>              [opts] > out.csv
+  *
+  *          Options are key=value and may follow in any order:
+  *
+  *            decouple=0|1     f->decouple          (default: firmware default)
+  *            delay=0|1        f->delay_comp        (default: firmware default)
+  *            lambda_err=1.15  scale the FIRMWARE's lambda_m against the
+  *                             model's, to study a parameter error - 1.15 is
+  *                             the 15% over-estimate the bench shipped with
+  *            vmax=0.25        modulation ceiling
+  *
+  *          lambda_err is the interesting one. The model keeps the measured
+  *          2.68 mWb and the firmware constant is left alone, so the error is
+  *          introduced by scaling the MODEL's magnet down - which is
+  *          indistinguishable, from the firmware's point of view, from a motor
+  *          whose lambda_m it has wrong.
   *
   *          `step` mirrors what tools/step_trace.sh does on hardware: hold at
   *          iq_lo, step to iq_hi, capture across the transient. Feed both to
@@ -52,6 +67,31 @@ static void emit_row(const Sim_t *s, double t0)
          (double)s->f.iq_ref);
 }
 
+/* key=value options, applied after sim_init so they override the firmware
+ * defaults rather than being overwritten by them. */
+static void apply_opts(Sim_t *s, int argc, char **argv, int from)
+{
+  for (int i = from; i < argc; i++)
+  {
+    const char *a = argv[i];
+    const char *eq = strchr(a, '=');
+    if (!eq) { continue; }
+    double v = atof(eq + 1);
+
+    if      (!strncmp(a, "decouple=", 9))   { s->f.decouple   = (uint32_t)v; }
+    else if (!strncmp(a, "delay=", 6))      { s->f.delay_comp = (uint32_t)v; }
+    else if (!strncmp(a, "vmax=", 5))       { s->f.vmax       = (float)v; }
+    else if (!strncmp(a, "lambda_err=", 11) && v > 0.0)
+    {
+      /* Scale the MODEL's magnet, leaving the firmware constant alone: from
+       * the loop's point of view that is exactly a motor whose lambda_m it
+       * has wrong by this factor. */
+      s->m.lambda_m = (double)FOC_LAMBDA_M_WB / v;
+    }
+    else { fprintf(stderr, "ignoring unknown option '%s'\n", a); }
+  }
+}
+
 int main(int argc, char **argv)
 {
   if (argc < 2) { fprintf(stderr, "see the comment at the top of this file\n"); return 2; }
@@ -64,7 +104,8 @@ int main(int argc, char **argv)
     double lo = atof(argv[2]) / 1000.0;
     double hi = atof(argv[3]) / 1000.0;
     double we = atof(argv[4]);
-    double ms = (argc > 5) ? atof(argv[5]) : 6.0;
+    double ms = (argc > 5 && !strchr(argv[5], '=')) ? atof(argv[5]) : 6.0;
+    apply_opts(&s, argc, argv, 5);
 
     /* Settle at the low current first, exactly as the bench does, so the
      * integrator state at the step is the same in both. */
@@ -90,6 +131,7 @@ int main(int argc, char **argv)
      * locus rather than a transient. */
     double iq = atof(argv[2]) / 1000.0;
     double we = atof(argv[3]);
+    apply_opts(&s, argc, argv, 4);
 
     s.f.iq_ref = (float)iq;
     for (long i = 0; i < lround(0.05 / SIM_TS); i++) { hold_speed(&s, we); sim_step(&s, 0.0); }
