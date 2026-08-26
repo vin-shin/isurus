@@ -8,7 +8,7 @@
   *          reversal <iq_ma> [spin_ms] [rev_ms]  rotor FREE, the decouple case
   *
   *          opts: decouple= delay= vmax= lambda_err= L_err= vel_alpha=
-  *                vel_ideal=
+  *                vel_ideal= fw= fw_ki= fw_kp= fw_id_max=
   *
   *          Same harness the assertions use (sim.h), so a plot cannot show
   *          behaviour the tests never exercised.
@@ -111,6 +111,10 @@ static void apply_opts(Sim_t *s, int argc, char **argv, int from)
       s->m.Ld = (double)FOC_LD_H / v;
       s->m.Lq = (double)FOC_LQ_H / v;
     }
+    else if (!strncmp(a, "fw=", 3))          { s->f.fw_enable = (uint32_t)v; }
+    else if (!strncmp(a, "fw_ki=", 6))       { s->f.fw_ki     = (float)v;    }
+    else if (!strncmp(a, "fw_kp=", 6))       { s->f.fw_kp     = (float)v;    }
+    else if (!strncmp(a, "fw_id_max=", 10))  { s->f.fw_id_max = (float)v;    }
     else if (!strncmp(a, "vel_alpha=", 10) && v > 0.0)
     {
       /* The EMA the position loop applies to the 1 kHz encoder difference.

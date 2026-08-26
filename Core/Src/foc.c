@@ -247,6 +247,18 @@ void FOC_Init(FocState_t *f)
    * swept and measured on hardware before being trusted - dtc_pm is set to
    * the winning value once that has been done. */
   f->dtc_pm      = 0;
+
+  /* Field weakening OFF. Nothing about it has been measured on the motor, and
+   * f->decouple and f->dtc_pm are the standing examples of what shipping a
+   * correction enabled on reasoning alone costs. */
+  f->fw_enable  = 0U;
+  f->fw_kp      = 0.0f;                 /* pure integrator - see foc.h */
+  f->fw_ki      = FOC_FW_KI_DEFAULT;
+  f->fw_integ   = 0.0f;
+  f->fw_id_max  = (float)LIM_ID_FW_MAX_MA * 0.001f;
+  f->fw_id_ma      = 0;
+  f->fw_headroom_pm = 0;
+  f->fw_last_demand = 0.0f;
   f->dtc_hyst_ma = FOC_DTC_HYST_MA;
   f->vd_ff_pm = 0;
   f->vq_ff_pm = 0;
@@ -513,6 +525,7 @@ void FOC_Update(FocState_t *f, int32_t iu_ma, int32_t iw_ma, uint16_t enc_raw,
    * independently rotates the applied vector away from where it was asked
    * for. */
   float vmag = fm_sqrtf(f->vd * f->vd + f->vq * f->vq);
+  f->fw_last_demand = vmag;   /* pre-limit, for the weakening loop and its mirror */
   if (vmag > f->vmax)
   {
     float k      = f->vmax / vmag;
@@ -544,6 +557,44 @@ void FOC_Update(FocState_t *f, int32_t iu_ma, int32_t iw_ma, uint16_t enc_raw,
      * the behaviour scaling could never reach. */
     f->id_integ -= (vd_cmd - f->vd);
     f->iq_integ -= (vq_cmd - f->vq);
+  }
+
+  /* ---- field weakening ------------------------------------------------
+   *
+   * Deliberately AFTER the vector limit, and fed from `vmag` - the magnitude
+   * demanded BEFORE the limiter scaled it. Measured after, |v| is vmax by
+   * construction whenever it matters, the headroom reads zero rather than
+   * negative, and the loop never engages. That is the whole trap.
+   *
+   * The id it produces is applied on the NEXT tick. At 30 kHz that is 33 us
+   * against a weakening loop deliberately orders of magnitude slower, so the
+   * delay is not part of its dynamics.
+   */
+  if (f->fw_enable != 0U)
+  {
+    float headroom = f->vmax - vmag;      /* negative once the demand is over */
+
+    f->fw_integ += f->fw_ki * headroom;
+
+    /* Clamping IS the anti-windup here, and it is sufficient because this is
+     * an integrator with no other state: there is nothing else to unwind. The
+     * upper clamp at zero is what keeps it a WEAKENING loop - a positive id
+     * on a surface-magnet machine strengthens the field, costing current to
+     * make the saturation worse. */
+    if (f->fw_integ > 0.0f)          { f->fw_integ = 0.0f; }
+    if (f->fw_integ < -f->fw_id_max) { f->fw_integ = -f->fw_id_max; }
+
+    f->id_ref = f->fw_integ + f->fw_kp * headroom;
+    if (f->id_ref > 0.0f)          { f->id_ref = 0.0f; }
+    if (f->id_ref < -f->fw_id_max) { f->id_ref = -f->fw_id_max; }
+  }
+  else if (f->fw_integ != 0.0f)
+  {
+    /* Switched off while it was weakening. Give back the d-axis demand it
+     * owned rather than leaving the last value it happened to reach standing
+     * as a permanent uncommanded current. */
+    f->fw_integ = 0.0f;
+    f->id_ref   = 0.0f;
   }
 
   /* ---- inverse Park -------------------------------------------------- */
@@ -639,6 +690,13 @@ void FOC_Update(FocState_t *f, int32_t iu_ma, int32_t iw_ma, uint16_t enc_raw,
     f->elec_deg_x10 = (int32_t)(((uint32_t)f->elec_counts * 3600U) / FOC_ENC_COUNTS);
     f->vmax_pm   = (int32_t)(f->vmax * 1000.0f);
     f->vmag_pm   = (int32_t)(fm_sqrtf(f->vd * f->vd + f->vq * f->vq) * 1000.0f);
+
+    /* Field weakening, for the SWD tools. The headroom mirrored here is the
+     * PRE-limiter one the loop actually acts on - mirroring the post-limiter
+     * figure would show a permanent zero and hide the very thing anyone
+     * reading this would be looking for. */
+    f->fw_id_ma       = (int32_t)(f->id_ref * 1000.0f);
+    f->fw_headroom_pm = (int32_t)((f->vmax - f->fw_last_demand) * 1000.0f);
     f->omega_e_rads_x10  = (int32_t)(f->omega_e * 10.0f);
     f->theta_adv_deg_x10 = (adv * 3600) / (int32_t)FOC_ENC_COUNTS;
     f->vd_ff_pm  = (int32_t)(vd_ff * 1000.0f);
