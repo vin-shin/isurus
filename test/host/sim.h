@@ -39,13 +39,25 @@
 
 #include "foc.h"
 #include "main.h"
+#include "motor_pwm.h"
 #include "pmsm.h"
 #include "position.h"
 
 #include <math.h>
 #include <string.h>
 
-#define SIM_TS      (1.0 / 30000.0)
+/* The simulator must step at the rate the firmware thinks it is running at.
+ *
+ * This was `1.0 / 30000.0`, which agreed with the firmware only for as long
+ * as the firmware stayed at 30 kHz. Retargeting to a 20 kHz board made the
+ * model advance 1.5x further per control tick than the code under test
+ * believed, and the two inductance tests went +45% - which is very nearly the
+ * 50% the ratio predicts, and looks exactly like a real identification error
+ * rather than a harness one.
+ *
+ * That is the failure CLAUDE.md warns about, arriving through the back door:
+ * the firmware derives everything from PWM_FREQ_HZ and the harness did not. */
+#define SIM_TS      (1.0 / (double)PWM_FREQ_HZ)
 #define SIM_TWO_PI  6.283185307179586
 
 /* Velocity as the CONTROL sees it, not as the model knows it.

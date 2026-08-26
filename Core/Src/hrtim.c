@@ -228,23 +228,34 @@ void HAL_HRTIM_MspPostInit(HRTIM_HandleTypeDef* hrtimHandle)
     __HAL_RCC_GPIOB_CLK_ENABLE();
     __HAL_RCC_GPIOC_CLK_ENABLE();
     __HAL_RCC_GPIOA_CLK_ENABLE();
-    /**HRTIM1 GPIO Configuration
-    PB13     ------> HRTIM1_CHC2
-    PC6     ------> HRTIM1_CHF1
-    PC7     ------> HRTIM1_CHF2
-    PC8     ------> HRTIM1_CHE1
-    PC9     ------> HRTIM1_CHE2
-    PA8     ------> HRTIM1_CHA1
-    PA9     ------> HRTIM1_CHA2
-    PA10     ------> HRTIM1_CHB1
-    PA11     ------> HRTIM1_CHB2
+    /**HRTIM1 GPIO Configuration - GR MotherFOCer
+    PA10     ------> HRTIM1_CHB1   U high
+    PA11     ------> HRTIM1_CHB2   U low
+    PC6      ------> HRTIM1_CHF1   V high
+    PC7      ------> HRTIM1_CHF2   V low
+    PB12     ------> HRTIM1_CHC1   W high
+    PB13     ------> HRTIM1_CHC2   W low
+
+    Six pins, exactly the six the bridge uses.
+
+    !! Retargeted from Mako Longfin, and the reason matters. The generated
+    version of this function also put PA8, PA9, PC8 and PC9 into HRTIM
+    alternate function - channels this board's bridge does not use. PC8 is
+    this board's GATE DRIVER ENABLE. MotorPwm_GateInit() deliberately drives
+    that line to disabled and configures it as an output *before* calling
+    MX_HRTIM1_Init, so leaving PC8 in that list would have had the HRTIM MSP
+    quietly take the pin back moments later and hand control of the power
+    stage to an unconfigured HRTIM channel.
+
+    So this list must stay exactly the bridge pins. Adding a channel "because
+    CubeMX generated it" is how the gate enable gets lost again.
     */
-    GPIO_InitStruct.Pin = GPIO_PIN_13;
+    GPIO_InitStruct.Pin = GPIO_PIN_10|GPIO_PIN_11;
     GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
     GPIO_InitStruct.Pull = GPIO_NOPULL;
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
     GPIO_InitStruct.Alternate = GPIO_AF13_HRTIM1;
-    HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+    HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
     GPIO_InitStruct.Pin = GPIO_PIN_6|GPIO_PIN_7;
     GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
@@ -253,19 +264,12 @@ void HAL_HRTIM_MspPostInit(HRTIM_HandleTypeDef* hrtimHandle)
     GPIO_InitStruct.Alternate = GPIO_AF13_HRTIM1;
     HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
-    GPIO_InitStruct.Pin = GPIO_PIN_8|GPIO_PIN_9;
-    GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
-    GPIO_InitStruct.Pull = GPIO_NOPULL;
-    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
-    GPIO_InitStruct.Alternate = GPIO_AF3_HRTIM1;
-    HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
-
-    GPIO_InitStruct.Pin = GPIO_PIN_8|GPIO_PIN_9|GPIO_PIN_10|GPIO_PIN_11;
+    GPIO_InitStruct.Pin = GPIO_PIN_12|GPIO_PIN_13;
     GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
     GPIO_InitStruct.Pull = GPIO_NOPULL;
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
     GPIO_InitStruct.Alternate = GPIO_AF13_HRTIM1;
-    HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+    HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
   /* USER CODE BEGIN HRTIM1_MspPostInit 1 */
 

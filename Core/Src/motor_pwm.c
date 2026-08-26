@@ -1,7 +1,7 @@
 /**
   ******************************************************************************
   * @file    motor_pwm.c
-  * @brief   Three-phase PWM on HRTIM1. Outputs start DISABLED.
+  * @brief   Three-phase complementary PWM on HRTIM1. Outputs start DISABLED.
   ******************************************************************************
   */
 
@@ -9,8 +9,17 @@
 #include "hrtim.h"
 #include "main.h"
 
-#define PWM_OUTPUTS   (HRTIM_OUTPUT_TA2 | HRTIM_OUTPUT_TB1 | HRTIM_OUTPUT_TB2)
-#define PWM_TIMERS    (HRTIM_TIMERID_TIMER_A | HRTIM_TIMERID_TIMER_B)
+/* One timer per phase, both outputs of each. U=B, V=F, W=C. */
+#define PWM_TIMER_U   HRTIM_TIMERINDEX_TIMER_B
+#define PWM_TIMER_V   HRTIM_TIMERINDEX_TIMER_F
+#define PWM_TIMER_W   HRTIM_TIMERINDEX_TIMER_C
+
+#define PWM_OUTPUTS   (HRTIM_OUTPUT_TB1 | HRTIM_OUTPUT_TB2 | \
+                       HRTIM_OUTPUT_TF1 | HRTIM_OUTPUT_TF2 | \
+                       HRTIM_OUTPUT_TC1 | HRTIM_OUTPUT_TC2)
+#define PWM_TIMERS    (HRTIM_TIMERID_TIMER_B | \
+                       HRTIM_TIMERID_TIMER_F | \
+                       HRTIM_TIMERID_TIMER_C)
 
 static int MotorPwm_ConfigAdcTrigger(void);
 
@@ -19,7 +28,7 @@ static uint32_t s_outputs_en   = 0;
 static uint32_t s_gate_en      = 0;
 static uint32_t s_adc_trig_pos = 0;
 
-/* ---------------- Gate driver enable (PC5) ---------------- */
+/* ---------------- Gate driver enable (PC8, ACTIVE HIGH) ---------------- */
 
 void MotorPwm_GateInit(void)
 {
@@ -64,9 +73,12 @@ uint32_t MotorPwm_GateIsEnabled(void)
 
 void MotorPwm_EmergencyStop(void)
 {
-  /* DIS high = all three drivers off. BSRR is a single atomic write and needs
-   * no read-modify-write, so this works even with a corrupted stack. */
-  GATE_EN_PORT->BSRR = GATE_EN_PIN;
+  /* Gate drivers off. BSRR is a single atomic store and needs no
+   * read-modify-write, so this works even with a corrupted stack. Which half
+   * of BSRR that means depends on the enable polarity, which differs between
+   * this board and Mako Longfin - GATE_EN_BSRR_DISABLE resolves it at compile
+   * time so there is no branch here to get wrong. */
+  GATE_EN_PORT->BSRR = GATE_EN_BSRR_DISABLE;
 
   /* Disconnect every HRTIM output. Writing ODISR is also a single store.
    * HRTIM is hardware and keeps switching through a halted CPU, so a fault
@@ -79,9 +91,11 @@ void MotorPwm_EmergencyStop(void)
 
 void MotorPwm_SafeShutdown(void)
 {
-  /* Gate drivers first: that is the only action which actually turns every
-   * FET off. Dropping the HRTIM outputs alone just parks the pins low, which
-   * with the external inverter means the low-side devices conduct. */
+  /* On this board either action alone opens the bridge: the outputs drive both
+   * gates of each leg directly, and the gate enable cuts the drivers. Both are
+   * done anyway, because the second one is free and this is the path a fault
+   * takes. Mako Longfin needed a specific order here - the gate line was the
+   * only true all-off there - and that constraint no longer applies. */
   MotorPwm_GateDisable();
   MotorPwm_DisableOutputs();
   MotorPwm_SetDuty(0, 0, 0);
@@ -92,6 +106,7 @@ static int MotorPwm_ConfigTimer(uint32_t timer_idx)
   HRTIM_TimeBaseCfgTypeDef pTimeBaseCfg = {0};
   HRTIM_TimerCfgTypeDef    pTimerCfg    = {0};
   HRTIM_TimerCtlTypeDef    pTimerCtl    = {0};
+  HRTIM_DeadTimeCfgTypeDef pDeadTimeCfg = {0};
 
   pTimeBaseCfg.Period            = s_period;
   pTimeBaseCfg.RepetitionCounter = 0x00;
@@ -129,9 +144,12 @@ static int MotorPwm_ConfigTimer(uint32_t timer_idx)
   pTimerCfg.PushPull               = HRTIM_TIMPUSHPULLMODE_DISABLED;
   pTimerCfg.FaultEnable            = HRTIM_TIMFAULTENABLE_NONE;
   pTimerCfg.FaultLock              = HRTIM_TIMFAULTLOCK_READWRITE;
-  /* No HRTIM dead-time insertion: the UCC21330's own RDT does that, and the
-   * external inverter means the MCU only ever emits one edge per phase. */
-  pTimerCfg.DeadTimeInsertion      = HRTIM_TIMDEADTIMEINSERTION_DISABLED;
+  /* HRTIM dead-time insertion, which is what makes output 2 the complement of
+   * output 1 rather than a second waveform that has to be programmed to agree
+   * with the first. Mako Longfin had this DISABLED - its dead time came from
+   * the gate driver's own RDT resistor and the MCU emitted one edge per
+   * phase. Here the MCU drives both devices, so the dead band is ours. */
+  pTimerCfg.DeadTimeInsertion      = HRTIM_TIMDEADTIMEINSERTION_ENABLED;
   pTimerCfg.DelayedProtectionMode  = HRTIM_TIMER_A_B_C_DELAYEDPROTECTION_DISABLED;
   pTimerCfg.UpdateTrigger          = HRTIM_TIMUPDATETRIGGER_NONE;
   pTimerCfg.ResetTrigger           = HRTIM_TIMRESETTRIGGER_NONE;
@@ -142,11 +160,27 @@ static int MotorPwm_ConfigTimer(uint32_t timer_idx)
     return -1;
   }
 
+  /* Same values on both edges, both signs positive, prescaler DIV1 - straight
+   * from the board's CubeMX project. The locks are left writeable: locking
+   * them is a one-way door until reset and there is nothing here yet that has
+   * earned that much confidence in the value. */
+  pDeadTimeCfg.Prescaler       = HRTIM_TIMDEADTIME_PRESCALERRATIO_DIV1;
+  pDeadTimeCfg.RisingValue     = PWM_DT_RISING;
+  pDeadTimeCfg.RisingSign      = HRTIM_TIMDEADTIME_RISINGSIGN_POSITIVE;
+  pDeadTimeCfg.RisingLock      = HRTIM_TIMDEADTIME_RISINGLOCK_WRITE;
+  pDeadTimeCfg.RisingSignLock  = HRTIM_TIMDEADTIME_RISINGSIGNLOCK_WRITE;
+  pDeadTimeCfg.FallingValue    = PWM_DT_FALLING;
+  pDeadTimeCfg.FallingSign     = HRTIM_TIMDEADTIME_FALLINGSIGN_POSITIVE;
+  pDeadTimeCfg.FallingLock     = HRTIM_TIMDEADTIME_FALLINGLOCK_WRITE;
+  pDeadTimeCfg.FallingSignLock = HRTIM_TIMDEADTIME_FALLINGSIGNLOCK_WRITE;
+  if (HAL_HRTIM_DeadTimeConfig(&hhrtim1, timer_idx, &pDeadTimeCfg) != HAL_OK)
+  {
+    return -1;
+  }
+
   return 0;
 }
 
-/* Edge-aligned PWM: the output is set at the period rollover and cleared at
- * the compare match, so duty = compare / period. */
 static int MotorPwm_ConfigOutput(uint32_t timer_idx, uint32_t output,
                                  uint32_t set_src, uint32_t reset_src)
 {
@@ -182,6 +216,26 @@ static int MotorPwm_ConfigCompare(uint32_t timer_idx, uint32_t unit, uint32_t va
   return 0;
 }
 
+/* Each phase owns a whole timer, so each gets compare units 1 and 2 for its
+ * own centred pulse. On Mako Longfin two phases shared Timer B and the four
+ * compare units had to be rationed between them, which is why the ADC trigger
+ * ended up on a specific unit "because 1 and 3 were taken". Here CMP3 and CMP4
+ * are free on every timer. */
+static int MotorPwm_ConfigPhase(uint32_t timer_idx, uint32_t out_high)
+{
+  if (MotorPwm_ConfigCompare(timer_idx, HRTIM_COMPAREUNIT_1, PWM_CMP_MIN) != 0) { return -1; }
+  if (MotorPwm_ConfigCompare(timer_idx, HRTIM_COMPAREUNIT_2, PWM_CMP_MIN) != 0) { return -1; }
+
+  /* High side only. The low side of the leg is produced by the dead-time unit
+   * and must NOT be given set/reset sources of its own - doing so overrides
+   * the complement and removes the dead band. */
+  if (MotorPwm_ConfigOutput(timer_idx, out_high,
+                            HRTIM_OUTPUTSET_TIMCMP1,
+                            HRTIM_OUTPUTRESET_TIMCMP2) != 0) { return -1; }
+
+  return 0;
+}
+
 int MotorPwm_Init(void)
 {
   /* Gate drivers held off before anything else. */
@@ -194,30 +248,20 @@ int MotorPwm_Init(void)
    * prescaler at 1, so that equals HCLK. */
   s_period = (SystemCoreClock * PWM_HRTIM_MUL) / PWM_FREQ_HZ;
 
-  if (MotorPwm_ConfigTimer(HRTIM_TIMERINDEX_TIMER_A) != 0) { return -1; }
-  if (MotorPwm_ConfigTimer(HRTIM_TIMERINDEX_TIMER_B) != 0) { return -1; }
+  if (MotorPwm_ConfigTimer(PWM_TIMER_U) != 0) { return -1; }
+  if (MotorPwm_ConfigTimer(PWM_TIMER_V) != 0) { return -1; }
+  if (MotorPwm_ConfigTimer(PWM_TIMER_W) != 0) { return -1; }
 
-  /* Compares must be valid before the outputs are configured. SetDuty(0,0,0)
-   * below then clears the set-sources so all three are genuinely dead. */
-  if (MotorPwm_ConfigCompare(HRTIM_TIMERINDEX_TIMER_A, HRTIM_COMPAREUNIT_1, PWM_CMP_MIN) != 0) { return -1; }
-  if (MotorPwm_ConfigCompare(HRTIM_TIMERINDEX_TIMER_B, HRTIM_COMPAREUNIT_1, PWM_CMP_MIN) != 0) { return -1; }
-  if (MotorPwm_ConfigCompare(HRTIM_TIMERINDEX_TIMER_B, HRTIM_COMPAREUNIT_2, PWM_CMP_MIN) != 0) { return -1; }
+  if (MotorPwm_ConfigPhase(PWM_TIMER_U, HRTIM_OUTPUT_TB1) != 0) { return -1; }
+  if (MotorPwm_ConfigPhase(PWM_TIMER_V, HRTIM_OUTPUT_TF1) != 0) { return -1; }
+  if (MotorPwm_ConfigPhase(PWM_TIMER_W, HRTIM_OUTPUT_TC1) != 0) { return -1; }
 
-  /* W on Timer A output 2, driven from compare unit 1. */
-  if (MotorPwm_ConfigOutput(HRTIM_TIMERINDEX_TIMER_A, HRTIM_OUTPUT_TA2,
-                            HRTIM_OUTPUTSET_TIMCMP1, HRTIM_OUTPUTRESET_TIMCMP3) != 0) { return -1; }
-  /* V and U share Timer B, on compare units 1 and 2 respectively. */
-  if (MotorPwm_ConfigOutput(HRTIM_TIMERINDEX_TIMER_B, HRTIM_OUTPUT_TB1,
-                            HRTIM_OUTPUTSET_TIMCMP1, HRTIM_OUTPUTRESET_TIMCMP3) != 0) { return -1; }
-  if (MotorPwm_ConfigOutput(HRTIM_TIMERINDEX_TIMER_B, HRTIM_OUTPUT_TB2,
-                            HRTIM_OUTPUTSET_TIMCMP2, HRTIM_OUTPUTRESET_TIMCMP4) != 0) { return -1; }
-
-  /* All three outputs dead before the counters run. */
+  /* All three high sides dead before the counters run. */
   MotorPwm_SetDuty(0, 0, 0);
 
   if (MotorPwm_ConfigAdcTrigger() != 0) { return -1; }
 
-  /* Both counters started in one register write, so they stay locked. */
+  /* All three counters started in one register write, so they stay locked. */
   if (HAL_HRTIM_WaveformCounterStart(&hhrtim1, PWM_TIMERS) != HAL_OK)
   {
     return -1;
@@ -232,22 +276,21 @@ int MotorPwm_Init(void)
 
 /* Apply one phase.
  *
- * A commanded 0 must produce a genuinely dead output, and a small compare
+ * A commanded 0 must produce a genuinely dead high side, and a small compare
  * cannot do that: below PWM_CMP_MIN the compare is ignored and the output
  * latches high for the whole period. So 0 clears the set-source instead - the
  * output is never driven high, and the (still valid) compare guarantees any
  * currently-high output gets reset once and stays low.
  *
- * setxr points at SETx1R or SETx2R for the phase's output. */
+ * setxr points at the SETx1R register for the phase's high-side output. */
 static void MotorPwm_ApplyPhase(volatile uint32_t *setxr, uint32_t timer_idx,
-                                uint32_t set_unit, uint32_t reset_unit,
-                                uint32_t set_src, uint32_t counts)
+                                uint32_t counts)
 {
-  /* Center-aligned in plain UP counting: place the pulse symmetrically about
+  /* Centre-aligned in plain UP counting: place the pulse symmetrically about
    * the period midpoint using two compares.
    *
-   *     SET on CMPa = PER/2 - counts/2
-   *     RESET on CMPb = PER/2 + counts/2
+   *     SET   on CMP1 = PER/2 - counts/2
+   *     RESET on CMP2 = PER/2 + counts/2
    *
    * The HIGH pulse is centred on PER/2 and the zero vector straddles the
    * period boundary, which is where the ADC samples - the point at which the
@@ -257,9 +300,9 @@ static void MotorPwm_ApplyPhase(volatile uint32_t *setxr, uint32_t timer_idx,
 
   if (counts == 0U)
   {
-    *setxr = 0U;                       /* never set -> output stays low */
-    __HAL_HRTIM_SETCOMPARE(&hhrtim1, timer_idx, set_unit,   centre);
-    __HAL_HRTIM_SETCOMPARE(&hhrtim1, timer_idx, reset_unit, centre + 1U);
+    *setxr = 0U;                       /* never set -> high side stays off */
+    __HAL_HRTIM_SETCOMPARE(&hhrtim1, timer_idx, HRTIM_COMPAREUNIT_1, centre);
+    __HAL_HRTIM_SETCOMPARE(&hhrtim1, timer_idx, HRTIM_COMPAREUNIT_2, centre + 1U);
     return;
   }
 
@@ -273,28 +316,20 @@ static void MotorPwm_ApplyPhase(volatile uint32_t *setxr, uint32_t timer_idx,
   if (cb > s_period - 1U)   { cb = s_period - 1U; }
   if (cb <= ca)             { cb = ca + 1U; }
 
-  *setxr = set_src;
-  __HAL_HRTIM_SETCOMPARE(&hhrtim1, timer_idx, set_unit,   ca);
-  __HAL_HRTIM_SETCOMPARE(&hhrtim1, timer_idx, reset_unit, cb);
+  *setxr = HRTIM_OUTPUTSET_TIMCMP1;
+  __HAL_HRTIM_SETCOMPARE(&hhrtim1, timer_idx, HRTIM_COMPAREUNIT_1, ca);
+  __HAL_HRTIM_SETCOMPARE(&hhrtim1, timer_idx, HRTIM_COMPAREUNIT_2, cb);
 }
 
 void MotorPwm_SetDuty(uint32_t u, uint32_t v, uint32_t w)
 {
-  volatile HRTIM_Timerx_TypeDef *ta = &hhrtim1.Instance->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_A];
-  volatile HRTIM_Timerx_TypeDef *tb = &hhrtim1.Instance->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B];
+  volatile HRTIM_Timerx_TypeDef *tu = &hhrtim1.Instance->sTimerxRegs[PWM_TIMER_U];
+  volatile HRTIM_Timerx_TypeDef *tv = &hhrtim1.Instance->sTimerxRegs[PWM_TIMER_V];
+  volatile HRTIM_Timerx_TypeDef *tw = &hhrtim1.Instance->sTimerxRegs[PWM_TIMER_W];
 
-  /* U: Timer B out2, CMP2 set / CMP4 reset.
-   * V: Timer B out1, CMP1 set / CMP3 reset.
-   * W: Timer A out2, CMP1 set / CMP3 reset. */
-  MotorPwm_ApplyPhase(&tb->SETx2R, HRTIM_TIMERINDEX_TIMER_B,
-                      HRTIM_COMPAREUNIT_2, HRTIM_COMPAREUNIT_4,
-                      HRTIM_OUTPUTSET_TIMCMP2, u);
-  MotorPwm_ApplyPhase(&tb->SETx1R, HRTIM_TIMERINDEX_TIMER_B,
-                      HRTIM_COMPAREUNIT_1, HRTIM_COMPAREUNIT_3,
-                      HRTIM_OUTPUTSET_TIMCMP1, v);
-  MotorPwm_ApplyPhase(&ta->SETx2R, HRTIM_TIMERINDEX_TIMER_A,
-                      HRTIM_COMPAREUNIT_1, HRTIM_COMPAREUNIT_3,
-                      HRTIM_OUTPUTSET_TIMCMP1, w);
+  MotorPwm_ApplyPhase(&tu->SETx1R, PWM_TIMER_U, u);
+  MotorPwm_ApplyPhase(&tv->SETx1R, PWM_TIMER_V, v);
+  MotorPwm_ApplyPhase(&tw->SETx1R, PWM_TIMER_W, w);
 }
 
 void MotorPwm_SetDutyPermille(uint32_t u, uint32_t v, uint32_t w)
@@ -327,35 +362,32 @@ void MotorPwm_SetAdcTriggerPoint(uint32_t counts)
   if (counts < PWM_CMP_MIN)      { counts = PWM_CMP_MIN; }
   if (counts > s_period - 1U)    { counts = s_period - 1U; }
 
-  /* COMPARE UNIT 4. Not 3 - CMP1 and CMP3 on Timer A are W's centred pulse
-   * edges, and writing either from here would corrupt the W duty. */
+  /* COMPARE UNIT 3 on the U timer. Units 1 and 2 carry U's centred pulse
+   * edges; writing either from here would corrupt the U duty. */
   s_adc_trig_pos = counts;
   pCompareCfg.CompareValue = counts;
-  (void)HAL_HRTIM_WaveformCompareConfig(&hhrtim1, HRTIM_TIMERINDEX_TIMER_A,
-                                        HRTIM_COMPAREUNIT_4, &pCompareCfg);
+  (void)HAL_HRTIM_WaveformCompareConfig(&hhrtim1, PWM_TIMER_U,
+                                        HRTIM_COMPAREUNIT_3, &pCompareCfg);
 }
 
-/* Timer A compare unit 3 drives HRTIM ADC trigger 1. Both ADC2 (W) and ADC5
- * (U) select that same trigger, so the two phases are sampled at the same
- * instant every PWM period. The counters run whether or not the outputs are
- * enabled, so the trigger is verifiable with the power stage inert. */
+/* Timer B compare unit 3 drives HRTIM ADC trigger 1, which ADC1 selects, so
+ * all five ADC1 channels are converted from the same instant every PWM period.
+ * The counters run whether or not the outputs are enabled, so the trigger is
+ * verifiable with the power stage inert. */
 static int MotorPwm_ConfigAdcTrigger(void)
 {
   HRTIM_ADCTriggerCfgTypeDef pADCTriggerCfg = {0};
 
-  /* Trigger EARLY enough that the conversion has finished before the control
-   * ISR reads DR at the period event - see PWM_ADC_TRIG_PERMILLE. CMP4 is used
-   * because Timer A's CMP1/CMP3 now carry W's centred pulse edges. */
   /* Trigger a fixed time before the period event, not a fixed fraction of it -
-   * see PWM_ADC_LEAD_NS. Guard against a period shorter than the lead itself. */
+   * see PWM_ADC_LEAD_NS. Guard against a period shorter than the lead. */
   {
     uint32_t lead = PWM_ADC_LEAD_COUNTS;
     if (lead > (s_period / 2U)) { lead = s_period / 2U; }
     MotorPwm_SetAdcTriggerPoint(s_period - lead);
   }
 
-  pADCTriggerCfg.UpdateSource = HRTIM_ADCTRIGGERUPDATE_TIMER_A;
-  pADCTriggerCfg.Trigger      = HRTIM_ADCTRIGGEREVENT13_TIMERA_CMP4;
+  pADCTriggerCfg.UpdateSource = HRTIM_ADCTRIGGERUPDATE_TIMER_B;
+  pADCTriggerCfg.Trigger      = HRTIM_ADCTRIGGEREVENT13_TIMERB_CMP3;
   if (HAL_HRTIM_ADCTriggerConfig(&hhrtim1, HRTIM_ADCTRIGGER_1,
                                  &pADCTriggerCfg) != HAL_OK)
   {
@@ -372,22 +404,22 @@ void MotorPwm_SetDutyNorm(float u, float v, float w)
                    (uint32_t)(w * (float)s_period));
 }
 
-/* Timer A repetition event fires once per PWM period. With RepetitionCounter
- * at 0 that is PWM_FREQ_HZ, and it is phase-locked to the same timebase driving the
- * ADC trigger - so the control loop always runs at the same point in the
- * switching period. */
+/* Timer B repetition event fires once per PWM period. With RepetitionCounter
+ * at 0 that is PWM_FREQ_HZ, and it is phase-locked to the same timebase
+ * driving the ADC trigger - so the control loop always runs at the same point
+ * in the switching period. */
 void MotorPwm_EnableControlIsr(void)
 {
-  HRTIM1_TIMA->TIMxICR  = HRTIM_TIMICR_REPC;   /* clear stale flag */
-  HRTIM1_TIMA->TIMxDIER = HRTIM_TIMDIER_REPIE;
-  HAL_NVIC_SetPriority(HRTIM1_TIMA_IRQn, 0, 0);
-  HAL_NVIC_EnableIRQ(HRTIM1_TIMA_IRQn);
+  HRTIM1_TIMB->TIMxICR  = HRTIM_TIMICR_REPC;   /* clear stale flag */
+  HRTIM1_TIMB->TIMxDIER = HRTIM_TIMDIER_REPIE;
+  HAL_NVIC_SetPriority(HRTIM1_TIMB_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(HRTIM1_TIMB_IRQn);
 }
 
 void MotorPwm_DisableControlIsr(void)
 {
-  HRTIM1_TIMA->TIMxDIER = 0U;
-  HAL_NVIC_DisableIRQ(HRTIM1_TIMA_IRQn);
+  HRTIM1_TIMB->TIMxDIER = 0U;
+  HAL_NVIC_DisableIRQ(HRTIM1_TIMB_IRQn);
 }
 
 uint32_t MotorPwm_GetPeriod(void)
@@ -401,11 +433,11 @@ void MotorPwm_GetTelem(MotorPwmTelem_t *t)
   t->pwm_hz     = (s_period != 0U)
                     ? ((SystemCoreClock * PWM_HRTIM_MUL) / s_period)
                     : 0U;
-  t->cmp_u      = hhrtim1.Instance->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].CMP2xR;
-  t->cmp_v      = hhrtim1.Instance->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].CMP1xR;
-  t->cmp_w      = hhrtim1.Instance->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_A].CMP1xR;
-  t->cnt_a      = hhrtim1.Instance->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_A].CNTxR;
-  t->cnt_b      = hhrtim1.Instance->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].CNTxR;
+  t->cmp_u      = hhrtim1.Instance->sTimerxRegs[PWM_TIMER_U].CMP1xR;
+  t->cmp_v      = hhrtim1.Instance->sTimerxRegs[PWM_TIMER_V].CMP1xR;
+  t->cmp_w      = hhrtim1.Instance->sTimerxRegs[PWM_TIMER_W].CMP1xR;
+  t->cnt_u      = hhrtim1.Instance->sTimerxRegs[PWM_TIMER_U].CNTxR;
+  t->cnt_v      = hhrtim1.Instance->sTimerxRegs[PWM_TIMER_V].CNTxR;
   t->outputs_en   = s_outputs_en;
   t->oenr         = hhrtim1.Instance->sCommonRegs.OENR;
   t->gate_en      = s_gate_en;

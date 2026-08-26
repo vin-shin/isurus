@@ -264,16 +264,16 @@ static void Telem_Printf(const char *fmt, ...)
 
 static inline int32_t g_enc_abs(int32_t v) { return (v < 0) ? -v : v; }
 
-/* Control ISR - HRTIM Timer A repetition, 30 kHz, phase-locked to the PWM.
+/* Control ISR - HRTIM Timer B repetition, PWM_FREQ_HZ, phase-locked to the PWM.
  *
  * Everything time-critical lives here: fresh current from the HRTIM-triggered
  * ADCs, a fast encoder read, the FOC step, and the duty update. It runs only
  * when g_foc.enabled is set, so the open-loop path is untouched otherwise. */
-void HRTIM1_TIMA_IRQHandler(void)
+void HRTIM1_TIMB_IRQHandler(void)
 {
   uint32_t t0 = DWT->CYCCNT;
 
-  HRTIM1_TIMA->TIMxICR = HRTIM_TIMICR_REPC;
+  HRTIM1_TIMB->TIMxICR = HRTIM_TIMICR_REPC;
 
   /* Re-seed the position unwrapper whenever the control loop is (re)enabled.
    *
@@ -934,7 +934,11 @@ void SystemClock_Config(void)
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
   RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI;
   RCC_OscInitStruct.PLL.PLLM = RCC_PLLM_DIV1;
-  RCC_OscInitStruct.PLL.PLLN = 16;
+  /* HSI16 /1 x BOARD_PLLN /2. 20 gives 160 MHz, which is what this board's
+   * CubeMX project asks for; Mako Longfin used 16 for 128 MHz. Everything
+   * downstream derives from SystemCoreClock or from BOARD_HRTIM_TICK_HZ, so
+   * this is the only place the number appears. */
+  RCC_OscInitStruct.PLL.PLLN = BOARD_PLLN;
   RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV2;
   RCC_OscInitStruct.PLL.PLLQ = RCC_PLLQ_DIV2;
   RCC_OscInitStruct.PLL.PLLR = RCC_PLLR_DIV2;
