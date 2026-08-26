@@ -240,51 +240,73 @@ extern "C" {
  * Nothing that matters should be using it. */
 #define BOARD_VREF_NOMINAL_MV   3300U
 
-/* ---- current sensor: +/-200 A, and undersized for this motor --------------
+/* ---- current sensor: Mornsun TL200-A2PV -----------------------------------
  *
- * Bidirectional, +/-200 A peak, which is 141 Arms.
+ * A Hall-effect current transducer with an analogue voltage output.
  *
- *     motor continuous   100 Arms = 141 A peak    fits, about 30% margin
- *     motor peak         240 Arms = 339 A peak    1.7x OVER the sensor
+ * !! THE THREE NUMBERS BELOW ARE NOT FROM THE DATASHEET AND MUST BE. !!
+ * They are placeholders with the right SHAPE so that the scaling code is
+ * correct and only the constants move. Do not energise the bridge against
+ * them.
  *
- * Continuous operation is fully measurable; the machine's peak rating is not.
- * Torque follows current, so taking the EMRAX 240 Nm at 240 Arms:
+ * What the datasheet has to settle, in order of how badly each one bites:
  *
- *     200 A peak (sensor ceiling)   141 Arms   ~141 Nm    59% of peak torque
- *     160 A peak (80% margin)       113 Arms   ~113 Nm    47% of peak torque
- *     350 A peak (a bigger part)    248 Arms   ~248 Nm   103% of peak torque
+ *   1. SUPPLY AND ZERO OUTPUT. If this is a 5 V part whose output sits at
+ *      2.5 V for zero current, then against a 3V3 ADC reference the zero
+ *      lands at about 3103 counts, not 2048 - and the usable range becomes
+ *      violently asymmetric, because positive current has only 0.8 V of
+ *      headroom to the rail while negative current has 2.5 V. It would also
+ *      trip DRIVE_FAULT_CSENSE immediately, since Drive_SelfTest requires the
+ *      captured zero to sit within DRIVE_CS_ZERO_TOL_CODES of mid-scale.
+ *      Unless there is a divider or level shift between sensor and ADC, in
+ *      which case that network is part of the scaling too.
  *
- * A +/-350 A part covers the motor 339 A peak with 3% to spare, which is why
- * 350 A is the right number rather than merely a round one. As built, about
- * half the machine peak torque is unreachable - not because the inverter
- * cannot deliver it, but because current above the sensor range cannot be
- * MEASURED, and a current loop reading a saturated sensor believes it has
- * arrived and stops pushing while the real current climbs.
+ *   2. SENSITIVITY, in mV per amp. This is what actually converts a count to
+ *      a current, and it is what BOARD_I_SENS_UV_PER_A holds. Expressing the
+ *      scale as a sensitivity rather than as full-scale-over-half-the-codes
+ *      is deliberate: sensitivity is what a datasheet publishes, it stays
+ *      correct if the output never reaches the rails, and it does not quietly
+ *      assume a rail-to-rail swing that Hall parts generally do not have.
  *
- * That is a hardware change, not a firmware one. Nothing here should be
- * relaxed to work around it.
+ *   3. MEASURING RANGE, which on Hall transducers is frequently a MULTIPLE of
+ *      the nominal current in the part number - 2x or 3x is common. If the
+ *      TL200's measuring range is meaningfully above 200 A, then the earlier
+ *      conclusion in this file that the sensor is undersized for the EMRAX
+ *      may simply be wrong, and it should be corrected rather than left
+ *      standing. The motor needs 339 A peak to reach its 240 Nm.
  *
- * BOARD_I_FS_A is the part rating and is what limits.h bounds against, which
- * holds whatever the output swing turns out to be. The per-LSB figure below
- * additionally assumes the sensor full range spans the whole ADC - that needs
- * the part number to confirm, and it is used for scaling a reading, never for
- * deciding a limit. */
+ *   4. RATIOMETRIC OR NOT. If the output is ratiometric to a supply that is
+ *      also VREF+, supply movement cancels and the scaling needs no reference
+ *      term. If it is ratiometric to a rail that is NOT VREF+, or is
+ *      absolute, it does not cancel and the measured VREF+ has to divide in.
+ *      csense.c computes the scale from the measured reference either way,
+ *      which is correct for the absolute case and harmless for the
+ *      ratiometric one as long as the two rails are the same.
+ *
+ * The ZERO is the one thing not being assumed: CSense_CalibrateZero measures
+ * it with the bridge down, so sensor offset, rail tolerance and ADC offset
+ * are calibrated out. Only its DISTANCE FROM MID-SCALE is checked, by the
+ * drive self-test, which is what makes point 1 above show up loudly rather
+ * than silently.
+ */
+
+/* Sensitivity, microvolts per amp. PLACEHOLDER - see above.
+ *
+ * 8250 uV/A would put +/-200 A at +/-1.65 V, i.e. exactly rail to rail on a
+ * 3V3 reference. That is a plausible-looking number and it is a guess; it is
+ * here so the arithmetic below has something dimensionally correct to work
+ * with, not because anything says it is right. */
+#define BOARD_I_SENS_UV_PER_A   8250
+
+/* The sensor measuring range, amps, used by limits.h to bound what may be
+ * commanded. PLACEHOLDER at the part number's nominal current - point 3. */
 #define BOARD_I_FS_A            200
-#define BOARD_I_UA_PER_LSB      97656     /* 200 A / 2048 codes, provisional */
 
-/* Zero-current offset: the board's code averages 128 samples of every ADC
- * channel at startup with the bridge disabled. Same idea as Mako Longfin's
- * CS_ZERO_SAMPLES, different count. */
+/* Zero-current offset: conversions averaged at startup with the bridge down.
+ * This is the one part of the current chain that is measured rather than
+ * assumed, which is why sensor offset and rail tolerance do not need to be
+ * known in advance - only the slope does. */
 #define BOARD_ADC_ZERO_SAMPLES  128U
-
-/* 0 on this board: there are no OPAMPs in the current-sense path.
- *
- * Mako Longfin fed two phases to ADC2 and ADC5 through internal OPAMP
- * followers, and csense.c is still written around that. This flag fences that
- * code off and makes CSense_Init refuse, which - because the refusal leaves
- * the zero-current offsets at 0, far outside DRIVE_CS_ZERO_TOL_CODES - also
- * stops Drive_SelfTest arming the bridge. See csense.c. */
-#define BOARD_HAS_OPAMP_CSENSE  0
 
 /* ==========================================================================
  * 5. Overcurrent comparator - COMP2 + DAC1_CH2
@@ -392,10 +414,13 @@ extern "C" {
  * headroom over a full pack. It was the inherited 0.05 V/LSB constant that
  * was wrong, by about 6x, and it would have reported a 588 V bus as 91 V.
  *
- * The CURRENT sensor is genuinely undersized: +/-200 A against a motor whose
- * peak rating is 339 A peak. Continuous operation fits with margin; about
- * half the machine peak torque does not, and that is a hardware limit rather
- * than something firmware can work around. A +/-350 A part would cover it.
+ * The CURRENT sensor is a Mornsun TL200-A2PV, and whether it is big enough is
+ * OPEN. The nominal 200 A in the part number is below the 339 A peak this
+ * motor needs for its 240 Nm - but Hall transducers commonly measure to a
+ * multiple of their nominal current, so the measuring range may well cover
+ * it. Section 4 lists what the datasheet has to settle. Until then the
+ * scaling constants there are placeholders and nothing should be energised
+ * against them.
  */
 #define BOARD_MOTOR_NAME        "EMRAX 228 HV"
 #define BOARD_MOTOR_POLE_PAIRS  10U

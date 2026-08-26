@@ -337,12 +337,17 @@ void HRTIM1_TIMB_IRQHandler(void)
 
   if (g_foc.enabled != 0U)
   {
-    /* Conversions were triggered earlier this period, so DR is fresh. */
-    uint32_t u_raw = hadc5.Instance->DR;
-    uint32_t w_raw = hadc2.Instance->DR;
+    /* Conversions were triggered earlier this period and DMA has already
+     * written them, so this is a buffer read rather than two peripheral
+     * accesses. All five channels come from the same trigger.
+     *
+     * CSense_Read also applies the three-phase common-mode correction, which
+     * is the point of measuring the third sensor - see csense.h. FOC still
+     * takes U and W, so foc.c is untouched. */
+    CSense_ReadPhases((CSenseTelem_t *)&g_cs);
 
-    int32_t iu = CSense_RawToMa(u_raw, g_cs.u_zero);
-    int32_t iw = CSense_RawToMa(w_raw, g_cs.w_zero);
+    int32_t iu = g_cs.u_ma;
+    int32_t iw = g_cs.w_ma;
 
     /* Stage timing. Cheap - two DWT reads - and it is the only way to know
      * which part of this ISR actually costs the budget, which is the question

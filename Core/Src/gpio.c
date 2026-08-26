@@ -20,6 +20,7 @@
 
 /* Includes ------------------------------------------------------------------*/
 #include "gpio.h"
+#include "board.h"
 
 /* USER CODE BEGIN 0 */
 
@@ -51,48 +52,42 @@ void MX_GPIO_Init(void)
   __HAL_RCC_GPIOB_CLK_ENABLE();
   __HAL_RCC_GPIOD_CLK_ENABLE();
 
-  /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13|GPIO_PIN_14|GPIO_PIN_15|GPIO_PIN_0
-                          |GPIO_PIN_1|GPIO_PIN_2, GPIO_PIN_RESET);
+  /* Retargeted to the GR MotherFOCer.
+   *
+   * The generated version drove PC13/14/15, PC0/1/2, PA2, PA4, PB1/2/9 and
+   * PD2 as push-pull OUTPUTS, because that is what they were on Mako Longfin.
+   * On this board that list is actively wrong and one entry is destructive:
+   *
+   *   PA2      DC LINK CURRENT INPUT. Driving it push-pull puts the MCU in
+   *            contention with the current sensor's output stage.
+   *   PC0 PC1  LPUART1. Reclaimed later by MX_LPUART1_UART_Init, so this only
+   *            happened to be harmless because of init ordering.
+   *   PB1      ADC3 input.
+   *   the rest  unused, or unexplained inputs.
+   *
+   * What this board actually needs from here is one output - the encoder chip
+   * select - plus leaving the analogue pins alone so the ADC MSPs can claim
+   * them. The gate driver enable on PC8 is deliberately NOT here: it is set
+   * up by MotorPwm_GateInit, which drives it to the disabled state before
+   * making it an output, and it must stay the single owner of that pin.
+   *
+   * The twelve pins the .ioc configures as plain inputs and does not explain
+   * (PA8 PA9 PA12, PB0 PB2 PB4 PB10 PB11 PB14 PB15, PC9, PD2) are left in
+   * their reset state rather than configured here. Several are probably
+   * gate-driver fault outputs; giving them pulls or modes before knowing
+   * which would be guessing at hardware. See board.h section 9.
+   */
 
-  /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_2|GPIO_PIN_4|GPIO_PIN_15, GPIO_PIN_RESET);
+  /*Configure GPIO pin Output Level : encoder CS idle high */
+  HAL_GPIO_WritePin(BOARD_ENC_CS_PORT, BOARD_ENC_CS_PIN, GPIO_PIN_SET);
 
-  /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_1|GPIO_PIN_2|GPIO_PIN_9, GPIO_PIN_RESET);
-
-  /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOD, GPIO_PIN_2, GPIO_PIN_RESET);
-
-  /*Configure GPIO pins : PC13 PC14 PC15 PC0
-                           PC1 PC2 */
-  GPIO_InitStruct.Pin = GPIO_PIN_13|GPIO_PIN_14|GPIO_PIN_15|GPIO_PIN_0
-                          |GPIO_PIN_1|GPIO_PIN_2;
+  /*Configure GPIO pin : PA15 - encoder chip select */
+  GPIO_InitStruct.Pin = BOARD_ENC_CS_PIN;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+  HAL_GPIO_Init(BOARD_ENC_CS_PORT, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : PA2 PA4 PA15 */
-  GPIO_InitStruct.Pin = GPIO_PIN_2|GPIO_PIN_4|GPIO_PIN_15;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
-
-  /*Configure GPIO pins : PB1 PB2 PB9 */
-  GPIO_InitStruct.Pin = GPIO_PIN_1|GPIO_PIN_2|GPIO_PIN_9;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
-
-  /*Configure GPIO pin : PD2 */
-  GPIO_InitStruct.Pin = GPIO_PIN_2;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
 
 }
 

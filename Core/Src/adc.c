@@ -173,14 +173,30 @@ void HAL_ADC_MspInit(ADC_HandleTypeDef* adcHandle)
       __HAL_RCC_ADC12_CLK_ENABLE();
     }
 
-    __HAL_RCC_GPIOF_CLK_ENABLE();
+    __HAL_RCC_GPIOA_CLK_ENABLE();
+    __HAL_RCC_GPIOC_CLK_ENABLE();
     /**ADC1 GPIO Configuration
-    PF0-OSC_IN     ------> ADC1_IN10
+    PA0     ------> ADC1_IN1   phase V current
+    PA1     ------> ADC1_IN2   phase U current
+    PA2     ------> ADC1_IN3   DC link current
+    PA3     ------> ADC1_IN4   DC bus voltage (shared with COMP2_INP)
+    PC3     ------> ADC1_IN9   phase W current
+
+    Retargeted from Mako Longfin's single PF0 bus-sense channel. Claiming
+    these explicitly matters even though most STM32 pins reset to analog:
+    relying on the reset state means any future edit that touches one of them
+    silently breaks a conversion, and PA2 in particular was being driven as a
+    push-pull output by the generated MX_GPIO_Init.
     */
-    GPIO_InitStruct.Pin = GPIO_PIN_0;
+    GPIO_InitStruct.Pin = GPIO_PIN_0|GPIO_PIN_1|GPIO_PIN_2|GPIO_PIN_3;
     GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
     GPIO_InitStruct.Pull = GPIO_NOPULL;
-    HAL_GPIO_Init(GPIOF, &GPIO_InitStruct);
+    HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+    GPIO_InitStruct.Pin = GPIO_PIN_3;
+    GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
+    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
   /* USER CODE BEGIN ADC1_MspInit 1 */
 
@@ -237,9 +253,11 @@ void HAL_ADC_MspDeInit(ADC_HandleTypeDef* adcHandle)
     }
 
     /**ADC1 GPIO Configuration
-    PF0-OSC_IN     ------> ADC1_IN10
+    PA0 PA1 PA2 PA3  ------> ADC1_IN1..IN4
+    PC3              ------> ADC1_IN9
     */
-    HAL_GPIO_DeInit(GPIOF, GPIO_PIN_0);
+    HAL_GPIO_DeInit(GPIOA, GPIO_PIN_0|GPIO_PIN_1|GPIO_PIN_2|GPIO_PIN_3);
+    HAL_GPIO_DeInit(GPIOC, GPIO_PIN_3);
 
   /* USER CODE BEGIN ADC1_MspDeInit 1 */
 
