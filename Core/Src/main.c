@@ -248,7 +248,7 @@ void SystemClock_Config(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
-/* Blocking printf over USART1 (PB6 TX, 115200 8N1).
+/* Blocking printf over LPUART1 (PC1 TX, 115200 8N1).
  * Deliberately integer-only: newlib-nano drops float formatting unless the
  * link is given -u _printf_float, so %f would silently print nothing. */
 static void Telem_Printf(const char *fmt, ...)
@@ -263,7 +263,7 @@ static void Telem_Printf(const char *fmt, ...)
   if (len <= 0) return;
   if (len > (int)sizeof(buf) - 1) len = (int)sizeof(buf) - 1;
 
-  HAL_UART_Transmit(&huart1, (uint8_t *)buf, (uint16_t)len, HAL_MAX_DELAY);
+  HAL_UART_Transmit(&hlpuart1, (uint8_t *)buf, (uint16_t)len, HAL_MAX_DELAY);
 }
 
 static inline int32_t g_enc_abs(int32_t v) { return (v < 0) ? -v : v; }
@@ -515,7 +515,7 @@ int main(void)
   // MX_SPI1_Init();   /* PB5 is FDCAN2_RX on this board */
   // MX_SPI2_Init();
   MX_SPI3_Init();
-  MX_USART1_UART_Init();
+  MX_LPUART1_UART_Init();
   /* USER CODE BEGIN 2 */
   // __enable_irq();
   // HAL_SYSTICK_Config(SystemCoreClock / 1000U);

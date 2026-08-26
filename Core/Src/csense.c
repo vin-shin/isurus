@@ -6,6 +6,7 @@
   */
 
 #include "csense.h"
+#include "board.h"
 #include "adc.h"
 #include "opamp.h"
 #include "main.h"
@@ -22,6 +23,16 @@ static uint32_t s_vdda_mv = CS_VREF_MV;
 
 /* 0 = software start (bring-up / calibration), 1 = HRTIM triggered. */
 static uint8_t s_triggered = 0;
+
+/* ------------------------------------------------------------------------
+ * Mako Longfin's current-sense bring-up, fenced off - see CSense_Init below.
+ *
+ * Compiled out rather than deleted: it is the reference for what the port has
+ * to replace, and the porter wants it in front of them. Fenced rather than
+ * left after an early return, because unreachable code is a cppcheck `style`
+ * finding and that job is set to fail the build.
+ * ------------------------------------------------------------------------ */
+#if BOARD_HAS_OPAMP_CSENSE
 
 static int CSense_Adc5Init(void)
 {
@@ -117,6 +128,8 @@ static int CSense_Adc1Retarget(void)
   return 0;
 }
 
+#endif /* BOARD_HAS_OPAMP_CSENSE */
+
 static int CSense_SampleOnce(ADC_HandleTypeDef *hadc, uint32_t *out)
 {
   if (s_triggered)
@@ -156,6 +169,7 @@ static int CSense_SampleOnce(ADC_HandleTypeDef *hadc, uint32_t *out)
 
 int CSense_Init(CSenseTelem_t *t)
 {
+#if BOARD_HAS_OPAMP_CSENSE
   /* Followers with InternalOutput enabled - configured by CubeMX, but never
    * started by it. Without HAL_OPAMP_Start the ADC sees nothing useful. */
   MX_OPAMP3_Init();
@@ -176,6 +190,36 @@ int CSense_Init(CSenseTelem_t *t)
   if (CSense_MeasureVdda(t) != 0) { return -1; }
 
   return CSense_CalibrateZero(t);
+#else
+  /* !! NOT PORTED TO THE GR MotherFOCer. Refused up front, deliberately. !!
+   *
+   * The fenced-off code above is Mako Longfin's: two phases reaching ADC2 and
+   * ADC5 through internal OPAMP followers, polled on an HRTIM trigger. This
+   * board measures three phases plus DC link current and bus voltage straight
+   * off pins, in one ADC1 sequence with DMA, and has no OPAMPs in the path at
+   * all. Step 4 of docs/PORT-POWER-UNIT.md.
+   *
+   * Refusing rather than letting it run is not tidiness. Those OPAMP MspInits
+   * claim PA1, PA3, PB0, PB11, PB12 and PC3 - and on this board PA1 and PC3
+   * are phase current inputs, PA3 is the bus voltage shared with the
+   * overcurrent comparator, and PB12 is the W high-side gate. Nothing good
+   * comes of configuring analogue peripherals onto a bridge output.
+   *
+   * The refusal doubles as the safety interlock, using machinery that is
+   * already here. Leaving u_zero and w_zero at 0 puts them 2048 codes from
+   * mid-scale, far outside DRIVE_CS_ZERO_TOL_CODES, so Drive_SelfTest raises
+   * DRIVE_FAULT_CSENSE and the drive cannot be armed. That is the correct
+   * state for a board whose current sense has never been read. The
+   * alternative is a plausible-looking zero from the wrong hardware feeding
+   * the Park transform, where a constant offset is indistinguishable from a
+   * real current that the loop then sets about correcting.
+   *
+   * Flip BOARD_HAS_OPAMP_CSENSE only when there is hardware behind it. */
+  t->u_zero = 0U;
+  t->w_zero = 0U;
+  t->errors++;
+  return -1;
+#endif
 }
 
 int CSense_CalibrateZero(CSenseTelem_t *t)

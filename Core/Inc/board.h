@@ -204,6 +204,15 @@ extern "C" {
  * CS_ZERO_SAMPLES, different count. */
 #define BOARD_ADC_ZERO_SAMPLES  128U
 
+/* 0 on this board: there are no OPAMPs in the current-sense path.
+ *
+ * Mako Longfin fed two phases to ADC2 and ADC5 through internal OPAMP
+ * followers, and csense.c is still written around that. This flag fences that
+ * code off and makes CSense_Init refuse, which - because the refusal leaves
+ * the zero-current offsets at 0, far outside DRIVE_CS_ZERO_TOL_CODES - also
+ * stops Drive_SelfTest arming the bridge. See csense.c. */
+#define BOARD_HAS_OPAMP_CSENSE  0
+
 /* ==========================================================================
  * 5. Overcurrent comparator - COMP2 + DAC1_CH2
  * ==========================================================================

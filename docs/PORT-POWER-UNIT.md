@@ -77,13 +77,26 @@ anything. Nothing below step 3 should run with the bus energised.
 1. **`board.h`** — **done.** The hardware map, and the record of what is not
    known about it.
 
-2. **Clock and peripheral init** — `main.c`'s `SystemClock_Config` to 160 MHz
-   (PLLN 20), and the CubeMX layer (`gpio.c`, `adc.c`, `spi.c`, `fdcan.c`,
-   `hrtim.c`, plus a new `usart.c` target) to the new pinout. The board's
-   generated code is LL; Isurus is HAL throughout and stays HAL, because the
-   entire stack above is written against HAL handles and converting it would
-   be rewriting the parts of the project that are *not* supposed to change
-   between boards.
+2. **Clock and peripheral init** — **mostly done.** `SystemClock_Config` runs
+   at 160 MHz from `BOARD_PLLN`. `hrtim.c`, `fdcan.c`, `spi.c` and `usart.c`
+   are on the new pinout; `gpio.c` and `adc.c` are not yet.
+
+   The board's generated code is LL; Isurus is HAL throughout and stays HAL,
+   because the entire stack above is written against HAL handles and
+   converting it would be rewriting the parts of the project that are *not*
+   supposed to change between boards.
+
+   The debug console moved from USART1 on PB6/PB7 to **LPUART1 on PC0/PC1**,
+   which is what the board assigns. That was not optional: PB6 is FDCAN2_TX
+   here, so the two MspInits were fighting over the same pin, and the loser
+   was whichever ran first. Mako Longfin had no serial output at all — every
+   byte went over SWD — so this is new capability rather than a port.
+
+   **`gpio.c` and `adc.c` are still Mako Longfin's** and are the next thing to
+   do. `gpio.c` configures PC13/14/15, PC0, PA2/PA4, PB1/PB2/PB9 and PD2 with
+   no basis on this board, and `adc.c` sets up PF0 and PA6 for the old bus
+   sense. Neither currently collides with a bridge output, a CAN line or the
+   encoder, which is the only reason they are not in the paragraph above.
 
 3. **`motor_pwm.c` / `.h`** — **done.** Timers B/F/C instead of A/B,
    complementary outputs with dead-time insertion instead of single-ended,
@@ -101,7 +114,26 @@ anything. Nothing below step 3 should run with the bus energised.
    that had not been told the rate changed. `SIM_TS` derives from
    `PWM_FREQ_HZ` now.
 
-4. **`csense.c` / `.h`** — the largest single rewrite. Mako Longfin reads two
+4. **`csense.c` / `.h`** — **refused at run time, not yet rewritten.** This
+   is the largest single rewrite.
+
+   `CSense_Init` now returns an error immediately and the Mako Longfin
+   implementation is fenced behind `BOARD_HAS_OPAMP_CSENSE`, which is 0.
+   That is deliberate on two counts. The OPAMP MspInits it used to call claim
+   PA1, PA3, PB0, PB11, PB12 and PC3 — and on this board PA1 and PC3 are
+   phase current inputs, PA3 is the bus voltage shared with the overcurrent
+   comparator, and **PB12 is the W high-side gate**. And the refusal doubles
+   as the interlock: leaving the zero-current offsets at 0 puts them 2048
+   codes from mid-scale, far outside `DRIVE_CS_ZERO_TOL_CODES`, so
+   `Drive_SelfTest` raises `DRIVE_FAULT_CSENSE` and the bridge cannot be
+   armed. A board whose current sense has never been read should not arm.
+
+   The code is fenced rather than deleted because it is the reference for
+   what replaces it, and fenced rather than left after an early `return`
+   because unreachable code is a cppcheck `style` finding and that job fails
+   the build.
+
+   What the rewrite involves: Mako Longfin reads two
    phases through internal OPAMP followers on ADC2 and ADC5, polled on an
    HRTIM trigger. This board has three phases plus DC link current and bus
    voltage in one free-running ADC1 sequence with DMA. Two things change at
