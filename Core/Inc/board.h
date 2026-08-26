@@ -103,12 +103,32 @@ extern "C" {
 /* Dead time, from the .ioc: rising 160, falling 160, DT prescaler DIV1, both
  * signs positive.
  *
- * Recorded in raw counts because that is what was configured and what was
- * verified against the generated code. The nanosecond equivalent depends on
- * the dead-time clock divider chain in RM0440 and has NOT been confirmed
- * against the reference manual or seen on a scope. Do not write a nanosecond
- * figure into a comment here until someone has put a probe on a switch node:
- * a dead time that is wrong in the short direction is a shoot-through.
+ * At DIV1 the LL header states fDTG = fHRTIM, which is the 160 MHz kernel
+ * clock and NOT the x8 multiplied counter clock, so one dead-time count is
+ * 6.25 ns and 160 of them is 1.0 us.
+ *
+ * !! THIS IS THE ONE INHERITED CONSTANT THAT A FET CHANGE FALSIFIES. !!
+ *
+ * The rest of this board is reported to match the gr_motherfocer hardware
+ * exactly EXCEPT for the FETs - which makes almost everything in that project
+ * authoritative here, and makes this number the exception rather than the
+ * rule. Dead time exists to cover the turn-off delay of the device plus the
+ * propagation mismatch between the two gate driver channels. Turn-off delay
+ * is a property of the FET: its gate charge, the gate resistor, the driver's
+ * sink current. Change the FET and the required dead time changes with it.
+ *
+ * 1.0 us is also long for a MOSFET bridge - typical silicon parts want
+ * 100-500 ns - which cuts both ways. Too long is not dangerous, it is lost
+ * modulation range and distortion near the zero crossing. Too SHORT is a
+ * shoot-through, and it is not a fault the firmware can detect or fault on:
+ * both devices in a leg conduct for a few tens of nanoseconds and the damage
+ * is thermal and cumulative.
+ *
+ * So this stays at the inherited 160 counts, because erring long is the safe
+ * direction, and it must be re-derived from the new FETs' datasheet and then
+ * confirmed on a scope at a switch node before the bridge runs at any real
+ * bus voltage. Do not shorten it to recover modulation range on the strength
+ * of a datasheet alone.
  */
 #define BOARD_DT_RISING         160U
 #define BOARD_DT_FALLING        160U
@@ -214,6 +234,28 @@ extern "C" {
  * is fine and has better than 2x headroom - only the firmware constant was
  * broken.
  */
+/* WHERE THE WRONG CONSTANT CAME FROM, since it explains how much of the rest
+ * of that project to trust.
+ *
+ * The sibling project MiniFOCer, same author and same file layout, scales its
+ * phase currents by 0.040584415584415584 - a precisely derived number - and
+ * its bus by 0.008, which is 32.8 V of full scale for a 4S bench board.
+ * gr_motherfocer has 0.04 and 0.05: a ROUNDED COPY of MiniFOCer's current
+ * constant, and a bus constant that matches neither MiniFOCer's divider nor
+ * this board's.
+ *
+ * So neither figure was ever derived for this hardware. That is consistent
+ * with the state of the project - four commits ending at "encoder works" - and
+ * it means the analogue scaling is the part of gr_motherfocer NOT to inherit,
+ * while its pinout, peripheral mapping and interrupt layout are exactly the
+ * parts that are trustworthy.
+ *
+ * One more thing worth carrying across from MiniFOCer: it negates the W phase
+ * current (`* -0.040584...`) and not U. Phase sense POLARITY is per-board
+ * wiring, it is invisible in a pinout, and getting it wrong does not fail
+ * loudly - it corrupts the Clarke transform into a rotating error. Check the
+ * sign of each phase against a known current before closing the loop.
+ * gr_motherfocer applies no inversion, which is evidence but not proof. */
 #define BOARD_VBUS_DIV_NUM      400U      /* (9.975M + 25k) / 25k */
 #define BOARD_VBUS_DIV_DEN      1U
 

@@ -10,11 +10,26 @@ with the board — `Inverter.ioc` and the LL code generated from it, in the
 this project, and is the only file a later hardware revision should need to
 touch.
 
-**There is no schematic in the source material.** Everything below is derived
-from a pin-assignment file and a bring-up program. That is enough to say which
-peripheral sits on which pin; it is not enough to say what the pin is wired to.
-Section 4 lists what that leaves open, and none of it should be closed by
-guessing.
+**The `gr_motherfocer` hardware is the same board, except for the FETs.** That
+raises how much of that project can be trusted, and it is worth being precise
+about which parts:
+
+- **Trust the pinout, peripheral mapping and interrupt layout.** These are
+  CubeMX output describing real silicon on the real board. Its
+  `HRTIM1_TIMB_IRQHandler` independently confirms Timer B as the intended
+  control ISR, which is what this port had already chosen; its Clarke uses all
+  three phase currents, which is what `csense.c` now measures.
+- **Do NOT trust its analogue scaling.** `0.04` A/count is a rounded copy of
+  MiniFOCer's precisely-derived `0.040584415584415584`, and its `0.05` V/count
+  matches neither MiniFOCer's divider nor this board's 400:1. Neither was ever
+  derived for this hardware. Four commits ending at "encoder works" is
+  consistent with that.
+- **Re-derive the DEAD TIME.** It is the one constant that "same except the
+  FETs" directly falsifies — see below.
+
+There is still no schematic, so what a pin is *wired to* remains outside the
+source. Section 4 lists what that leaves open, and none of it should be closed
+by guessing.
 
 ## 1. What the two boards do not share
 
@@ -319,11 +334,31 @@ is unanswerable from the material available.
    bit carries is still unknown - it is masked off, so a status or error flag
    living there is currently being ignored.
 
-6. **The dead-time value in real units.** 160 counts at DT prescaler DIV1 is
-   what is configured; the nanoseconds depend on the divider chain in RM0440
-   and nobody here has confirmed it or seen it on a scope.
+6. **The dead time, which the FET change puts back on the table.** 160 counts
+   at DT prescaler DIV1 is 1.0 us, taking fDTG = fHRTIM = 160 MHz as the LL
+   header states.
 
-7. ~~**Which motor is actually attached.**~~ **Answered: EMRAX 228 HV on a
+   Dead time covers the device's turn-off delay plus the mismatch between the
+   two gate-driver channels, and turn-off delay is a property of the FET — its
+   gate charge, the gate resistor, the driver's sink current. Different FETs,
+   different requirement. This is precisely the constant that the otherwise
+   very helpful "same hardware except the FETs" does not carry across.
+
+   1.0 us is also long for a MOSFET bridge, where 100-500 ns is typical. That
+   asymmetry is the reason it is being left alone rather than trimmed: too
+   long costs modulation range and adds distortion near the zero crossing, and
+   too short is a shoot-through that the firmware cannot detect, cannot fault
+   on, and that damages the bridge cumulatively. Re-derive from the new FETs'
+   datasheet, then confirm on a scope at a switch node.
+
+7. **Phase sense POLARITY.** MiniFOCer negates its W phase current and not
+   its U (`* -0.040584...`); `gr_motherfocer` negates nothing. Which is right
+   here is a wiring question that a pinout cannot answer, and it does not fail
+   loudly - a reversed phase sensor corrupts the Clarke transform into a
+   rotating error rather than an obvious one. Check the sign of each phase
+   against a known current before closing the loop.
+
+8. ~~**Which motor is actually attached.**~~ **Answered: EMRAX 228 HV on a
    140s2p pack.** The inherited constants turned out to be EMRAX constants
    rather than placeholders - `foc.h`'s HV analysis quotes 917 Hz electrical
    (10 pole pairs at 5500 rpm) and back-solves to exactly the 255 uH in the
