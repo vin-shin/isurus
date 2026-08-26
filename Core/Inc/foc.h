@@ -25,6 +25,37 @@ extern "C" {
 #include <stdint.h>
 #include "limits.h"      /* LIM_ID_FW_MAX_MA, for the weakening gain */
 
+#include "board.h"
+
+/* !! THE MOTOR CONSTANTS IN THIS FILE ARE NOT YET PORTED !!
+ *
+ * FOC_POLE_PAIRS, FOC_LAMBDA_M_WB, the R and L the current-loop gains were
+ * sized from, FOC_KT_NM_PER_A - all of them describe Mako Longfin's
+ * EaglePower 8309 on a 12S pack. The GR MotherFOCer's machine is a different
+ * motor: board.h section 7 has ten pole pairs against twenty, 23.22 mOhm
+ * against 85, and 255 uH against 54.3.
+ *
+ * They are left alone as a SET rather than retargeted one at a time, because
+ * they multiply together. FOC_KT_NM_PER_A is 1.5 * POLE_PAIRS * LAMBDA_M, so
+ * a block carrying this board's pole count and the old board's flux linkage
+ * describes no motor that has ever existed - which is worse than coherently
+ * describing the wrong one, because at least the wrong one fails in a way
+ * that has a name.
+ *
+ * Retargeting them properly means deriving lambda_m from the new machine's
+ * kv (and pinning down which kv convention that number is in), re-deriving
+ * the PI gains from the new plant, and re-basing the host model's motor to
+ * match. ident.c measures R and L on the machine directly and is the right
+ * place to start. Until that is done, closed-loop current on this board is
+ * bring-up step 8 in docs/PORT-POWER-UNIT.md and nothing above open-loop
+ * should be armed.
+ *
+ * FOC_ENC_COUNTS is the exception and IS correct for this board. It
+ * deliberately does not follow the sensor: the RM44SI is a 13-bit part, but
+ * encoder.c widens its reading to the 15-bit convention before anything here
+ * sees it, so this stays 32768. That is load-bearing - the `counts << 17`
+ * CORDIC conversion below is exact only because a half turn lands exactly on
+ * the Q31 sign bit. See encoder.h. */
 #define FOC_POLE_PAIRS      20U
 #define FOC_ENC_COUNTS      32768U
 

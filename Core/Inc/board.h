@@ -260,10 +260,7 @@ extern "C" {
  * motor from Mako Longfin's 20-pole-pair 12S machine, so none of the tuned
  * gains or limits carry over.
  *
- *   N_POLES  10          the board's code calls this "poles"; whether it means
- *                        poles or pole pairs is BOARD_UNKNOWN, and taking it
- *                        the wrong way is a factor-of-two error in the
- *                        electrical angle
+ *   N_POLES  10          read as ten POLE PAIRS - see below
  *   kv       10.14
  *   R        23.22 mOhm
  *   L        255 uH
@@ -274,7 +271,26 @@ extern "C" {
  * the cheapest way to find out whether these numbers describe the motor that
  * is actually attached.
  */
-#define BOARD_MOTOR_POLES       10U
+/* Ten POLE PAIRS, from N_POLES = 10 in the board's defines.h.
+ *
+ * The name says "poles" and the value is being read as pole pairs, which
+ * needs justifying, because getting it wrong is a factor of two on the
+ * electrical angle - and that does not fail loudly. It produces a motor that
+ * turns weakly, draws current and heats up.
+ *
+ * The justification is the sibling project. MiniFOCer, by the same author and
+ * with the same defines.h layout, sets N_POLES to 7. A motor cannot have an
+ * odd number of poles - they come in north/south pairs - so in these projects
+ * N_POLES has to mean pole pairs. Ten here is therefore ten pole pairs, or
+ * twenty poles.
+ *
+ * That is an inference from a naming convention, not a datasheet, so it is
+ * still on the list to confirm: bring-up step 6 in docs/PORT-POWER-UNIT.md
+ * settles it in seconds, because an open-loop spin with the pole count wrong
+ * gives visibly the wrong number of electrical revolutions per mechanical
+ * one. Mako Longfin's motor had 20 pole pairs, so this is a real halving and
+ * not a value that happens to carry over. */
+#define BOARD_MOTOR_POLE_PAIRS  10U
 #define BOARD_MOTOR_KV          10.14f
 #define BOARD_MOTOR_R_OHM       0.02322f
 #define BOARD_MOTOR_L_H         255e-6f

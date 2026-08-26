@@ -336,8 +336,10 @@ void FOC_Update(FocState_t *f, int32_t iu_ma, int32_t iw_ma, uint16_t enc_raw,
   f->ibeta  = (f->iu + 2.0f * f->iv) * ONE_BY_SQRT3;
 
   /* ---- electrical angle -------------------------------------------- */
-  /* Encoder zero IS electrical zero (programmed into the A1333), so this
-   * needs no offset term - just the pole-pair multiply, wrapped. */
+  /* elec_offset carries the whole alignment on this board. Mako Longfin
+   * programmed the A1333's ZERO_OFFSET so encoder zero WAS electrical zero
+   * and this term was always nought; the RM44SI has no such register, so the
+   * offset lives here and must be re-applied after every power cycle. */
   f->enc_raw = enc_raw;
   {
     int32_t e = (int32_t)(((uint32_t)(enc_raw & 0x7FFFU) * FOC_POLE_PAIRS)

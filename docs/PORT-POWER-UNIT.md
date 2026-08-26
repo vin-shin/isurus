@@ -74,7 +74,7 @@ hardware. These need no change beyond constants:
 Ordered so that each step can be checked before the next one can hurt
 anything. Nothing below step 3 should run with the bus energised.
 
-1. **`board.h`** — done. The hardware map, and the record of what is not
+1. **`board.h`** — **done.** The hardware map, and the record of what is not
    known about it.
 
 2. **Clock and peripheral init** — `main.c`'s `SystemClock_Config` to 160 MHz
@@ -85,11 +85,21 @@ anything. Nothing below step 3 should run with the bus energised.
    be rewriting the parts of the project that are *not* supposed to change
    between boards.
 
-3. **`motor_pwm.c` / `.h`** — timers B/F/C instead of A/B, complementary
-   outputs with dead-time insertion instead of single-ended, active-high gate
-   enable, 20 kHz, and the ADC trigger lead recomputed for a 1.28 GHz counter
-   (`PWM_ADC_LEAD_COUNTS` currently hardcodes 1024 counts per microsecond,
-   which is the 128 MHz figure). The safety comment gets rewritten per §1.
+3. **`motor_pwm.c` / `.h`** — **done.** Timers B/F/C instead of A/B,
+   complementary outputs with dead-time insertion instead of single-ended,
+   active-high gate enable, 20 kHz, and the ADC trigger lead derived from
+   `BOARD_HRTIM_TICK_HZ` instead of a hardcoded 1024 counts per microsecond.
+   `hrtim.c`'s MSP no longer claims PC8, which is the gate enable. The
+   control ISR moved from the Timer A repetition event to Timer B's.
+
+   Two things fell out of this that were not on the list. `EmergencyStop`
+   wrote a raw BSRR bit sized for the old board's active-low enable, so from
+   a fault handler it would have *enabled* this board's gate drivers; it goes
+   through a compile-time `GATE_EN_BSRR_DISABLE` now. And the host simulator
+   hardcoded 30 kHz, so moving the firmware to 20 made both inductance tests
+   read +45% - an apparent identification error that was really a harness
+   that had not been told the rate changed. `SIM_TS` derives from
+   `PWM_FREQ_HZ` now.
 
 4. **`csense.c` / `.h`** — the largest single rewrite. Mako Longfin reads two
    phases through internal OPAMP followers on ADC2 and ADC5, polled on an
@@ -108,17 +118,61 @@ anything. Nothing below step 3 should run with the bus energised.
    exactly this area reads perfectly in a static test and destabilises the
    loop the moment anything moves — that lesson transfers directly.
 
-5. **`encoder.c` / `.h`** — RM44SI on SPI3, 13 bits, manual CS on PA15. The
-   A1333's two-frame command/NOP transaction does not apply. Blocked on the
-   frame format (§4).
+5. **`encoder.c` / `.h`** — **done.** RM44SI on SPI3, manual CS on PA15, one
+   14-bit frame per read instead of the A1333's command/NOP pipeline. The
+   frame format turned out to be answered after all, by the board's own SPI3
+   interrupt handler: `angle = received & 0x1fff`, so the angle is the low 13
+   bits of the 14 clocked back and the 14th bit is masked off unexamined.
 
-6. **`can.c`** — bind to FDCAN2 and recompute the bit timing for 160 MHz. The
-   existing prescaler 8 / seg1 12 / seg2 3 gives 1 Mbit at 128 MHz; at 160 MHz
-   the same divisors give 1.25 Mbit, which will not communicate.
+   The reported count is widened to the project's 15-bit convention rather
+   than the angle path being rescaled to 8192. `foc.c`'s `counts << 17`
+   CORDIC conversion is exact only because a half turn lands on the Q31 sign
+   bit, and the comment there describes how the off-by-pi version of the same
+   expression stays self-consistent and silently inverts torque. That is not
+   code to renegotiate to save a shift. The real cost is stated in
+   `encoder.h`: the bottom two bits of every count are always zero, and
+   mechanical resolution is genuinely 4x coarser than on Mako Longfin.
 
-7. **`limits.h`** — every bound is traceable to Mako Longfin's motor, sensors
-   or bench, and none of those are the hardware here. This file should be
-   emptied back to first principles against the new motor rather than scaled.
+   The A1333's whole register surface - unlock, direct and extended register
+   access, `SetZeroOffset`, `ZeroHere` - is gone, along with the SWD commands
+   in `main.c` that drove it. Electrical zero moves into `g_foc.elec_offset`,
+   which `foc.c` already applies and the SWD tools already reach. **The
+   consequence is that the offset no longer survives a power cycle**, where
+   the A1333 held it in EEPROM. Re-applying it at boot is an open item.
+
+   Also worth recording: the dead-link detector tested frames against
+   `0xFFFF`. On a 14-bit transfer the top two bits never arrive, so that
+   constant could never have matched - the detector would have compiled,
+   existed, and been permanently blind. It tests `0x3FFF` now.
+
+6. **`can.c`** — **done.** Bound to FDCAN2 on PB6/PB5, prescaler 8 -> 10 so
+   1 Mbit survives the move from a 128 MHz kernel clock to 160. The segment
+   split is untouched, so the 81.25% sample point is bit-for-bit the one
+   validated on the old board. `can_proto.h` did not change at all, which is
+   what it was written for.
+
+7. **The motor constants, and `limits.h`** - the largest piece still open,
+   and the reason nothing above open-loop should be armed yet.
+
+   `foc.h` carries `FOC_POLE_PAIRS`, `FOC_LAMBDA_M_WB`, the R and L its
+   current-loop gains were sized from, and `FOC_KT_NM_PER_A`. Every one of
+   them describes Mako Longfin's EaglePower 8309 on a 12S pack. They are
+   deliberately left as a coherent *set* rather than retargeted one at a
+   time, because they multiply: `FOC_KT_NM_PER_A` is
+   `1.5 * POLE_PAIRS * LAMBDA_M`, so a block holding this board's pole count
+   and the old board's flux linkage would describe no motor that has ever
+   existed. Coherently describing the wrong motor at least fails in a way
+   that has a name.
+
+   Doing it properly means deriving lambda_m from the new machine's kv - and
+   pinning down which kv convention 10.14 is expressed in - re-deriving the
+   PI gains from the new plant, and re-basing `test/host/pmsm.c`'s model to
+   match, since it is initialised to the 8309 today. `ident.c` measures R and
+   L on the machine directly and is the cheapest starting point.
+
+   `limits.h` follows from the same work: every bound there is traceable to
+   the old motor, its sensors or its bench, and it should be rebuilt from
+   first principles rather than scaled.
 
 8. **`led.c`, `docs/LED_CODES.md`** — no LED appears in the new pinout, and
    `led.c` drives GPIOB pins that this board configures as inputs. Either the
@@ -150,18 +204,25 @@ is unanswerable from the material available.
    intended. One of those readings is wrong. Arming the comparator against
    the wrong signal gives a trip that either never fires or fires constantly.
 
-3. **`N_POLES = 10` — poles or pole pairs?** The board's code says "poles".
-   Mako Longfin's equivalent number is pole pairs. Read the wrong way this is
-   a factor of two on the electrical angle, which does not fail loudly; it
-   produces a motor that turns weakly and heats up.
+3. ~~**`N_POLES = 10` - poles or pole pairs?**~~ **Probably answered, worth
+   confirming.** Read as ten *pole pairs*. The evidence is the sibling
+   project: MiniFOCer, same author and same `defines.h` layout, sets
+   `N_POLES` to 7 - and a motor cannot have an odd number of poles, since
+   they come in north/south pairs. So `N_POLES` means pole pairs in these
+   projects. That is an inference from a naming convention rather than a
+   datasheet, and bring-up step 6 settles it in seconds: with the pole count
+   wrong, an open-loop spin gives visibly the wrong number of electrical
+   revolutions per mechanical one.
 
 4. **The current sense scale.** `0.04 A/LSB` and `0.05 V/LSB` are inherited
    from the board's bring-up loop with no sensor part number and no divider
    ratio behind them. The bus scale feeds the undervoltage trip, so it needs a
    meter against it before anything depends on it.
 
-5. **The RM44SI frame format** — where the angle sits in the 16-bit response,
-   and whether there are status bits worth checking.
+5. ~~**The RM44SI frame format.**~~ **Answered**, from the board's own SPI3
+   interrupt handler: 14-bit frames, angle in the low 13 bits. What the 14th
+   bit carries is still unknown - it is masked off, so a status or error flag
+   living there is currently being ignored.
 
 6. **The dead-time value in real units.** 160 counts at DT prescaler DIV1 is
    what is configured; the nanoseconds depend on the divider chain in RM0440

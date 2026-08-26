@@ -38,7 +38,11 @@ extern "C" {
 #include "motor_pwm.h"   /* PWM_FREQ_HZ */
 #include "limits.h"
 
-/* Encoder counts per mechanical revolution (A1333, 15-bit). */
+/* Encoder counts per mechanical revolution, in the reported convention.
+ *
+ * Stays 32768 on this board even though the RM44SI is a 13-bit part:
+ * encoder.c widens its 8192 native counts by 2 bits so the whole angle path
+ * keeps the modulus it was written and tested around. See encoder.h. */
 #define POS_COUNTS_PER_REV   32768
 
 /* Outer-loop rate. The decimation is DERIVED from the switching frequency

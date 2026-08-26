@@ -213,9 +213,13 @@ volatile uint32_t g_oc_trips  = 0;   /* overcurrent trip count */
 volatile int32_t  g_oc_peak   = 0;   /* worst |I| seen, mA     */
 volatile uint32_t g_faulted   = 0;   /* latched: needs clear_fault or retry */
 
-/* A1333 zero-calibration results, read over SWD. */
-volatile uint32_t g_enc_shadow_ang = 0;
-volatile uint32_t g_enc_ee_ang     = 0;
+/* Electrical-zero result, read over SWD.
+ *
+ * g_enc_shadow_ang and g_enc_ee_ang stood alongside this and reported the
+ * A1333's shadow and EEPROM ANG registers. There is no such register on this
+ * board's encoder, so they are gone rather than left reporting zero forever.
+ * Any SWD script that resolves them by name will now fail to find the symbol,
+ * which is the loud failure - a script silently reading a stale zero is not. */
 volatile uint32_t g_enc_zero_off   = 0;
 volatile int32_t  g_enc_cmd_rc     = -1;
 volatile int32_t  g_vbus_start_rc   = -99;
@@ -508,9 +512,9 @@ int main(void)
   // MX_OPAMP4_Init();
   // MX_OPAMP5_Init();
   // MX_OPAMP6_Init();
-  MX_SPI1_Init();
+  // MX_SPI1_Init();   /* PB5 is FDCAN2_RX on this board */
   // MX_SPI2_Init();
-  // MX_SPI3_Init();
+  MX_SPI3_Init();
   MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
   // __enable_irq();
@@ -719,60 +723,55 @@ int main(void)
       }
     }
 
-    /* A1333 register access. Runs from the main loop so it shares the SPI
-     * with the angle reads; the loop simply pauses while it runs. */
+    /* Electrical zero.
+     *
+     * On Mako Longfin this block drove the A1333's ZERO_OFFSET register, so
+     * encoder zero WAS electrical zero and foc.c needed no offset term. The
+     * RM44SI has no equivalent register that this port knows of, so the
+     * offset lives in firmware instead - g_foc.elec_offset, which foc.c
+     * already adds and which the SWD tools already read and write.
+     *
+     * Two commands survive the move, and only two, because the rest of the
+     * old surface existed to manage a non-volatile register that is no longer
+     * there:
+     *
+     *   1  read back the current offset
+     *   2  zero here: make the CURRENT rotor position electrical zero
+     *
+     * There is no EEPROM variant any more, and no write-cycle budget to
+     * spend. The flip side is that the offset does not survive a power cycle
+     * - it has to be applied at every boot, which is an open item in
+     * docs/PORT-POWER-UNIT.md rather than something this block can fix.
+     */
     if (g_cmd.enc_cmd != 0U)
     {
       uint32_t c = g_cmd.enc_cmd;
       g_cmd.enc_cmd = 0U;
 
-      uint32_t sh = 0, ee = 0;
-      uint16_t off = 0;
-
       if (c == 1U)
       {
-        /* Read-only: proves the extended-access framing without spending an
-         * EEPROM write cycle. */
-        Encoder_Status_t a = Encoder_ExtRead(A1333_SHADOW_ANG, &sh);
-        Encoder_Status_t b = Encoder_ExtRead(A1333_EE_ANG,     &ee);
-        g_enc_shadow_ang = sh;
-        g_enc_ee_ang     = ee;
-        g_enc_cmd_rc     = ((a == ENC_OK) && (b == ENC_OK)) ? 0 : -1;
+        g_enc_zero_off = (uint16_t)g_foc.elec_offset;
+        g_enc_cmd_rc   = 0;
       }
-      else if (c == 4U)
+      else if (c == 2U)
       {
-        /* Write an explicit offset to SHADOW only. Used to measure how far a
-         * known ZERO_OFFSET actually moves the reported angle, which settles
-         * the 12-bit-offset vs 15-bit-angle scaling. Shadow is volatile and
-         * unlimited, so this costs nothing. */
-        Encoder_Status_t a = Encoder_SetZeroOffset((uint16_t)g_cmd.enc_arg, 0U);
-        g_enc_cmd_rc = (a == ENC_OK) ? 0 : -1;
-        (void)Encoder_ExtRead(A1333_SHADOW_ANG, &sh);
-        g_enc_shadow_ang = sh;
+        /* elec_counts already has the current offset folded in, so zeroing is
+         * a subtraction from what is there rather than an assignment - the
+         * same reason ZeroHere and SetZeroOffset had to stay separate on the
+         * old board. Running it twice is therefore idempotent, not
+         * double-applied. */
+        int32_t off = g_foc.elec_offset - (int32_t)g_foc.elec_counts;
+        off %= (int32_t)FOC_ENC_COUNTS;
+        if (off < 0) { off += (int32_t)FOC_ENC_COUNTS; }
+        g_foc.elec_offset = off;
+        g_enc_zero_off    = (uint16_t)off;
+        g_enc_cmd_rc      = 0;
       }
-      else if (c == 5U)
+      else
       {
-        /* Commit an explicit, already-validated offset to EEPROM. Deliberately
-         * separate from ZeroHere: ZeroHere reads the CURRENT angle, which is
-         * already offset-corrected, so re-running it would double-apply. This
-         * writes a known-good number instead. Spends one of ~100 cycles. */
-        Encoder_Status_t a = Encoder_SetZeroOffset((uint16_t)g_cmd.enc_arg, 1U);
-        g_enc_cmd_rc = (a == ENC_OK) ? 0 : -1;
-        (void)Encoder_ExtRead(A1333_SHADOW_ANG, &sh);
-        (void)Encoder_ExtRead(A1333_EE_ANG,     &ee);
-        g_enc_shadow_ang = sh;
-        g_enc_ee_ang     = ee;
-      }
-      else if ((c == 2U) || (c == 3U))
-      {
-        /* c == 3 burns one of ~100 EEPROM write cycles. */
-        Encoder_Status_t a = Encoder_ZeroHere(&off, (c == 3U) ? 1U : 0U);
-        g_enc_zero_off = off;
-        g_enc_cmd_rc   = (a == ENC_OK) ? 0 : -1;
-        (void)Encoder_ExtRead(A1333_SHADOW_ANG, &sh);
-        (void)Encoder_ExtRead(A1333_EE_ANG,     &ee);
-        g_enc_shadow_ang = sh;
-        g_enc_ee_ang     = ee;
+        /* The A1333-era commands 3, 4 and 5 addressed hardware that is not on
+         * this board. Refused loudly rather than silently ignored. */
+        g_enc_cmd_rc = -1;
       }
     }
 
