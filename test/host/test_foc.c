@@ -370,10 +370,18 @@ static void test_set_torque_reports_what_it_accepted(void)
   FocState_t f;
   FOC_Init(&f);
 
-  int32_t asked    = 100000;                        /* 100 Nm, far too much */
+  int32_t at_limit = (int32_t)(FOC_IqToTorque((float)LIM_IQ_MAX_MA * 0.001f) * 1000.0f);
+
+  /* Twice the torque the current limit allows, derived rather than named.
+   *
+   * This was a literal 100000 mNm, which was 1250x over the limit on a
+   * machine making 0.080 Nm per amp and is an ordinary request on one making
+   * 0.666 Nm per amp - 150 A of a 160 A budget. The test then asserted that a
+   * perfectly legal request got clamped, and failed because the firmware
+   * correctly did not clamp it. */
+  int32_t asked    = at_limit * 2;
   int32_t accepted = FOC_SetTorque(&f, asked);
   int32_t iq_ma    = (int32_t)(f.iq_ref * 1000.0f);
-  int32_t at_limit = (int32_t)(FOC_IqToTorque((float)LIM_IQ_MAX_MA * 0.001f) * 1000.0f);
 
   char d[192];
   snprintf(d, sizeof(d), "asked %ld mNm, accepted %ld mNm, iq_ref %ld mA (limit %d)",

@@ -24,16 +24,19 @@
   * ---------------------------------------------------------------------------
   *   motor            EMRAX 228 HV, 100 Arms continuous / 240 Arms peak
   *   pack             140s2p, 350 V empty to 588 V full, 518 V nominal
-  *   current sensors  unknown part; 0.04 A/LSB implies +/-82 A
-  *   bus sense        unknown divider; 0.05 V/LSB implies 0..204.8 V
+  *   current sensor   +/-200 A bidirectional
+  *   bus sense        400:1 divider, 9.975 MOhm over 25 kOhm
   *
-  *   The SENSORS are the binding constraint here, which is the opposite of
-  *   the previous board, where they had been sized around the motor on
-  *   purpose. The current sensor bounds commandable current to less than half
-  *   the machine's continuous rating, and the bus sense cannot read the pack
-  *   at all. Both scale factors are inherited from a bring-up program with no
-  *   schematic behind them - board.h section 7 has the three possibilities
-  *   and why none of them should be guessed.
+  *   The CURRENT SENSOR is the binding constraint, and it lands awkwardly:
+  *   between the machine continuous rating and its peak one. Continuous
+  *   current is measurable with margin; roughly half the peak torque is not
+  *   reachable, because current the sensor cannot measure is current the loop
+  *   cannot control. That is a hardware limit - a +/-350 A part fixes it -
+  *   and it must not be worked around in this file.
+  *
+  *   The bus divider is fine and has better than 2x headroom. It was the
+  *   inherited firmware scale factor that was wrong, by 6x. See board.h
+  *   section 4.
   ******************************************************************************
   */
 #ifndef LIMITS_H
@@ -47,36 +50,35 @@ extern "C" {
 
 /* ---- current ------------------------------------------------------------ *
  *
- * iq_ref is a PEAK amplitude, not an RMS phase current. The EMRAX's ratings
- * are published in Arms, so they are converted before being compared here.
+ * iq_ref is a PEAK amplitude, not an RMS phase current. The EMRAX ratings are
+ * published in Arms, so they are converted before being compared here.
  *
  * Four numbers bound this and the smallest wins:
  *
- *   339 A  motor, peak       240 Arms - a short rating, not a design point
- *   141 A  motor, continuous 100 Arms - the real thermal limit of the machine
- *    82 A  current sensors            - 0.04 A/LSB about the calibrated zero
- *                                       over a 12-bit ADC. Current above this
- *                                       cannot be MEASURED, so it cannot be
- *                                       controlled either: the loop reads a
- *                                       CEILING, concludes it has arrived, and
- *                                       stops pushing while the real current
- *                                       keeps climbing
- *    65 A  this bound                 - 80% of the sensor
+ *   339 A  motor, peak       240 Arms - CANNOT BE MEASURED, see below
+ *   200 A  current sensor              - BOARD_I_FS_A, bidirectional
+ *   160 A  this bound                  - 80% of the sensor
+ *   141 A  motor, continuous 100 Arms  - the thermal limit of the machine
  *
- * So the sensor binds, at less than half the motor's continuous rating, and
- * this ceiling is set from the sensor rather than the machine.
+ * The ordering is the interesting part: the sensor sits BETWEEN the motor
+ * continuous and peak ratings. So continuous operation is fully measurable
+ * with about 30% to spare, and roughly half the machine peak torque is not
+ * reachable at all - 200 A peak is 141 Arms, which is 59% of the 240 Arms
+ * that produces the EMRAX 240 Nm.
  *
- * !! THE SENSOR FIGURE IS UNVERIFIED. !! 0.04 A/LSB comes from the board's
- * bring-up code with no sensor part number and no schematic behind it - see
- * board.h section 7. It is used anyway because it is the only number
- * available and it is the CONSERVATIVE choice in both directions: if the real
- * sensor is wider, 65 A is merely cautious; if it is genuinely this narrow,
- * 65 A is correct. Raising this needs the schematic, not a decision.
+ * That is a HARDWARE limit and must not be worked around here. Current above
+ * the sensor range cannot be measured, so it cannot be controlled: the loop
+ * reads a ceiling, concludes it has arrived, and stops pushing while the real
+ * current keeps climbing. A +/-350 A part covers the motor 339 A peak with 3%
+ * to spare and is the right fix.
  *
- * 65 A peak is 46 Arms, comfortably inside the machine's 100 Arms continuous,
- * so nothing here is thermally interesting to the motor. That is the right
- * place to be for a bridge that has never been energised. */
-#define LIM_IQ_MAX_MA           65000
+ * 160 A is 80% of the sensor - the same margin the bench carried to its trip
+ * - and is 113 Arms, which is above the machine 100 Arms continuous rating.
+ * So this ceiling permits short bursts past continuous and relies on the
+ * motor and MOSFET temperature channels rather than on current alone to stop
+ * a sustained overload. That is the correct division of labour, but those
+ * channels are not read yet: see docs/PORT-POWER-UNIT.md. */
+#define LIM_IQ_MAX_MA           160000
 
 /* ---- bus voltage -------------------------------------------------------- *
  *
@@ -84,24 +86,22 @@ extern "C" {
  * empty one. Above the maximum the drive latches the same fault path as an
  * overcurrent.
  *
- * !! The bus SENSE cannot currently read this range. !! At the 0.05 V/LSB
- * recorded in board.h a 12-bit conversion tops out at 204.8 V, which is a
- * third of the pack. That is not something this file can fix - it is a
- * scaling or hardware question - but it is why these numbers are a
- * SPECIFICATION rather than something the drive can presently enforce. A
- * saturated bus reading is the dangerous direction, because
- * FOC_SetGainsForVbus divides by it: clamped at 204.8 V on a 518 V bus, every
- * gain comes out 2.5x too large.
+ * The sense chain measures this comfortably: an exactly 400:1 divider, so a
+ * full pack presents 1.47 V to the pin and the conversion has better than 2x
+ * headroom. What was broken was the firmware SCALE FACTOR inherited from the
+ * board bring-up loop, which implied a 62:1 divider and would have reported a
+ * full pack as 91 V - see board.h section 4. Everything in this block assumes
+ * that has been fixed and that VREF+ is measured rather than assumed.
  *
- * NOTE this bounds the MOTOR and the PACK. The board's own ceiling - FET Vds,
+ * NOTE this bounds the MOTOR and the PACK. The board own ceiling - FET Vds,
  * bulk capacitor rating, gate driver supply - is not in the source material
  * and has not been verified. Check the schematic before running near this.
  *
  * The undervoltage bound is not a rating, it is a sanity floor: below it the
  * bus reading is not trustworthy and the gain rescale would divide by a bad
- * number. It sits far below the pack's 350 V on purpose, so that bring-up on
- * a lab supply still works; protecting cells from over-discharge is the BMS's
- * job, not this loop's. See FOC_VBUS_MIN_MV, which must agree with it - a bus
+ * number. It sits far below the pack 350 V on purpose, so that bring-up on a
+ * lab supply still works; protecting cells from over-discharge is the BMS
+ * job, not this loop. See FOC_VBUS_MIN_MV, which must agree with it - a bus
  * the self-test accepts but FOC_SetGainsForVbus rejects would leave the loop
  * running on gains sized for a different supply. */
 #define LIM_VBUS_MAX_MV         588000

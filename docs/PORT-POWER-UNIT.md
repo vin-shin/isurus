@@ -264,22 +264,55 @@ is unanswerable from the material available.
    wrong, an open-loop spin gives visibly the wrong number of electrical
    revolutions per mechanical one.
 
-4. **The sense scales, and they are now known to be blocking.** `0.04 A/LSB`
-   and `0.05 V/LSB` are inherited from the board's bring-up loop with no
-   sensor part number and no divider ratio behind them. Against a 12-bit ADC
-   they imply **+/-81.9 A and 0..204.8 V**. The EMRAX wants 141 A peak
-   continuous and 339 A peak, on a pack that runs 350-588 V.
+4. ~~**The sense scales.**~~ **Answered from the schematic, and they came out
+   differently from each other.**
 
-   So as scaled, the bus sense cannot read even the empty pack, and the
-   current sense tops out below half the machine's continuous rating. Both
-   fail in the direction that hurts: a saturated current reading makes the
-   loop believe it has arrived while the real current climbs, and a saturated
-   bus reading is divided by in `FOC_SetGainsForVbus`, so clamped at 204.8 V
-   on a 518 V bus every gain comes out 2.5x too large.
+   **The bus divider is fine — the firmware constant was not.** The divider is
+   4M7 + 4M7 + 560k + 15k over 25k: 9.975 MOhm over 25 kOhm, totalling exactly
+   10 MOhm, so exactly **400:1**. A full 588 V pack presents 1.47 V to the pin
+   and the conversion has better than 2x headroom.
 
-   Schematic pending. Until it lands, `LIM_IQ_MAX_MA` is set from the
-   *measurable* range rather than the motor - 65 A, 80% of the implied sensor
-   ceiling, which is 46 Arms and comfortably inside the machine either way.
+   The inherited `vbus = raw * 0.05` implies a 62:1 divider, so it was wrong
+   by about 6x, and would have **reported a 588 V bus as 91 V**. That divides
+   into every current-loop gain through `FOC_SetGainsForVbus`, so the gains
+   would have come out 6.4x too large on a machine whose coupling terms are
+   already three quarters of the supply. The one saving grace is that it would
+   also have tripped undervoltage permanently, so the drive would have refused
+   to arm rather than armed badly. The earlier claim in this document that the
+   bus sense "cannot read the pack" was wrong, and wrong because it trusted
+   that constant.
+
+   **VREF+ must be measured, not assumed.** The board disables the internal
+   VREFBUF and drives VREF+ externally, and the candidates (3.3 / 3.0 / 2.5 /
+   2.048 V) span a 60% difference in volts-per-count. VREFINT is a factory-
+   calibrated on-die bandgap, so the firmware can measure it at startup —
+   `csense.c` already does this on the previous board.
+
+   **The current sensor is genuinely undersized.** +/-200 A bidirectional,
+   which lands between the machine's two ratings:
+
+   | | | |
+   |---|---|---|
+   | motor continuous | 100 Arms = 141 A peak | fits, ~30% margin |
+   | **sensor** | **200 A peak = 141 Arms** | |
+   | motor peak | 240 Arms = 339 A peak | 1.7x over |
+
+   So continuous operation is fully measurable and roughly half the machine's
+   peak torque is not reachable — 200 A peak is 59% of the 240 Arms that makes
+   the EMRAX's 240 Nm, and 47% once a sane 80% margin is applied. A **+/-350 A
+   part** covers the 339 A peak with 3% to spare.
+
+   This is a hardware limit and is not to be worked around in firmware:
+   current the sensor cannot measure is current the loop cannot control, and a
+   loop reading a saturated sensor believes it has arrived and stops pushing
+   while the real current climbs. `LIM_IQ_MAX_MA` is 160 A — 80% of the
+   sensor — which is 113 Arms, above the machine's continuous rating, so short
+   bursts past continuous are permitted and sustained overload is the
+   temperature channels' job rather than the current limit's.
+
+   Still needed for `csense.c`: **the current sensor's part number or its volts
+   per amp.** The range bounds the limit correctly either way, but scaling a
+   reading needs the sensitivity.
 
 5. ~~**The RM44SI frame format.**~~ **Answered**, from the board's own SPI3
    interrupt handler: 14-bit frames, angle in the low 13 bits. What the 14th

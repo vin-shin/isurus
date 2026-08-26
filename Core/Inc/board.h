@@ -186,18 +186,91 @@ extern "C" {
 #define BOARD_ADC_IDX_TEMP0     5U
 #define BOARD_ADC_IDX_AUDIO     9U
 
-/* Scale factors, taken from the board's bring-up loop:
- *     current = (raw - offset) * 0.04    -> 40 mA per LSB
- *     vbus    =  raw          * 0.05     -> 50 mV per LSB
+/* ---- DC bus divider: 400:1, from the schematic ----------------------------
  *
- * These are the numbers the board's author used, not numbers derived here
- * from a shunt value and a gain. Neither has been checked against a divider
- * ratio, and the current sensor's part number is not recorded anywhere in the
- * project. Treat both as provisional until they are calibrated against a
- * meter - the Vbus one especially, because it feeds the undervoltage trip.
+ *     4M7 + 4M7 + 560k + 15k  =  9.975 MOhm   over   25 kOhm
+ *     9.975M + 25k = 10.000 MOhm exactly, so the ratio is exactly 400:1
+ *
+ * The four-resistor top leg is not redundancy, it is HV practice: at 588 V
+ * each part drops under 300 V and the creepage is spread over four
+ * footprints. The exact 10 MOhm total says the ratio was chosen rather than
+ * fallen into.
+ *
+ * !! THE INHERITED SCALE FACTOR WAS WRONG BY ABOUT 6x, IN THE DANGEROUS
+ * DIRECTION. !! The board's bring-up loop used `vbus = raw * 0.05`, which is
+ * 204.8 V of full scale and implies a 62:1 divider. The divider is 400:1. At
+ * VREF 3.3 V a full 588 V pack presents 1.47 V to the pin, converts to 1825
+ * counts, and that formula reports it as 91 V.
+ *
+ * Reading 91 V for a 588 V bus is not a cosmetic error. FOC_SetGainsForVbus
+ * DIVIDES by the bus, so every current-loop gain would have come out 6.4x too
+ * large, on a machine whose coupling terms are already three quarters of the
+ * supply. The undervoltage trip would also have fired permanently, which is
+ * the one piece of luck in it: the drive would have refused to arm rather
+ * than armed badly.
+ *
+ * So the earlier note in this file that the bus sense "cannot read the pack"
+ * was wrong, and wrong precisely because it trusted that 0.05. The HARDWARE
+ * is fine and has better than 2x headroom - only the firmware constant was
+ * broken.
  */
-#define BOARD_I_UA_PER_LSB      40000
-#define BOARD_VBUS_UV_PER_LSB   50000
+#define BOARD_VBUS_DIV_NUM      400U      /* (9.975M + 25k) / 25k */
+#define BOARD_VBUS_DIV_DEN      1U
+
+/* ---- VREF+ : measured, not assumed ----------------------------------------
+ *
+ * The board disables the internal VREFBUF and puts VREF+ in external mode
+ * (HAL_SYSCFG_DisableVREFBUF, in its stm32g4xx_hal_msp.c), so the reference
+ * comes from a part this project has never seen. Every candidate gives a
+ * workable full scale and a different volts-per-count:
+ *
+ *     VREF     V/LSB     full scale     588 V uses
+ *     3.300    0.3223      1320 V          45%
+ *     3.000    0.2930      1200 V          49%
+ *     2.500    0.2441      1000 V          59%
+ *     2.048    0.2000       819 V          72%
+ *
+ * Guessing among those is a 60% error on the bus reading, the same class of
+ * mistake as the 0.05 above. It does not have to be guessed: VREFINT is an
+ * on-die bandgap with a factory calibration constant, so the firmware can
+ * measure VREF+ at startup and derive volts-per-count from it. csense.c
+ * already does exactly that on the previous board - CSense_MeasureVdda.
+ *
+ * The value below is a fallback for the window before that measurement runs.
+ * Nothing that matters should be using it. */
+#define BOARD_VREF_NOMINAL_MV   3300U
+
+/* ---- current sensor: +/-200 A, and undersized for this motor --------------
+ *
+ * Bidirectional, +/-200 A peak, which is 141 Arms.
+ *
+ *     motor continuous   100 Arms = 141 A peak    fits, about 30% margin
+ *     motor peak         240 Arms = 339 A peak    1.7x OVER the sensor
+ *
+ * Continuous operation is fully measurable; the machine's peak rating is not.
+ * Torque follows current, so taking the EMRAX 240 Nm at 240 Arms:
+ *
+ *     200 A peak (sensor ceiling)   141 Arms   ~141 Nm    59% of peak torque
+ *     160 A peak (80% margin)       113 Arms   ~113 Nm    47% of peak torque
+ *     350 A peak (a bigger part)    248 Arms   ~248 Nm   103% of peak torque
+ *
+ * A +/-350 A part covers the motor 339 A peak with 3% to spare, which is why
+ * 350 A is the right number rather than merely a round one. As built, about
+ * half the machine peak torque is unreachable - not because the inverter
+ * cannot deliver it, but because current above the sensor range cannot be
+ * MEASURED, and a current loop reading a saturated sensor believes it has
+ * arrived and stops pushing while the real current climbs.
+ *
+ * That is a hardware change, not a firmware one. Nothing here should be
+ * relaxed to work around it.
+ *
+ * BOARD_I_FS_A is the part rating and is what limits.h bounds against, which
+ * holds whatever the output swing turns out to be. The per-LSB figure below
+ * additionally assumes the sensor full range spans the whole ADC - that needs
+ * the part number to confirm, and it is used for scaling a reading, never for
+ * deciding a limit. */
+#define BOARD_I_FS_A            200
+#define BOARD_I_UA_PER_LSB      97656     /* 200 A / 2048 codes, provisional */
 
 /* Zero-current offset: the board's code averages 128 samples of every ADC
  * channel at startup with the bridge disabled. Same idea as Mako Longfin's
@@ -311,41 +384,18 @@ extern "C" {
  * no defensible number to put in FOC_LAMBDA_M_WB.
  *
  * ---------------------------------------------------------------------------
- * !! THE SENSE RANGES DO NOT COVER THIS MOTOR !!
+ * The sense chain, now that the schematic has been read
  * ---------------------------------------------------------------------------
- * Taking the scale factors in section 4 at face value against a 12-bit ADC:
+ * Both questions are answered in section 4, and they came out differently.
  *
- *   current   0.04 A/LSB about the calibrated zero -> +/- 81.9 A
- *   bus       0.05 V/LSB unipolar, no offset       ->   0 .. 204.8 V
+ * The BUS sense is fine. The divider is exactly 400:1 with better than 2x
+ * headroom over a full pack. It was the inherited 0.05 V/LSB constant that
+ * was wrong, by about 6x, and it would have reported a 588 V bus as 91 V.
  *
- * Against an EMRAX 228 HV:
- *
- *   continuous 100 A rms = 141 A peak   - already 1.7x over the sensor
- *   peak       240 A rms = 339 A peak   - 4.1x over
- *   HV bus     400-700 V DC typical     - 2-3.4x over the bus sense
- *
- * A saturating current sensor does not read high, it reads a ceiling, and a
- * current loop fed a ceiling believes it has hit its target and stops pushing
- * - while the real current keeps climbing. A saturating bus sense is worse,
- * because FOC_SetGainsForVbus divides by it: clamped low, the loop gain comes
- * out proportionally high, on the exact machine where the coupling terms are
- * three quarters of the supply.
- *
- * Both of those are unsafe in the direction that hurts, so they are the first
- * thing to settle - and neither is answerable from the source material, which
- * has no schematic and no sensor part numbers. Three possibilities, and they
- * want different work:
- *
- *   a) the scale factors are placeholders from a bench rig and the real
- *      divider and sensor are correctly sized - recalibrate, nothing else
- *      changes
- *   b) the board is genuinely a low-voltage bench inverter and the EMRAX is
- *      being spun well below its ratings - then these ranges are right and
- *      limits.h has to be built around the BOARD, not the motor
- *   c) the board is the HV traction inverter and the sense chain is
- *      undersized - a hardware problem, not a firmware one
- *
- * BOARD_UNKNOWN until someone answers that with a meter and a schematic.
+ * The CURRENT sensor is genuinely undersized: +/-200 A against a motor whose
+ * peak rating is 339 A peak. Continuous operation fits with margin; about
+ * half the machine peak torque does not, and that is a hardware limit rather
+ * than something firmware can work around. A +/-350 A part would cover it.
  */
 #define BOARD_MOTOR_NAME        "EMRAX 228 HV"
 #define BOARD_MOTOR_POLE_PAIRS  10U
