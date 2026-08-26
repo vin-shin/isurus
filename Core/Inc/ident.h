@@ -52,6 +52,38 @@
   *          cannot run away because the voltage that drives it changes sign
   *          before it can, which is a stronger guarantee than a current limit
   *          polled at 750 Hz.
+  *
+  *  ---- what the bench actually gave, 2026-08-25 --------------------------
+  *
+  *          Three consecutive runs on the 20-pole-pair bench motor at 28.4 V:
+  *
+  *              R   120, 120, 120 mOhm   against FOC_R_OHM  85 mOhm
+  *              L    43,  42,  43 uH     against FOC_L_H  54.3 uH
+  *
+  *          Repeatable to the last digit on R and to +/-1 uH on L, so this is
+  *          a real instrument. Whether it is an ACCURATE one is a separate
+  *          question, and for R the answer is already no:
+  *
+  *          **R IS A TERMINAL MEASUREMENT, NOT A WINDING ONE.** V/I at the
+  *          bridge includes the FET Rds(on) in the path and, dominantly, the
+  *          deadtime volt-second error - 185 ns at 30 kHz is 0.55% of the bus,
+  *          which at 2 A appears as tens of milliohms of resistance that is
+  *          not in the winding. That is most of the gap to 85 mOhm, and it is
+  *          why nothing here overwrites FOC_R_OHM.
+  *
+  *          The separation is straightforward and not yet done: the deadtime
+  *          error is a fixed VOLTAGE while the winding drop is proportional to
+  *          current, so measuring at two currents solves both at once -
+  *
+  *              V(I) = V_deadtime + R*I
+  *              R = (V2 - V1) / (I2 - I1)
+  *
+  *          which also yields the deadtime term that f->dtc_pm exists to
+  *          compensate and that has never been measured directly.
+  *
+  *          L's 43 uH against 54.3 is not explained by deadtime, which would
+  *          bias it the other way, and is left open. Note the 54.3 figure it
+  *          disagrees with has itself never been measured on this machine.
   ******************************************************************************
   */
 #ifndef IDENT_H

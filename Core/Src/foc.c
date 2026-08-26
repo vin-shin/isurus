@@ -259,6 +259,8 @@ void FOC_Init(FocState_t *f)
   f->fw_id_ma      = 0;
   f->fw_headroom_pm = 0;
   f->fw_last_demand = 0.0f;
+  f->ident_active   = 0U;
+  f->ident_vd       = 0.0f;
   f->dtc_hyst_ma = FOC_DTC_HYST_MA;
   f->vd_ff_pm = 0;
   f->vq_ff_pm = 0;
@@ -464,6 +466,20 @@ void FOC_Update(FocState_t *f, int32_t iu_ma, int32_t iw_ma, uint16_t enc_raw,
 
   f->vd = ed * f->kp + f->id_integ;
   f->vq = eq * f->kp + f->iq_integ;
+
+  /* Parameter identification takes the d axis outright. The integrators are
+   * held at zero rather than left alone: id_ref is 0 throughout while the
+   * measurement pushes 2 A through d, so an integrator that kept running
+   * would wind against that whole error and dump it when the override ended.
+   * One load and one branch when inactive, which is what this costs the
+   * 30 kHz loop the rest of the time. */
+  if (f->ident_active != 0U)
+  {
+    f->id_integ = 0.0f;
+    f->iq_integ = 0.0f;
+    f->vd       = f->ident_vd;
+    f->vq       = 0.0f;
+  }
 
   /* ---- cross-coupling decoupling and back-EMF feedforward ------------- *
    *

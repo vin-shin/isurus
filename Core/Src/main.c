@@ -39,6 +39,7 @@
 #include "limits.h"
 #include "trace.h"
 #include "drive.h"
+#include "ident.h"
 #include "led.h"
 #include <stdio.h>
 #include <stdarg.h>
@@ -136,6 +137,9 @@ volatile EncTelem_t g_enc = {0};
 
 /* Phase current sense telemetry, also read live over SWD. */
 volatile CSenseTelem_t g_cs = {0};
+
+/* Parameter identification state. Read r_mohm / l_uh over SWD after a run. */
+volatile IdentState_t g_ident = {0};
 volatile int32_t g_cs_init_rc = 0;
 
 /* HRTIM three-phase PWM telemetry. Outputs stay DISABLED at boot. */
@@ -403,6 +407,28 @@ void HRTIM1_TIMA_IRQHandler(void)
      * over here is what lets the current loop compensate transport delay
      * without standing up a second velocity estimator. */
     FOC_Update((FocState_t *)&g_foc, iu, iw, enc, g_pos.vel_rads);
+
+    /* Parameter identification, stepped from HERE so it sees the currents
+     * FOC_Update just computed. The voltage it returns is applied on the next
+     * tick - the same one-tick relationship the host tests close around, so
+     * what runs on the bench is what was measured against the model.
+     *
+     * It clears its own override on finishing or failing, so a completed or
+     * aborted measurement cannot leave the d axis owned by a routine nobody
+     * is watching. */
+    if (g_foc.ident_active != 0U)
+    {
+      Ident_Step((IdentState_t *)&g_ident, g_foc.id, g_foc.iq,
+                 (float)g_cs.vbus_mv * 0.001f);
+      g_foc.ident_vd = g_ident.vd_cmd;
+
+      if ((g_ident.phase == (uint32_t)IDENT_DONE) ||
+          (g_ident.phase == (uint32_t)IDENT_FAIL))
+      {
+        g_foc.ident_active = 0U;
+        g_foc.ident_vd     = 0.0f;
+      }
+    }
 
     MotorPwm_SetDutyNorm(g_foc.duty_u, g_foc.duty_v, g_foc.duty_w);
 

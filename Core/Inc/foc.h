@@ -464,6 +464,16 @@ typedef struct {
   int32_t  fw_id_ma;          /* SWD mirror of the applied id demand         */
   int32_t  fw_headroom_pm;    /* SWD mirror of vmax - |v| before the limiter */
   float    fw_last_demand;    /* |v| DEMANDED, before the limiter scaled it   */
+
+  /* Parameter identification override. At the END, as ever.
+   *
+   * When active the PI is bypassed entirely and ident.c owns the d-axis
+   * voltage. Bypassed rather than overridden AFTER the PI, because id_ref is
+   * zero while identification deliberately pushes 2 A through the d axis -
+   * the integrator would wind against that error for the whole measurement
+   * and dump it the instant the override ended. */
+  uint32_t ident_active;      /* 1 = ident.c owns vd/vq                      */
+  float    ident_vd;          /* the voltage it wants, per-unit of bus       */
 } FocState_t;
 
 void FOC_Init(FocState_t *f);

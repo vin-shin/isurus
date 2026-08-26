@@ -108,8 +108,10 @@ void Ident_Step(IdentState_t *s, float id_a, float iq_a, float vbus_v)
       s->phase  = (uint32_t)IDENT_L;
       s->tick   = 0U;
       s->vd_cmd = 0.0f;
-      s->i_min  =  1000.0f;
-      s->i_max  = -1000.0f;
+      s->i_min  = 0.0f;    /* previous sample */
+      s->i_max  = 0.0f;    /* sum of |di| */
+      s->r_acc  = 0.0f;    /* count */
+      s->r_n    = 0U;      /* no previous sample yet */
     }
     return;
   }
@@ -122,12 +124,27 @@ void Ident_Step(IdentState_t *s, float id_a, float iq_a, float vbus_v)
 
     if (s->tick < IDENT_L_SETTLE_TICKS) { return; }
 
-    if (id_a < s->i_min) { s->i_min = id_a; }
-    if (id_a > s->i_max) { s->i_max = id_a; }
+    /* MEAN per-tick slope, not min/max over the window.
+     *
+     * With the voltage reversing every tick the current is a triangle whose
+     * consecutive samples differ by the full swing, so |di| per tick IS the
+     * ripple - and averaging it rejects the sense noise that min/max
+     * deliberately seeks out. On hardware the extremal version read L 28% low
+     * against the datasheet-derived constant, because over 600 ticks the
+     * extremes it found were the noisiest samples rather than the ripple. */
+    if (s->r_n != 0U)          /* r_n reused here as "have a previous sample" */
+    {
+      float di = id_a - s->i_min;      /* i_min holds the previous sample */
+      if (di < 0.0f) { di = -di; }
+      s->i_max += di;                  /* i_max accumulates the sum */
+      s->r_acc += 1.0f;                /* r_acc counts them */
+    }
+    s->i_min = id_a;
+    s->r_n   = 1U;
 
     if (s->tick >= (IDENT_L_SETTLE_TICKS + IDENT_L_MEAS_TICKS))
     {
-      float ipp = s->i_max - s->i_min;
+      float ipp = (s->r_acc > 0.0f) ? (s->i_max / s->r_acc) : 0.0f;
       if (ipp < 0.01f)
       {
         /* No ripple to divide by. Either the bridge is not actually driving,
