@@ -263,42 +263,91 @@ extern "C" {
 #define BOARD_ENC_CS_PIN        GPIO_PIN_15
 
 /* ==========================================================================
- * 7. Motor
+ * 7. Motor - EMRAX 228 HV
  * ==========================================================================
- * From the board's defines.h and its motor_t initialiser. This is a DIFFERENT
- * motor from Mako Longfin's 20-pole-pair 12S machine, so none of the tuned
- * gains or limits carry over.
+ * Axial-flux surface-PM synchronous machine. Ten pole pairs, and that is now
+ * a datasheet fact rather than the inference recorded here earlier - the
+ * sibling-project argument (no motor has an odd pole count, and MiniFOCer
+ * sets N_POLES to 7) turned out to reach the right answer.
  *
- *   N_POLES  10          read as ten POLE PAIRS - see below
- *   kv       10.14
- *   R        23.22 mOhm
- *   L        255 uH
- *   max      5600 rpm    recovery threshold 5400
- *   UVLO     30 V, 5 V hysteresis
+ * Two independent confirmations that this is the machine the numbers below
+ * describe, both from foc.h's own HV analysis, which was written against this
+ * motor before this branch existed:
  *
- * Phase 7's ident.c measures R and L on the machine itself. Running it here is
- * the cheapest way to find out whether these numbers describe the motor that
- * is actually attached.
+ *   - it quotes 917 Hz electrical, and 10 pole pairs at 5500 rpm is 917 Hz
+ *   - it quotes w_e * Lq * iq = 441 V at 917 Hz and 300 A, which back-solves
+ *     to Lq = 255.1 uH - the 255 uH inherited from the board's defines.h
+ *
+ * So the inherited constants are EMRAX constants, not placeholders.
+ *
+ *   pole pairs   10
+ *   R            23.22 mOhm   (datasheet is ~18 mOhm cold; this is plausible
+ *                              as a warm figure, and ident.c measures it)
+ *   L            255 uH       (Ld = Lq, surface-PM, no saliency)
+ *   max          5600 rpm     recovery threshold 5400; the motor is rated to
+ *                             6500, so this is a system limit, not the motor's
+ *
+ * ---------------------------------------------------------------------------
+ * lambda_m is NOT settled, and the two available derivations disagree by 35%
+ * ---------------------------------------------------------------------------
+ *   from foc.h's HV analysis   346 V / 5762 rad/s        = 60.1 mWb
+ *   from kv = 10.14 rpm/V      Kt = 60/(2*pi*kv) = 0.942 = 44.4 mWb
+ *                              Nm/Arms, /(1.5*p*sqrt(2))
+ *
+ * Neither is trustworthy and the disagreement is the point. foc.h already
+ * carries the scar from exactly this: its bench lambda_m was once DERIVED
+ * from a nameplate Kv and came out 14% high, which put the feedforward alone
+ * above the entire modulation ceiling. The note there ends "For the EMRAX
+ * this is the same warning: measure lambda_m, do not take it from a
+ * nameplate."
+ *
+ * It matters more here than it did there. The back-EMF term is 58% of the bus
+ * at 917 Hz, so a 35% error in lambda_m is 20% of the whole supply left
+ * uncancelled in the feedforward.
+ *
+ * The measurement is the one foc.h describes: spin the motor with the
+ * feedforward disabled and read back what voltage the loop actually needed,
+ * at several speeds below the modulation ceiling. Until that exists there is
+ * no defensible number to put in FOC_LAMBDA_M_WB.
+ *
+ * ---------------------------------------------------------------------------
+ * !! THE SENSE RANGES DO NOT COVER THIS MOTOR !!
+ * ---------------------------------------------------------------------------
+ * Taking the scale factors in section 4 at face value against a 12-bit ADC:
+ *
+ *   current   0.04 A/LSB about the calibrated zero -> +/- 81.9 A
+ *   bus       0.05 V/LSB unipolar, no offset       ->   0 .. 204.8 V
+ *
+ * Against an EMRAX 228 HV:
+ *
+ *   continuous 100 A rms = 141 A peak   - already 1.7x over the sensor
+ *   peak       240 A rms = 339 A peak   - 4.1x over
+ *   HV bus     400-700 V DC typical     - 2-3.4x over the bus sense
+ *
+ * A saturating current sensor does not read high, it reads a ceiling, and a
+ * current loop fed a ceiling believes it has hit its target and stops pushing
+ * - while the real current keeps climbing. A saturating bus sense is worse,
+ * because FOC_SetGainsForVbus divides by it: clamped low, the loop gain comes
+ * out proportionally high, on the exact machine where the coupling terms are
+ * three quarters of the supply.
+ *
+ * Both of those are unsafe in the direction that hurts, so they are the first
+ * thing to settle - and neither is answerable from the source material, which
+ * has no schematic and no sensor part numbers. Three possibilities, and they
+ * want different work:
+ *
+ *   a) the scale factors are placeholders from a bench rig and the real
+ *      divider and sensor are correctly sized - recalibrate, nothing else
+ *      changes
+ *   b) the board is genuinely a low-voltage bench inverter and the EMRAX is
+ *      being spun well below its ratings - then these ranges are right and
+ *      limits.h has to be built around the BOARD, not the motor
+ *   c) the board is the HV traction inverter and the sense chain is
+ *      undersized - a hardware problem, not a firmware one
+ *
+ * BOARD_UNKNOWN until someone answers that with a meter and a schematic.
  */
-/* Ten POLE PAIRS, from N_POLES = 10 in the board's defines.h.
- *
- * The name says "poles" and the value is being read as pole pairs, which
- * needs justifying, because getting it wrong is a factor of two on the
- * electrical angle - and that does not fail loudly. It produces a motor that
- * turns weakly, draws current and heats up.
- *
- * The justification is the sibling project. MiniFOCer, by the same author and
- * with the same defines.h layout, sets N_POLES to 7. A motor cannot have an
- * odd number of poles - they come in north/south pairs - so in these projects
- * N_POLES has to mean pole pairs. Ten here is therefore ten pole pairs, or
- * twenty poles.
- *
- * That is an inference from a naming convention, not a datasheet, so it is
- * still on the list to confirm: bring-up step 6 in docs/PORT-POWER-UNIT.md
- * settles it in seconds, because an open-loop spin with the pole count wrong
- * gives visibly the wrong number of electrical revolutions per mechanical
- * one. Mako Longfin's motor had 20 pole pairs, so this is a real halving and
- * not a value that happens to carry over. */
+#define BOARD_MOTOR_NAME        "EMRAX 228 HV"
 #define BOARD_MOTOR_POLE_PAIRS  10U
 #define BOARD_MOTOR_KV          10.14f
 #define BOARD_MOTOR_R_OHM       0.02322f
