@@ -5,6 +5,19 @@ loops, the CAN interface, the SWD tooling and the host harness. It is meant to
 move between boards, so each hardware target gets its own branch named for the
 board rather than its own repository.
 
+> **This branch is a port in progress.** `power-unit` retargets the stack from
+> Mako Longfin to the **GR MotherFOCer** inverter board. The hardware map for
+> the new board is [`Core/Inc/board.h`](Core/Inc/board.h) and the plan, the
+> board-to-board deltas and the open questions are in
+> [`docs/PORT-POWER-UNIT.md`](docs/PORT-POWER-UNIT.md). **Everything below this
+> note still describes Mako Longfin** and will be rewritten as each module is
+> ported - read it as the source's current state, not as this board.
+>
+> Two differences are dangerous enough to repeat here: the gate enable is
+> active *high* on the new board and active *low* on the old one, and the new
+> bridge is complementary, so unlike Mako Longfin, disabling the HRTIM outputs
+> really does turn every FET off.
+
 The board here is **Mako Longfin** - an STM32G474RET6 driving a three-phase
 BLDC through a UCC21330 gate-driver stage, with an Allegro A1333 magnetic
 encoder for rotor feedback and a CAN control interface.
