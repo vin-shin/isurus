@@ -95,6 +95,7 @@ extern "C" {
 
 #include <stdint.h>
 #include "motor_pwm.h"   /* PWM_FREQ_HZ */
+#include "foc.h"        /* FOC_R_OHM, FOC_L_H, FOC_VBUS_NOM_MV */
 
 typedef enum {
   IDENT_IDLE = 0U,
@@ -107,8 +108,17 @@ typedef enum {
 /* Target current for the resistance measurement, A. Large enough that the
  * sense noise floor (about 20 mA rms on this board) is a small fraction of it,
  * small enough to sit far inside LIM_IQ_MAX_MA and to dissipate little in a
- * stationary winding. */
-#define IDENT_R_TARGET_A     2.0f
+ * stationary winding.
+ *
+ * Raised from 2 A for the EMRAX, because what this phase actually has to
+ * resolve is the VOLTAGE across the winding, and 2 A across 23.22 mOhm is
+ * 46 mV where the bench machine's 85 mOhm gave 170 mV. The sense is coarser
+ * here as well - roughly +/-82 A against +/-40 A - so the same target would
+ * have been about seven times worse off for signal-to-noise.
+ *
+ * 10 A restores 232 mV, better than the bench ever had, dissipates 2.3 W in a
+ * stationary EMRAX winding, and sits at 15% of LIM_IQ_MAX_MA. */
+#define IDENT_R_TARGET_A     10.0f
 
 /* Integral gain for the current regulator that holds id at the target while R
  * is measured, per-unit volts per amp of error per tick.
@@ -125,8 +135,20 @@ typedef enum {
  * Regulating instead is self-limiting: the voltage stops climbing when the
  * current arrives, and backs off if it overshoots. The gain is deliberately
  * slow enough that the loop is far below the L/R pole of the slowest machine,
- * so it cannot ring against a winding it was not tuned for. */
-#define IDENT_R_KI           3.0e-7f
+ * so it cannot ring against a winding it was not tuned for.
+ *
+ * !! The gain is in PER-UNIT volts, so it does not survive a change of bus on
+ * its own. !! 3.0e-7 was tuned against a 15.55 V bench supply; the same
+ * number on a 518 V pack is 33x the actual volts per amp of error, into a
+ * winding whose L/R pole is only 4.7x slower. That is a regulator handed 33x
+ * its designed loop gain, which is how a loop that was deliberately
+ * over-damped starts ringing.
+ *
+ * So it is derived from the physical gain that WAS validated - 0.14 volts per
+ * amp of error per second - and converted through the actual bus and tick
+ * rate. Any future board gets the same dynamics without anyone re-tuning. */
+#define IDENT_R_KI_V_PER_A_S 0.14f
+#define IDENT_R_KI           (IDENT_R_KI_V_PER_A_S / (float)PWM_FREQ_HZ                               / ((float)FOC_VBUS_NOM_MV * 1.0e-3f))
 
 /* There is deliberately NO settle between reaching the target current and
  * starting to average. One was added when this used a fixed voltage ramp,
@@ -137,14 +159,42 @@ typedef enum {
  * recovered resistance was identical on all three test machines, and no test
  * could be written that failed without it. */
 
-#define IDENT_R_AVG_TICKS    3000U    /* 100 ms at 30 kHz */
-#define IDENT_R_MAX_TICKS    150000U  /* 5 s - the regulator is slow on purpose */
+/* Derived from the rate rather than written in ticks, so the averaging window
+ * and the timeout stay 100 ms and 5 s whatever the switching frequency is.
+ * As literals these were 100 ms and 5 s at 30 kHz and became 150 ms and 7.5 s
+ * at 20 kHz - harmless here, but only by luck. */
+#define IDENT_R_AVG_TICKS    (PWM_FREQ_HZ / 10U)    /* 100 ms */
+/* 10 s, up from 5.
+ *
+ * The regulator's settling time is R / (volts per amp per second), so it
+ * scales with the winding being measured: 0.17 s for the EMRAX's 23 mOhm and
+ * 1.3 s for a 180 mOhm machine, which needs about 5.1 s to reach 98% of
+ * target and so just missed the old budget. Raising the timeout rather than
+ * the gain, because the gain is the one that was validated against real
+ * hardware and the one that can ring. Nothing is dissipated by waiting: the
+ * timeout only runs long when the current has NOT arrived. */
+#define IDENT_R_MAX_TICKS    (PWM_FREQ_HZ * 10U)    /* 10 s   */
 
 /* Injection amplitude for the inductance measurement, per-unit of bus.
- * 0.05 of a 22 V bus is 1.1 V, which across 54 uH for one 33 us tick is about
- * 0.7 A of ripple - well clear of the noise floor and well inside every
- * limit. */
-#define IDENT_L_V_PU         0.05f
+ *
+ * !! Per-unit again, and this one was actively dangerous on the new board. !!
+ * 0.05 pu of a 15.55 V bench bus across 54.3 uH for one 33 us tick is 0.48 A
+ * of ripple. The same 0.05 pu of a 518 V pack across 255 uH for one 50 us
+ * tick is 5.08 A - not a proportional increase, a tenfold one, because the
+ * bus rose 33x while the winding only got 4.7x more inductive. It lands just
+ * under IDENT_I_ABORT_A and the identification aborts, which is what the host
+ * tests showed: L came back as 0 uH and the phase as FAIL.
+ *
+ * Aborting is the good outcome. Had the abort band been a little wider this
+ * would have injected several amps of square wave into a traction machine
+ * because a constant expressed as a fraction went unexamined.
+ *
+ * Expressed as a target RIPPLE now, and converted to per-unit through the bus
+ * and the winding. FOC_L_H is the starting estimate for the very quantity
+ * being measured, which sounds circular and is not: it only has to be right
+ * enough to choose a safe excitation, and the measurement then corrects it. */
+#define IDENT_L_RIPPLE_A     1.0f
+#define IDENT_L_V_PU         (IDENT_L_RIPPLE_A * FOC_L_H * (float)PWM_FREQ_HZ                               / ((float)FOC_VBUS_NOM_MV * 1.0e-3f))
 /* The R phase leaves the winding carrying IDENT_R_TARGET_A, and that current
  * decays with L/R once the voltage goes to zero. Measure the ripple before it
  * has gone and the peak-to-peak reads the DECAY rather than the injection.
@@ -153,8 +203,11 @@ typedef enum {
 #define IDENT_L_MEAS_TICKS   600U
 
 /* Abort if the current ever leaves this band, A. Neither phase should come
- * close; if one does, something is not what this routine assumed. */
-#define IDENT_I_ABORT_A      6.0f
+ * close; if one does, something is not what this routine assumed.
+ *
+ * 20 A is 2x the R target and 20x the L ripple, and still under a third of
+ * LIM_IQ_MAX_MA. It was 6 A against a 2 A target - the same 3x ratio. */
+#define IDENT_I_ABORT_A      20.0f
 
 typedef struct {
   uint32_t phase;         /*  0  IdentPhase_t                              */

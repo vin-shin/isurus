@@ -183,28 +183,46 @@ anything. Nothing below step 3 should run with the bus energised.
    validated on the old board. `can_proto.h` did not change at all, which is
    what it was written for.
 
-7. **The motor constants, and `limits.h`** - the largest piece still open,
-   and the reason nothing above open-loop should be armed yet.
+7. **The motor constants, and `limits.h`** - **done, with one number still
+   unmeasured.** The machine is an EMRAX 228 HV on a 140s2p pack: 350 V empty,
+   518 V nominal, 588 V full.
 
-   `foc.h` carries `FOC_POLE_PAIRS`, `FOC_LAMBDA_M_WB`, the R and L its
-   current-loop gains were sized from, and `FOC_KT_NM_PER_A`. Every one of
-   them describes Mako Longfin's EaglePower 8309 on a 12S pack. They are
-   deliberately left as a coherent *set* rather than retargeted one at a
-   time, because they multiply: `FOC_KT_NM_PER_A` is
-   `1.5 * POLE_PAIRS * LAMBDA_M`, so a block holding this board's pole count
-   and the old board's flux linkage would describe no motor that has ever
-   existed. Coherently describing the wrong motor at least fails in a way
-   that has a name.
+   `foc.h` now describes it - 10 pole pairs, 23.22 mOhm, 255 uH, Ld = Lq
+   (surface-PM axial flux). The current-loop gains fell about 100x, almost all
+   of it the bus: 518 V against 15.55 V is a factor of 33 on its own. Keeping
+   1 kHz of bandwidth costs phase margin at the lower switching frequency -
+   61 degrees here against 70 on the bench - which is stated in the file
+   rather than inherited silently.
 
-   Doing it properly means deriving lambda_m from the new machine's kv - and
-   pinning down which kv convention 10.14 is expressed in - re-deriving the
-   PI gains from the new plant, and re-basing `test/host/pmsm.c`'s model to
-   match, since it is initialised to the 8309 today. `ident.c` measures R and
-   L on the machine directly and is the cheapest starting point.
+   **`FOC_LAMBDA_M_WB` is provisional and must be measured before the
+   feedforward or the decoupling is enabled.** Three derivations exist and
+   they span 35%: 60.1 mWb from `foc.h`'s own HV analysis, 54.4 mWb from
+   kv = 10.14 read as rpm per DC volt, 44.4 mWb from kv read the way EMRAX
+   publish it. The disagreement is entirely about which quantity "10.14
+   rpm/V" is per, and no algebra settles that. The lowest is chosen because
+   the error directions are not symmetric - too low and the integrator walks
+   out the remainder, too high and the feedforward alone exceeds the
+   modulation ceiling, which is the failure this file already recorded once at
+   14% on a machine where back-EMF was a much smaller share of the bus.
 
-   `limits.h` follows from the same work: every bound there is traceable to
-   the old motor, its sensors or its bench, and it should be rebuilt from
-   first principles rather than scaled.
+   `limits.h` is rebuilt: 588 V / 350 V pack bounds, 33600 deg/s (5600 rpm,
+   where 3600 deg/s would have capped this drive at 600 rpm), and
+   `LIM_ID_FW_MAX_MA` expressed as a third of `LIM_IQ_MAX_MA` - the ratio it
+   always was - rather than a literal that would have become 6% of the budget.
+
+   `ident.h`'s excitation had to be re-sized, and that is the finding worth
+   keeping: **its levels were per-unit of bus, and the bus went up 33x.**
+   `IDENT_L_V_PU = 0.05` was 0.48 A of ripple on the bench and is 5.08 A here
+   - not proportional, because the bus rose 33x while the winding only got
+   4.7x more inductive. It lands just under the abort band, so identification
+   simply failed. Both that and the R regulator's gain are now derived from
+   physical quantities (a target ripple current, and volts per amp per second)
+   and converted through the actual bus and tick rate.
+
+   Still open: characterising Lq against current and lambda_m against
+   temperature. `foc.h` names that as the deliverable that decides whether the
+   HV current loop works, and it is a motor-test-rig task rather than a
+   firmware one.
 
 8. **`led.c`, `docs/LED_CODES.md`** — no LED appears in the new pinout, and
    `led.c` drives GPIOB pins that this board configures as inputs. Either the
@@ -246,10 +264,22 @@ is unanswerable from the material available.
    wrong, an open-loop spin gives visibly the wrong number of electrical
    revolutions per mechanical one.
 
-4. **The current sense scale.** `0.04 A/LSB` and `0.05 V/LSB` are inherited
-   from the board's bring-up loop with no sensor part number and no divider
-   ratio behind them. The bus scale feeds the undervoltage trip, so it needs a
-   meter against it before anything depends on it.
+4. **The sense scales, and they are now known to be blocking.** `0.04 A/LSB`
+   and `0.05 V/LSB` are inherited from the board's bring-up loop with no
+   sensor part number and no divider ratio behind them. Against a 12-bit ADC
+   they imply **+/-81.9 A and 0..204.8 V**. The EMRAX wants 141 A peak
+   continuous and 339 A peak, on a pack that runs 350-588 V.
+
+   So as scaled, the bus sense cannot read even the empty pack, and the
+   current sense tops out below half the machine's continuous rating. Both
+   fail in the direction that hurts: a saturated current reading makes the
+   loop believe it has arrived while the real current climbs, and a saturated
+   bus reading is divided by in `FOC_SetGainsForVbus`, so clamped at 204.8 V
+   on a 518 V bus every gain comes out 2.5x too large.
+
+   Schematic pending. Until it lands, `LIM_IQ_MAX_MA` is set from the
+   *measurable* range rather than the motor - 65 A, 80% of the implied sensor
+   ceiling, which is 46 Arms and comfortably inside the machine either way.
 
 5. ~~**The RM44SI frame format.**~~ **Answered**, from the board's own SPI3
    interrupt handler: 14-bit frames, angle in the low 13 bits. What the 14th
@@ -260,9 +290,12 @@ is unanswerable from the material available.
    what is configured; the nanoseconds depend on the divider chain in RM0440
    and nobody here has confirmed it or seen it on a scope.
 
-7. **Which motor is actually attached**, and whether the inherited kv, R and
-   L describe it. `ident.c` answers R and L directly and is the cheapest thing
-   to run once the board powers up at all.
+7. ~~**Which motor is actually attached.**~~ **Answered: EMRAX 228 HV on a
+   140s2p pack.** The inherited constants turned out to be EMRAX constants
+   rather than placeholders - `foc.h`'s HV analysis quotes 917 Hz electrical
+   (10 pole pairs at 5500 rpm) and back-solves to exactly the 255 uH in the
+   board's own defines. R and L should still be confirmed with `ident.c` on
+   the machine, and lambda_m must be measured; see step 7 above.
 
 ## 5. Suggested bring-up order
 

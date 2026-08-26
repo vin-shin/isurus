@@ -27,47 +27,37 @@ extern "C" {
 
 #include "board.h"
 
-/* !! THE MOTOR CONSTANTS IN THIS FILE ARE NOT YET PORTED !!
+/* The motor is an EMRAX 228 HV on a 140s2p pack. See board.h section 7.
  *
- * FOC_POLE_PAIRS, FOC_LAMBDA_M_WB, the R and L the current-loop gains were
- * sized from, FOC_KT_NM_PER_A - all of them describe Mako Longfin's
- * EaglePower 8309 on a 12S pack. The GR MotherFOCer's machine is a different
- * motor: board.h section 7 has ten pole pairs against twenty, 23.22 mOhm
- * against 85, and 255 uH against 54.3.
+ * These constants used to describe Mako Longfin's EaglePower 8309 at 15.5 V
+ * and are now the EMRAX's, with one exception called out below: lambda_m is
+ * PROVISIONAL, because the two available derivations of it disagree by 35%
+ * and this file's own history says what happens when that number is taken
+ * from a nameplate rather than a measurement.
  *
- * They are left alone as a SET rather than retargeted one at a time, because
- * they multiply together. FOC_KT_NM_PER_A is 1.5 * POLE_PAIRS * LAMBDA_M, so
- * a block carrying this board's pole count and the old board's flux linkage
- * describes no motor that has ever existed - which is worse than coherently
- * describing the wrong one, because at least the wrong one fails in a way
- * that has a name.
- *
- * Retargeting them properly means deriving lambda_m from the new machine's
- * kv (and pinning down which kv convention that number is in), re-deriving
- * the PI gains from the new plant, and re-basing the host model's motor to
- * match. ident.c measures R and L on the machine directly and is the right
- * place to start. Until that is done, closed-loop current on this board is
- * bring-up step 8 in docs/PORT-POWER-UNIT.md and nothing above open-loop
- * should be armed.
- *
- * FOC_ENC_COUNTS is the exception and IS correct for this board. It
- * deliberately does not follow the sensor: the RM44SI is a 13-bit part, but
- * encoder.c widens its reading to the 15-bit convention before anything here
- * sees it, so this stays 32768. That is load-bearing - the `counts << 17`
- * CORDIC conversion below is exact only because a half turn lands exactly on
- * the Q31 sign bit. See encoder.h. */
-#define FOC_POLE_PAIRS      20U
+ * FOC_ENC_COUNTS is not a motor constant and does not follow the sensor. The
+ * RM44SI is a 13-bit part, but encoder.c widens its reading to the 15-bit
+ * convention before anything here sees it, so this stays 32768. That is
+ * load-bearing - the `counts << 17` CORDIC conversion below is exact only
+ * because a half turn lands exactly on the Q31 sign bit. See encoder.h. */
+#define FOC_POLE_PAIRS      BOARD_MOTOR_POLE_PAIRS
 #define FOC_ENC_COUNTS      32768U
 
 /* Current control gains, sized from the plant rather than guessed.
  *
  * Duty is normalised, so the plant from duty deviation u to phase current is
  *     I/u = Vbus / (R + sL)
- * with Vbus = 15.55 V (measured at the supply), R = 85 mohm, L = 54.3 uH.
+ * with Vbus = 518 V (140s at 3.7 V/cell nominal), R = 23.22 mohm,
+ * L = 255 uH.
  *
  * Placing the closed-loop bandwidth at 1 kHz with pole-zero cancellation:
- *     kp = w * L / Vbus = 6283 * 54.3e-6 / 15.55 = 0.022
- *     ki = w * R / Vbus = 6283 * 0.085  / 15.55 = 34
+ *     kp = w * L / Vbus = 6283 * 255e-6  / 518 = 0.00309
+ *     ki = w * R / Vbus = 6283 * 0.02322 / 518 = 0.282
+ *
+ * Both fell by roughly 100x from the bench values, and almost all of that is
+ * the bus: 518 V against 15.55 V is a factor of 33 on its own, and the rest
+ * is the winding. That is the plant being 33x stiffer to drive, not the
+ * controller being detuned.
  *
  * The first attempt used kp = 0.08, which meant a 1 A error commanded 1.49 V
  * across an 85 mohm winding - a demand for 17 A. Loop gain of ~17 oscillates
@@ -83,8 +73,8 @@ extern "C" {
  *
  * So these two are only the values for FOC_VBUS_NOM_MV. The live gains are
  * recomputed from the measured bus by FOC_SetGainsForVbus - see below. */
-#define FOC_KP_DEFAULT      0.022f
-#define FOC_KI_DEFAULT      34.0f
+#define FOC_KP_DEFAULT      0.00309f
+#define FOC_KI_DEFAULT      0.282f
 
 /* Plant parameters the gains are derived from, kept explicit so the bus-
  * voltage rescale can recompute rather than merely scale. */
@@ -171,66 +161,90 @@ extern "C" {
  *      the uncompensated frame error is 18.2 degrees, and sin(18.2) = 0.31 of
  *      a 441 V coupling term is not a rounding error. See foc.c.
  */
+/* 1 kHz, kept from the bench rather than re-chosen, and the phase margin it
+ * buys here is worth stating rather than inheriting.
+ *
+ * PM = 90 deg - w_bw * Td, and Td is FOC_DELAY_PERIODS / f_sw. At 20 kHz with
+ * the 5 us ADC lead that is 1.6 periods = 80 us, so
+ *
+ *     PM = 90 - 6283 * 80e-6 * 57.296 = 61 degrees
+ *
+ * against the 70 degrees the same number bought at 30 kHz. 61 is acceptable
+ * and is roughly what the table above predicts for 20 kHz. If the switching
+ * frequency is ever raised this recovers on its own; if margin is wanted
+ * sooner, this is the number to lower, not the gains. */
 #define FOC_BW_RADS         6283.0f    /* 1 kHz target bandwidth       */
-#define FOC_R_OHM           0.085f     /* phase resistance             */
-#define FOC_L_H             54.3e-6f   /* phase inductance             */
-#define FOC_VBUS_NOM_MV     15550      /* bus the defaults were sized at */
+#define FOC_R_OHM           BOARD_MOTOR_R_OHM   /* phase resistance    */
+#define FOC_L_H             BOARD_MOTOR_L_H     /* phase inductance    */
+
+/* 140s at 3.7 V/cell nominal. The pack runs 350 V (2.5 V/cell) to 588 V
+ * (4.2 V/cell), so this is the middle of a range the loop will see all of -
+ * which is exactly why FOC_SetGainsForVbus recomputes from the measured bus
+ * rather than trusting this. A 1.68x swing in plant gain across a discharge
+ * is not something a fixed kp survives. */
+#define FOC_VBUS_NOM_MV     518000     /* bus the defaults were sized at */
 
 /* d- and q-axis inductances, for the decoupling terms.
  *
- * Both are FOC_L_H. The bench motor is an EaglePower 8309, a surface-magnet
- * outrunner, so the magnets sit in the airgap and the rotor presents the same
- * reluctance whichever way it is pointing - Ld = Lq, and there is no
- * reluctance torque to chase. Named separately anyway because the decoupling
- * equations are written in terms of both, and because the EMRAX 228 is also
- * surface-PM (axial flux) so the same equality carries over rather than being
- * a bench-only simplification that has to be revisited.
+ * Both are FOC_L_H. The EMRAX 228 is a surface-PM axial-flux machine, so the
+ * rotor presents the same reluctance whichever way it is pointing - Ld = Lq,
+ * and there is no reluctance torque to chase. The bench motor before it was
+ * also surface-PM, so this equality carries over rather than being a
+ * bench-only simplification that had to be revisited.
+ *
+ * What does NOT carry over is treating them as constants. The analysis above
+ * puts a 20% Lq error at 88 V uncancelled, 15% of the bus, and 20% is what
+ * saturation does to an axial-flux machine at 300 A. Characterising Lq
+ * against current is named there as the deliverable that decides whether the
+ * HV current loop works.
  *
  * If a motor with saliency is ever fitted, these are the two numbers to
  * measure, and MTPA stops being id = 0 - see the note in phase 5. */
 #define FOC_LD_H            FOC_L_H
 #define FOC_LQ_H            FOC_L_H
 
-/* Rotor flux linkage, Wb (peak, per phase). MEASURED, not derived.
+/* Rotor flux linkage, Wb (peak, per phase).
  *
- * 2.68 mWb, measured on the bench 2026-08-25 by spinning the motor with the
- * feedforward disabled and reading back what voltage the loop actually needed:
+ * !! PROVISIONAL. DERIVED, NOT MEASURED. The feedforward and the decoupling
+ * must stay disabled until this has been measured on the machine. !!
  *
- *     vq * Vbus = w_e * lambda_m + R * iq    (steady state, id ~ 0)
+ * Three derivations exist and they do not agree:
  *
- * Five operating points, of which the three below the modulation ceiling are
- * the trustworthy ones:
+ *   60.1 mWb   foc.h's own HV analysis above quotes w_e*lambda_m = 346 V at
+ *              917 Hz; 346 / 5762 rad/s = 60.1 mWb
+ *   54.4 mWb   from kv = 10.14 read as rpm per DC volt, i.e. equating
+ *              Vdc = sqrt(3) * lambda * w_e at the modulation ceiling
+ *   44.4 mWb   from kv = 10.14 read the way EMRAX publish it, Kt[Nm/Arms] =
+ *              60/(2*pi*kv) = 0.942, then lambda = Kt/(1.5*p*sqrt(2))
  *
- *     iq_cmd   vq(norm)   iq(mA)   w_e     lambda_m
- *      0.30     0.0704      299     623     2.639 mWb
- *      0.45     0.1551      587    1344     2.697 mWb
- *      0.60     0.2344      575    2021     2.727 mWb
+ * A 35% spread. The disagreement is entirely about which quantity "10.14
+ * rpm/V" is per - DC bus volt, line-line RMS volt, or phase volt - and no
+ * amount of algebra settles that from here.
  *
- * Spread about 2%. Kt = 1.5 * p * lambda_m = 0.080 N.m per amp of iq.
+ * The LOWEST is chosen deliberately, because the two directions are not
+ * symmetric. Too low and the feedforward under-compensates, leaving the
+ * integrator to walk out the remainder - slow, visible, harmless. Too high
+ * and the feedforward demands more than the modulation ceiling allows, which
+ * is precisely the failure this file already recorded once: a nameplate-
+ * derived lambda_m 14% too high put the feedforward alone above vmax, and the
+ * 0.82 V of excess drove 9.6 A through the winding on its own. On a machine
+ * where back-EMF is 58% of the bus, the same mistake is not 0.82 V.
  *
- * This replaces 3.063 mWb, which was DERIVED from the nameplate KV90 as
- * 60/(2*pi*sqrt(3)*p*Kv) and was 14% too high. The measurement corresponds to
- * Kv = 103 rather than 90, which is an ordinary amount for a hobby motor
- * nameplate to be out by.
+ * HOW TO MEASURE IT, from the bench procedure that produced the last one:
+ * spin the motor with the feedforward disabled and read back what voltage the
+ * loop actually needed,
  *
- * How that error survived is worth recording, because the check that should
- * have caught it did not. Reading g_foc.vq_ff_pm back off the target and
- * finding it matched w_e*lambda_m/Vbus to 1% proved nothing at all: the
- * firmware COMPUTES vq_ff from this constant, so that comparison can only
- * ever confirm the arithmetic, never the number. A parameter that describes
- * the motor has to be measured against the MOTOR - here, against the voltage
- * the loop demands when it is left to find that voltage by itself.
+ *     vq * Vbus = w_e * lambda_m + R * iq     (steady state, id ~ 0)
  *
- * What the error cost: at 2133 rad/s the feedforward came out at 0.276 of the
- * bus against a vmax of 0.25, so the feedforward ALONE exceeded the entire
- * modulation ceiling. The 0.82 V of excess drives 9.6 A through an 85 mohm
- * winding on its own. See the anti-windup comment in foc.c for the second
- * half of that failure.
+ * at several speeds below the modulation ceiling. Three trustworthy points
+ * gave 2% spread last time.
  *
- * For the EMRAX this is the same warning as the bandwidth derivation below:
- * measure lambda_m, do not take it from a nameplate. The back-EMF term there
- * is 58% of the bus, so 14% of it is 8% of the entire supply. */
-#define FOC_LAMBDA_M_WB     2.68e-3f
+ * And the trap that let the 14% error survive, which applies unchanged here:
+ * reading g_foc.vq_ff_pm back off the target and finding it matches
+ * w_e*lambda_m/Vbus proves NOTHING. The firmware computes vq_ff from this
+ * constant, so that comparison can only ever confirm the arithmetic. A
+ * parameter that describes the motor has to be measured against the motor. */
+#define FOC_LAMBDA_M_WB     44.4e-3f
 
 /* ---- torque interface ---------------------------------------------------
  *
@@ -363,8 +377,21 @@ extern "C" {
  * and the gains are left alone: a bus of 0 would otherwise divide to infinity
  * and put NaN into the duty registers, which is the single worst thing that
  * can reach a motor bridge. */
-#define FOC_VBUS_MIN_MV     6000
-#define FOC_VBUS_MAX_MV     60000
+/* Sanity bounds on a bus reading before FOC_SetGainsForVbus will divide by
+ * it. Not pack ratings - the pack runs 350..588 V and its discharge floor is
+ * the BMS's business, not this loop's.
+ *
+ * The floor stays low on purpose so bring-up on a lab supply still rescales
+ * the gains rather than silently keeping the 518 V defaults, which on a 40 V
+ * bench supply would be 13x too small and look like a loop that does nothing.
+ *
+ * The ceiling was 60000 - 60 V - which on this pack would have rejected every
+ * single real reading. The gains would then never have been rescaled at all,
+ * and the failure is silent: FOC_SetGainsForVbus just returns. 700 V is above
+ * the pack's 588 V full charge with room for a regen transient, and is the
+ * EMRAX HV winding's own rated maximum. */
+#define FOC_VBUS_MIN_MV     20000
+#define FOC_VBUS_MAX_MV     700000
 
 /* Modulation ceiling, as a fraction of the available bus voltage.
  *

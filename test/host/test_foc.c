@@ -30,6 +30,21 @@
 #define TS      SIM_TS
 #define TWO_PI  SIM_TWO_PI
 
+/* Base speed: the electrical rate at which back-EMF alone consumes the whole
+ * modulation ceiling.
+ *
+ * Every field-weakening test has to sit ABOVE this to exercise anything, and
+ * where it falls is a property of the machine and the bus, not a constant.
+ * These tests used to name electrical speeds outright - 2400 and 3200 rad/s -
+ * which were correct for a 2.68 mWb motor on 24 V, where base speed is
+ * 2239 rad/s. On a 44.4 mWb machine on 518 V base speed is 2916 rad/s, so
+ * 2400 is BELOW it, the weakening loop correctly does nothing, and the test
+ * reports that as a failure of the firmware.
+ *
+ * The multipliers below preserve the ratios the original speeds had to base
+ * speed, so each test still probes the same part of the curve. */
+#define WE_BASE  (((double)FOC_VMAX_DEFAULT * ((double)FOC_VBUS_NOM_MV * 1e-3)) / (double)FOC_LAMBDA_M_WB)
+
 static int g_pass = 0, g_fail = 0;
 
 static void check(int ok, const char *what, const char *detail)
@@ -85,7 +100,19 @@ static void test_torque_sign(void)
 
   char d[160];
   snprintf(d, sizeof d, "commanded iq_ref = +1 A, rotor ended at %.2f rad/s", s.m.omega_m);
-  check(s.m.omega_m > 1.0, "positive iq_ref accelerates the rotor forwards", d);
+  /* Against the ideal rigid-body result rather than a fixed rad/s.
+   *
+   * This was `> 1.0`, which was a comfortable margin on a 1e-4 kg.m^2
+   * outrunner and is unreachable on an EMRAX rotor 421x heavier - the same
+   * torque simply produces 421x less acceleration in the same 50 ms. A
+   * literal here tests the inertia, not the control. Half of ideal leaves
+   * room for the current loop's own rise time while still catching a torque
+   * that is absent, backwards, or an order of magnitude wrong. */
+  double ideal = (1.5 * (double)FOC_POLE_PAIRS * (double)FOC_LAMBDA_M_WB
+                  * 1.0 / s.m.J) * 0.05;
+  snprintf(d, sizeof d, "%.3f rad/s against an ideal %.3f", s.m.omega_m, ideal);
+  check(s.m.omega_m > 0.5 * ideal,
+        "positive iq_ref accelerates the rotor forwards", d);
 }
 
 /* And the regression this repo actually shipped once: a 90 degree electrical
@@ -407,7 +434,7 @@ static void fw_settle(Sim_t *s, double we, float iq_ref, int fw,
 static void test_fw_inert_below_saturation(void)
 {
   Sim_t s; double id, iq, v;
-  fw_settle(&s, 1800.0, 4.0f, 1, &id, &iq, &v);
+  fw_settle(&s, WE_BASE * 0.80, 4.0f, 1, &id, &iq, &v);
   char d[192];
   snprintf(d, sizeof(d), "id %.3f A at |v| %.3f against vmax %.3f",
            id, v, (double)s.f.vmax);
@@ -420,8 +447,8 @@ static void test_fw_inert_below_saturation(void)
 static void test_fw_recovers_torque_when_saturated(void)
 {
   Sim_t s; double id0, iq0, v0, id1, iq1, v1;
-  fw_settle(&s, 2300.0, 4.0f, 0, &id0, &iq0, &v0);
-  fw_settle(&s, 2300.0, 4.0f, 1, &id1, &iq1, &v1);
+  fw_settle(&s, WE_BASE * 1.03, 4.0f, 0, &id0, &iq0, &v0);
+  fw_settle(&s, WE_BASE * 1.03, 4.0f, 1, &id1, &iq1, &v1);
 
   char d[224];
   snprintf(d, sizeof(d), "off: id %.3f iq %.3f | on: id %.3f iq %.3f (|v| %.3f)",
@@ -444,7 +471,7 @@ static void test_fw_never_strengthens(void)
   {
     /* Sweep through the saturation boundary in both directions, so the loop
      * is pushed to wind up and unwind. */
-    double we = 1500.0 + 1200.0 * (double)i / (double)n;
+    double we = WE_BASE * (0.67 + 0.54 * (double)i / (double)n);
     s.m.omega_m = we / (double)s.m.p;
     sim_step(&s, 0.0);
     if ((double)s.f.id_ref > worst) { worst = (double)s.f.id_ref; }
@@ -462,11 +489,28 @@ static void test_fw_respects_the_magnitude_bound(void)
   Sim_t s;
   sim_init(&s);
   s.f.enabled = 1; s.f.iq_ref = 12.0f; s.f.fw_enable = 1U;
+
+  /* Set the bound WELL BELOW where the loop would naturally settle, so the
+   * clamp is the binding constraint and not a bystander.
+   *
+   * This is the fix for a real hole. The test used to rely on a hardcoded
+   * 3200 rad/s driving the loop past LIM_ID_FW_MAX_MA, which was true of a
+   * 2.68 mWb motor on 24 V with a 4 A bound. On this machine the loop settles
+   * around 14 A against a 21.7 A bound, so the clamp never fires - and the
+   * mutant that DELETES the clamp passed the whole suite. A bound that is
+   * never reached tests nothing.
+   *
+   * Pinning it here rather than chasing a speed that happens to overshoot
+   * keeps the test about the clamp, on any machine. fw_ki comes from
+   * LIM_ID_FW_MAX_MA rather than from this field, so the wind rate is
+   * untouched and the loop still drives hard at the lower bound. */
+  s.f.fw_id_max = 5.0f;
+
   double most = 0.0;
   long n = lround(0.30 / TS);
   for (long i = 0; i < n; i++)
   {
-    s.m.omega_m = 3200.0 / (double)s.m.p;     /* far beyond base speed */
+    s.m.omega_m = (WE_BASE * 1.43) / (double)s.m.p;   /* well past base */
     sim_step(&s, 0.0);
     if (-(double)s.f.id_ref > most) { most = -(double)s.f.id_ref; }
   }
@@ -486,7 +530,7 @@ static void test_fw_gives_back_the_axis_when_disabled(void)
   s.f.enabled = 1; s.f.iq_ref = 4.0f; s.f.fw_enable = 1U;
   for (long i = 0; i < lround(0.10 / TS); i++)
   {
-    s.m.omega_m = 2400.0 / (double)s.m.p;
+    s.m.omega_m = (WE_BASE * 1.07) / (double)s.m.p;
     sim_step(&s, 0.0);
   }
   float wound = s.f.id_ref;

@@ -1,28 +1,41 @@
 #include "pmsm.h"
+#include "foc.h"
 #include <math.h>
 
 #define TWO_PI  6.283185307179586
 
 void Pmsm_Init(Pmsm_t *m)
 {
-  /* The bench machine: EaglePower 8309, values from foc.h. lambda_m is the
-   * MEASURED 2.68 mWb, not the nameplate-derived figure that was 14% high -
-   * a model carrying the same wrong constant as the firmware would agree with
-   * it perfectly and prove nothing. */
-  m->R        = 0.085;
-  m->Ld       = 54.3e-6;
-  m->Lq       = 54.3e-6;
-  m->lambda_m = 2.68e-3;
-  m->p        = 20;
+  /* The machine: EMRAX 228 HV on a 140s2p pack, values from foc.h.
+   *
+   * These are deliberately taken FROM the firmware's constants rather than
+   * written out again, so the two cannot drift apart - a mismatch here does
+   * not look like a harness bug, it looks like a control bug, which is
+   * exactly how a 20 kHz firmware against a hardcoded 30 kHz simulator once
+   * presented as a 45% inductance error.
+   *
+   * The caveat that applied to the bench machine applies here too, and more
+   * so. lambda_m in foc.h is PROVISIONAL - derived, not measured, and the
+   * three available derivations span 35%. A model carrying the same
+   * unverified constant as the firmware will agree with it perfectly and
+   * prove nothing about the motor. What these tests still check is that the
+   * CONTROL is right given a machine; they cannot check that the machine is
+   * the one on the dyno. Only a bench measurement does that. */
+  m->R        = FOC_R_OHM;
+  m->Ld       = FOC_LD_H;
+  m->Lq       = FOC_LQ_H;
+  m->lambda_m = FOC_LAMBDA_M_WB;
+  m->p        = FOC_POLE_PAIRS;
 
-  /* Inertia is an estimate, not a measurement - an outrunner of this size is
-   * order 1e-4 kg.m^2. It sets how fast speed changes, so it matters for
-   * anything testing the velocity path and not at all for current-loop
-   * tests, which are three orders of magnitude faster. */
-  m->J = 1.0e-4;
-  m->B = 1.0e-5;
+  /* Inertia is an estimate, not a measurement. The EMRAX 228's rotor is
+   * quoted around 0.0421 kg.m^2 - two and a half orders of magnitude above
+   * the outrunner this harness used to model, which matters for the velocity
+   * path and not at all for current-loop tests three orders of magnitude
+   * faster. */
+  m->J = 4.21e-2;
+  m->B = 1.0e-3;
 
-  m->vbus = 24.0;
+  m->vbus = (double)FOC_VBUS_NOM_MV / 1000.0;
 
   m->id = m->iq = 0.0;
   m->theta_m = 0.0;
