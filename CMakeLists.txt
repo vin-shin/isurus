@@ -114,6 +114,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     ${CMAKE_SOURCE_DIR}/Core/Src/position.c
     ${CMAKE_SOURCE_DIR}/Core/Src/can.c
     ${CMAKE_SOURCE_DIR}/Core/Src/haptic.c
+    ${CMAKE_SOURCE_DIR}/Core/Src/ident.c
 )
 
 # The 30 kHz control ISR is a hard real-time deadline, not a hot loop to be

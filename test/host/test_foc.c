@@ -20,6 +20,7 @@
 #include "limits.h"
 #include "main.h"
 #include "pmsm.h"
+#include "ident.h"
 #include "sim.h"
 
 #include <math.h>
@@ -502,6 +503,102 @@ static void test_fw_gives_back_the_axis_when_disabled(void)
         "disabling field weakening hands the d axis back", d);
 }
 
+
+/* ---- parameter identification -------------------------------------------- */
+
+/* Close the identifier around the PMSM model and let it run to completion.
+ * The model's R and L are known constants, so this asks the only question
+ * that matters of an identification routine: does it recover the parameters
+ * of a machine whose parameters we already know? */
+static IdentState_t run_ident(Pmsm_t *m, long max_ticks)
+{
+  IdentState_t s;
+  Ident_Start(&s, (uint32_t)IDENT_R);
+  for (long i = 0; i < max_ticks; i++)
+  {
+    if (s.phase == (uint32_t)IDENT_DONE || s.phase == (uint32_t)IDENT_FAIL) { break; }
+    /* Currents are read BEFORE the voltage is applied, which is the ordering
+     * the target has: the ADC samples ahead of the ISR that computes. */
+    Ident_Step(&s, (float)m->id, (float)m->iq, (float)m->vbus);
+    Pmsm_Step(m, s.vd_cmd * m->vbus, s.vq_cmd * m->vbus, 0.0, TS);
+  }
+  return s;
+}
+
+static void test_ident_recovers_resistance(void)
+{
+  Pmsm_t m; Pmsm_Init(&m);
+  IdentState_t s = run_ident(&m, 200000);
+
+  double want = m.R * 1000.0;
+  double err  = 100.0 * ((double)s.r_mohm - want) / want;
+  char d[192];
+  snprintf(d, sizeof(d), "measured %ld mOhm against a model of %.1f mOhm (%+.1f%%), phase %lu",
+           (long)s.r_mohm, want, err, (unsigned long)s.phase);
+  check(s.phase == (uint32_t)IDENT_DONE && fabs(err) < 5.0,
+        "identification recovers the model's phase resistance", d);
+}
+
+static void test_ident_recovers_inductance(void)
+{
+  Pmsm_t m; Pmsm_Init(&m);
+  IdentState_t s = run_ident(&m, 200000);
+
+  double want = m.Ld * 1e6;
+  double err  = 100.0 * ((double)s.l_uh - want) / want;
+  char d[192];
+  snprintf(d, sizeof(d), "measured %ld uH against a model of %.1f uH (%+.1f%%), phase %lu",
+           (long)s.l_uh, want, err, (unsigned long)s.phase);
+  check(s.phase == (uint32_t)IDENT_DONE && fabs(err) < 10.0,
+        "identification recovers the model's phase inductance", d);
+}
+
+static void test_ident_tracks_a_different_machine(void)
+{
+  /* The real test of an identifier is a machine it was not tuned against. */
+  Pmsm_t m; Pmsm_Init(&m);
+  m.R  = 0.180;
+  m.Ld = 120e-6; m.Lq = 120e-6;
+  IdentState_t s = run_ident(&m, 400000);
+
+  double re = 100.0 * ((double)s.r_mohm - m.R * 1000.0) / (m.R * 1000.0);
+  double le = 100.0 * ((double)s.l_uh   - m.Ld * 1e6)   / (m.Ld * 1e6);
+  char d[224];
+  snprintf(d, sizeof(d), "R %ld mOhm (%+.1f%%), L %ld uH (%+.1f%%) against 180 mOhm / 120 uH",
+           (long)s.r_mohm, re, (long)s.l_uh, le);
+  check(s.phase == (uint32_t)IDENT_DONE && fabs(re) < 5.0 && fabs(le) < 10.0,
+        "identification tracks a machine with different R and L", d);
+}
+
+static void test_ident_keeps_the_rotor_still(void)
+{
+  Pmsm_t m; Pmsm_Init(&m);
+  (void)run_ident(&m, 200000);
+  char d[176];
+  snprintf(d, sizeof(d), "rotor moved %.6f rad, omega %.6f rad/s",
+           m.theta_m, m.omega_m);
+  /* d-axis current makes no torque on a surface-magnet machine. That is what
+   * lets this run with no dyno, no brake and no load - and if it were ever
+   * false, the routine would be spinning an unloaded motor open-loop. */
+  check(fabs(m.omega_m) < 1e-6 && fabs(m.theta_m) < 1e-6,
+        "identification never turns the shaft", d);
+}
+
+static void test_ident_aborts_on_overcurrent(void)
+{
+  IdentState_t s;
+  Ident_Start(&s, (uint32_t)IDENT_R);
+  Ident_Step(&s, IDENT_I_ABORT_A + 1.0f, 0.0f, 24.0f);
+  char d[160];
+  snprintf(d, sizeof(d), "phase %lu, fail %lu, vd %.4f",
+           (unsigned long)s.phase, (unsigned long)s.fail_code, (double)s.vd_cmd);
+  /* There is no hardware overcurrent path on this board, so the routine has
+   * to be its own. */
+  check(s.phase == (uint32_t)IDENT_FAIL &&
+        s.fail_code == IDENT_FAIL_OVERCUR && s.vd_cmd == 0.0f,
+        "identification aborts and drops the voltage on overcurrent", d);
+}
+
 int main(void)
 {
   printf("\nfoc.c host tests\n----------------\n");
@@ -522,6 +619,11 @@ int main(void)
   test_fw_never_strengthens();
   test_fw_respects_the_magnitude_bound();
   test_fw_gives_back_the_axis_when_disabled();
+  test_ident_recovers_resistance();
+  test_ident_recovers_inductance();
+  test_ident_tracks_a_different_machine();
+  test_ident_keeps_the_rotor_still();
+  test_ident_aborts_on_overcurrent();
   printf("----------------\n%d passed, %d failed\n\n", g_pass, g_fail);
   return g_fail == 0 ? 0 : 1;
 }

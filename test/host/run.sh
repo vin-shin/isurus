@@ -33,7 +33,7 @@ command -v "$CC" >/dev/null 2>&1 || {
 }
 
 SRC=( "$ROOT/test/host/test_foc.c" "$ROOT/test/host/pmsm.c"
-      "$ROOT/test/host/cordic_model.c" )
+      "$ROOT/test/host/cordic_model.c" "$ROOT/Core/Src/ident.c" )
 INC=( -I"$ROOT/test/host/shim" -I"$ROOT/Core/Inc" -I"$ROOT/test/host" )
 
 # -Werror here too: the tests are code, and they were already caught once
@@ -151,10 +151,26 @@ if [ "${1:-}" = "--mutants" ]; then
       -e 's|    if (f->id_ref < -f->fw_id_max) { f->id_ref = -f->fw_id_max; }||' \
       "$ROOT/Core/Src/foc.c" > "$OUT/mut_fwbound.c"
 
-  for m in pi aw torqid torqecho torqkt fwpost fwsign fwbound; do
+  # 16. Measure the inductance ripple without letting the resistance phase's
+  #     current decay first, so the peak-to-peak reads the decay instead.
+  sed 's|    if (s->tick < IDENT_L_SETTLE_TICKS) { return; }||' \
+      "$ROOT/Core/Src/ident.c" > "$OUT/mut_identdec.c"
+  # 17. Drop the overcurrent abort. There is no hardware overcurrent path on
+  #     this board, so this routine is its own protection.
+  sed 's|    ident_stop(s, (uint32_t)IDENT_FAIL, IDENT_FAIL_OVERCUR);||' \
+      "$ROOT/Core/Src/ident.c" > "$OUT/mut_identabort.c"
+
+  for m in pi aw torqid torqecho torqkt fwpost fwsign fwbound identdec identabort; do
     # Mutants are built without -Werror: they leave variables unused by
     # construction, and that is not what is being checked.
-    "$CC" -std=gnu11 -O2 "${INC[@]}" "${SRC[@]}" "$OUT/mut_$m.c" \
+    # ident mutants stand in for ident.c; the rest stand in for foc.c.
+    # Swap whichever file the mutant replaces out of the source list.
+    case "$m" in
+      ident*) MSRC=( "$ROOT/test/host/test_foc.c" "$ROOT/test/host/pmsm.c"
+                     "$ROOT/test/host/cordic_model.c" "$ROOT/Core/Src/foc.c" ) ;;
+      *)      MSRC=( "${SRC[@]}" ) ;;
+    esac
+    "$CC" -std=gnu11 -O2 "${INC[@]}" "${MSRC[@]}" "$OUT/mut_$m.c" \
           -o "$OUT/mut_$m.exe" -lm 2>/dev/null
     if "$OUT/mut_$m.exe" >"$OUT/mut_$m.log" 2>&1; then
       echo "  NOT CAUGHT  mutant '$m' passed the suite - the tests are too weak"
