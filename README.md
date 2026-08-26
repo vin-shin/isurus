@@ -141,4 +141,6 @@ cmake                toolchain files
 - [docs/BENCH-2026-08-25.md](docs/BENCH-2026-08-25.md) - simulator vs bench
   validation of the current loop, and an inductance hypothesis that the
   measurement refuted
+- [docs/OPEN-ITEMS.md](docs/OPEN-ITEMS.md) - what is still open, and the
+  limits of the bench and the simulator that shape it
 - [CLAUDE.md](CLAUDE.md) - working conventions for this repo

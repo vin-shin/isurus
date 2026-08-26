@@ -12,7 +12,7 @@ the firmware keeps designing its gains and its w_e*Lq*iq feedforward for the
 value it was given while the plant behaves like a motor that is wrong by that
 factor. That is exactly the error the HV build is exposed to: at 917 Hz and
 300 A the feedforward term is 441 V of a 600 V bus, so being wrong about Lq is
-not survivable there, and prompt.md section E names characterising it as the
+not survivable there, and docs/OPEN-ITEMS.md section 6 names characterising it as the
 largest open risk.
 
 Why the DECOUPLING BENEFIT is the discriminator, and not the step response:
