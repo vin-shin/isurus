@@ -134,7 +134,24 @@ if [ "${1:-}" = "--mutants" ]; then
   sed 's|  return iq_a \* FOC_KT_NM_PER_A;|  return iq_a * FOC_KT_NM_PER_A * 2.0f;|' \
       "$ROOT/Core/Src/foc.c" > "$OUT/mut_torqkt.c"
 
-  for m in pi aw torqid torqecho torqkt; do
+  # 13. Field weakening fed the POST-limiter magnitude. The limiter scales
+  #     vd/vq down to vmax, so the headroom reads zero rather than negative
+  #     and the loop never engages at all - it compiles, it runs, it does
+  #     nothing, and only a saturated operating point shows it.
+  sed 's|    float headroom = f->vmax - vmag;|    float headroom = f->vmax - fm_sqrtf(f->vd * f->vd + f->vq * f->vq);|' \
+      "$ROOT/Core/Src/foc.c" > "$OUT/mut_fwpost.c"
+  # 14. Drop the upper clamps, so weakening can drive id POSITIVE - spending
+  #     current to strengthen the field and make the saturation worse.
+  sed -e 's|    if (f->fw_integ > 0.0f)          { f->fw_integ = 0.0f; }||' \
+      -e 's|    if (f->id_ref > 0.0f)          { f->id_ref = 0.0f; }||' \
+      "$ROOT/Core/Src/foc.c" > "$OUT/mut_fwsign.c"
+  # 15. Drop the magnitude bound, so the weakening loop can claim the whole
+  #     current budget that iq needs to share with it.
+  sed -e 's|    if (f->fw_integ < -f->fw_id_max) { f->fw_integ = -f->fw_id_max; }||' \
+      -e 's|    if (f->id_ref < -f->fw_id_max) { f->id_ref = -f->fw_id_max; }||' \
+      "$ROOT/Core/Src/foc.c" > "$OUT/mut_fwbound.c"
+
+  for m in pi aw torqid torqecho torqkt fwpost fwsign fwbound; do
     # Mutants are built without -Werror: they leave variables unused by
     # construction, and that is not what is being checked.
     "$CC" -std=gnu11 -O2 "${INC[@]}" "${SRC[@]}" "$OUT/mut_$m.c" \

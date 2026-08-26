@@ -125,6 +125,22 @@ extern "C" {
 #define LIM_VKP_X1000_MAX       20000
 #define LIM_VKI_X1000_MAX       200000
 
+/* ---- field weakening ---------------------------------------------------- */
+
+/* How negative id may be driven, mA. Field weakening spends d-axis current to
+ * buy SPEED, not torque: it produces no torque on a surface-magnet machine
+ * and costs copper loss and thermal budget the whole time it is applied.
+ *
+ * Bounded well below LIM_IQ_MAX_MA on purpose. id and iq share one current
+ * limit through the vector magnitude, so every amp spent weakening is an amp
+ * not available for torque, and an unbounded weakening loop that has decided
+ * it needs more flux reduction will happily take all of it. 4 A of the 12 A
+ * budget is the most this is allowed to claim.
+ *
+ * NOT verified on the motor. This is a derived bound, and the number wants
+ * checking against measured temperature rise before anything relies on it. */
+#define LIM_ID_FW_MAX_MA        4000
+
 /* ---- haptics ------------------------------------------------------------ */
 #define LIM_DETENT_COUNT_MAX    512
 #define LIM_ENDSTOP_K_MAX       100000

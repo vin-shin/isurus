@@ -131,10 +131,32 @@ a torque request from the VCU.
   delivered against *commanded*, so a VCU over-asking would otherwise look
   implausible and fault a drive that was behaving correctly. Mutant
   `torqecho` covers it.
-- **Field weakening:** a PI on (vmax − |v|) whose output drives i_d negative,
-  clamped to negative values and to a magnitude bound in `limits.h`. Develop it
-  here by lowering `FOC_VMAX_DEFAULT` artificially to force early saturation at
-  bench speeds.
+- ~~**Field weakening.**~~ Implemented 2026-08-25 and **shipping disabled**.
+  A PI on (vmax - |v|) driving `i_d` negative, clamped to negative values and
+  to `LIM_ID_FW_MAX_MA` (4 A of the 12 A budget). ISR 24.77 -> 24.96 us
+  disabled, 26.01 us / 78.0% enabled - inside the 30 us bar either way.
+
+  Works in the model: inert while the bus has headroom, then +56% q-axis
+  current at w_e 2200 and more above that. Five tests, three mutants.
+
+  **The bench cannot test it, structurally.** Twelve reps per arm at terminal
+  speed: iq +60 +/- 126 mA (0.5 sigma), terminal speed -0.3 +/- 2.1 rad/s
+  (0.1 sigma). Two things hold the error at zero and both behave correctly -
+  the back-calculation anti-windup exists to keep the demand at `vmax`, which
+  is the very quantity this loop differences against it; and a free-spinning
+  rotor self-limits to the boundary where headroom is zero by definition.
+  Weakening is what would let it past that, so the test is circular.
+
+  The plan's suggestion of lowering `FOC_VMAX_DEFAULT` does not work here
+  either: at bench speeds back-EMF alone is ~0.138 pu against a demand of
+  ~0.149, so the window between "cannot hold speed" and "not saturated" is
+  about 8%. **Testing this properly needs a dyno**, or any load that can hold
+  the rotor above base speed.
+
+  The 20 ms wind time is calibrated for a headroom of a tenth of the ceiling.
+  The headroom actually seen at the boundary is nearer a thousandth, so the
+  loop winds ~25x slower than designed. Revisit against a real over-speed
+  condition, not against this bench.
 - ~~**Torque plausibility monitor.**~~ Done 2026-08-25. `Drive_TorqueMonitor`
   in `drive.c`, 100 ms bound, faults as `DRIVE_FAULT_COMMAND`. Six host tests
   and three mutants. Runs from the MAIN LOOP, not the control ISR: measured

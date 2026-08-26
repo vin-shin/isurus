@@ -23,6 +23,7 @@ extern "C" {
 #endif
 
 #include <stdint.h>
+#include "limits.h"      /* LIM_ID_FW_MAX_MA, for the weakening gain */
 
 #define FOC_POLE_PAIRS      20U
 #define FOC_ENC_COUNTS      32768U
@@ -224,6 +225,26 @@ extern "C" {
  */
 #define FOC_KT_NM_PER_A     (1.5f * (float)FOC_POLE_PAIRS * FOC_LAMBDA_M_WB)
 
+/* ---- field weakening gain -----------------------------------------------
+ *
+ * Specified as a TIME, then converted, so it keeps its meaning if the
+ * switching frequency moves: with the demand a tenth of the ceiling over what
+ * the bus can deliver, the loop takes FOC_FW_WIND_MS to wind from zero to the
+ * full weakening bound.
+ *
+ * 20 ms is about 50 Hz, deliberately far below the current loop's ~800 Hz.
+ * These two loops share an axis, and a weakening loop fast enough to argue
+ * with the current loop is the interaction the work plan warns about. Slow is
+ * the safe direction to be wrong in: the drive simply runs out of volts for
+ * longer. */
+#define FOC_FW_WIND_MS      20.0f
+#define FOC_FW_OVER_FRAC    0.1f
+
+#define FOC_FW_KI_DEFAULT \
+  ((LIM_ID_FW_MAX_MA * 0.001f) \
+   / (FOC_FW_OVER_FRAC * FOC_VMAX_DEFAULT) \
+   / (FOC_FW_WIND_MS * 0.001f * (float)PWM_FREQ_HZ))
+
 /* ---- deadtime compensation ---------------------------------------------
  *
  * During the gate-driver deadtime both devices in a leg are off and the phase
@@ -412,6 +433,37 @@ typedef struct {
                                * 0 disables. See FOC_DTC_PM_THEORY.          */
   int32_t  dtc_hyst_ma;       /* +/- band around zero current where no
                                * compensation is applied                     */
+
+  /* Field weakening. At the END like everything else - the SWD tools address
+   * the mirrors above by fixed byte offset.
+   *
+   * A PI on the voltage headroom (vmax - |v|) whose output drives id
+   * negative. It engages only when the demanded vector exceeds what the bus
+   * can deliver, which is the condition it exists to relieve.
+   *
+   * THE ERROR USES THE UNCLAMPED DEMAND. The vector limiter scales vd/vq down
+   * to vmax, so |v| measured after it can never exceed vmax and the error
+   * would be non-negative forever - a weakening loop fed that signal never
+   * engages at all. The magnitude taken before the limiter is the one that
+   * says how far over the bus the loop actually asked to go.
+   *
+   * fw_kp DEFAULTS TO ZERO, so this ships as a pure integrator. The input is
+   * the output of the current loop one tick earlier, so a proportional term
+   * couples two loops directly at 30 kHz - which is the shape of interaction
+   * the work plan warns about, and the reason the last two control changes
+   * went wrong. Integral-only is slower and does not fight the axis it is
+   * measuring. The term exists so the P can be tried deliberately, with the
+   * bench watching, rather than being unavailable.
+   *
+   * DEFAULTS OFF. Nothing here has been measured on the motor. */
+  uint32_t fw_enable;         /* 1 = weakening active (default 0)            */
+  float    fw_kp;             /* proportional, default 0 - see above         */
+  float    fw_ki;             /* integral, per unit of headroom per tick     */
+  float    fw_integ;          /* the id demand wound so far, A, <= 0         */
+  float    fw_id_max;         /* magnitude bound, A, from LIM_ID_FW_MAX_MA   */
+  int32_t  fw_id_ma;          /* SWD mirror of the applied id demand         */
+  int32_t  fw_headroom_pm;    /* SWD mirror of vmax - |v| before the limiter */
+  float    fw_last_demand;    /* |v| DEMANDED, before the limiter scaled it   */
 } FocState_t;
 
 void FOC_Init(FocState_t *f);

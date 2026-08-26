@@ -373,6 +373,135 @@ static void test_set_torque_is_symmetric_for_regen(void)
         "braking torque clamps symmetrically with driving torque", d);
 }
 
+
+/* ---- field weakening ----------------------------------------------------- */
+
+/* Hold a speed and a current until the loop settles, then report the mean of
+ * the last quarter. `we` is electrical rad/s. */
+static void fw_settle(Sim_t *s, double we, float iq_ref, int fw,
+                      double *id, double *iq, double *vmag)
+{
+  sim_init(s);
+  s->f.enabled   = 1;
+  s->f.iq_ref    = iq_ref;
+  s->f.decouple  = 0U;
+  s->f.fw_enable = (uint32_t)fw;
+
+  long n = lround(0.20 / TS);
+  double aid = 0.0, aiq = 0.0, av = 0.0; long cnt = 0;
+  for (long i = 0; i < n; i++)
+  {
+    s->m.omega_m = we / (double)s->m.p;      /* hold the speed */
+    sim_step(s, 0.0);
+    if (i > (3 * n) / 4)
+    {
+      aid += s->m.id; aiq += s->m.iq;
+      av  += sqrt((double)s->f.vd * s->f.vd + (double)s->f.vq * s->f.vq);
+      cnt++;
+    }
+  }
+  *id = aid / cnt; *iq = aiq / cnt; *vmag = av / cnt;
+}
+
+static void test_fw_inert_below_saturation(void)
+{
+  Sim_t s; double id, iq, v;
+  fw_settle(&s, 1800.0, 4.0f, 1, &id, &iq, &v);
+  char d[192];
+  snprintf(d, sizeof(d), "id %.3f A at |v| %.3f against vmax %.3f",
+           id, v, (double)s.f.vmax);
+  /* Weakening costs copper loss for no torque. It must not spend any until
+   * the bus has actually run out. */
+  check(fabs(id) < 0.05 && v < (double)s.f.vmax - 0.005,
+        "field weakening spends nothing while the bus has headroom", d);
+}
+
+static void test_fw_recovers_torque_when_saturated(void)
+{
+  Sim_t s; double id0, iq0, v0, id1, iq1, v1;
+  fw_settle(&s, 2300.0, 4.0f, 0, &id0, &iq0, &v0);
+  fw_settle(&s, 2300.0, 4.0f, 1, &id1, &iq1, &v1);
+
+  char d[224];
+  snprintf(d, sizeof(d), "off: id %.3f iq %.3f | on: id %.3f iq %.3f (|v| %.3f)",
+           id0, iq0, id1, iq1, v1);
+  /* Above base speed the drive is out of volts and iq collapses. Weakening
+   * spends d-axis current to get some of it back - that is the entire point,
+   * and it buys SPEED rather than torque per amp. */
+  check(id1 < -0.5 && iq1 > iq0 + 0.5,
+        "field weakening recovers q-axis current once the bus is out", d);
+}
+
+static void test_fw_never_strengthens(void)
+{
+  Sim_t s; double id, iq, v;
+  double worst = 0.0;
+  sim_init(&s);
+  s.f.enabled = 1; s.f.iq_ref = 4.0f; s.f.fw_enable = 1U;
+  long n = lround(0.20 / TS);
+  for (long i = 0; i < n; i++)
+  {
+    /* Sweep through the saturation boundary in both directions, so the loop
+     * is pushed to wind up and unwind. */
+    double we = 1500.0 + 1200.0 * (double)i / (double)n;
+    s.m.omega_m = we / (double)s.m.p;
+    sim_step(&s, 0.0);
+    if ((double)s.f.id_ref > worst) { worst = (double)s.f.id_ref; }
+  }
+  (void)id; (void)iq; (void)v;
+  char d[160];
+  snprintf(d, sizeof(d), "most positive id_ref seen: %.4f A", worst);
+  /* Positive id on a surface-magnet machine strengthens the field: it costs
+   * current to make the saturation worse. */
+  check(worst <= 1e-6, "field weakening never drives id positive", d);
+}
+
+static void test_fw_respects_the_magnitude_bound(void)
+{
+  Sim_t s;
+  sim_init(&s);
+  s.f.enabled = 1; s.f.iq_ref = 12.0f; s.f.fw_enable = 1U;
+  double most = 0.0;
+  long n = lround(0.30 / TS);
+  for (long i = 0; i < n; i++)
+  {
+    s.m.omega_m = 3200.0 / (double)s.m.p;     /* far beyond base speed */
+    sim_step(&s, 0.0);
+    if (-(double)s.f.id_ref > most) { most = -(double)s.f.id_ref; }
+  }
+  char d[176];
+  snprintf(d, sizeof(d), "peak |id_ref| %.3f A against a bound of %.3f",
+           most, (double)s.f.fw_id_max);
+  /* id and iq share one current budget through the vector magnitude, so an
+   * unbounded weakening loop takes all of it. */
+  check(most <= (double)s.f.fw_id_max + 1e-3,
+        "field weakening stays inside its magnitude bound", d);
+}
+
+static void test_fw_gives_back_the_axis_when_disabled(void)
+{
+  Sim_t s;
+  sim_init(&s);
+  s.f.enabled = 1; s.f.iq_ref = 4.0f; s.f.fw_enable = 1U;
+  for (long i = 0; i < lround(0.10 / TS); i++)
+  {
+    s.m.omega_m = 2400.0 / (double)s.m.p;
+    sim_step(&s, 0.0);
+  }
+  float wound = s.f.id_ref;
+
+  s.f.fw_enable = 0U;
+  for (long i = 0; i < 4; i++) { sim_step(&s, 0.0); }
+
+  char d[176];
+  snprintf(d, sizeof(d), "wound to %.3f A, then read %.3f A after disabling",
+           (double)wound, (double)s.f.id_ref);
+  /* Switching it off must not leave the last value it reached standing as a
+   * permanent uncommanded d-axis current. */
+  check(wound < -0.1f && s.f.id_ref == 0.0f,
+        "disabling field weakening hands the d axis back", d);
+}
+
 int main(void)
 {
   printf("\nfoc.c host tests\n----------------\n");
@@ -388,6 +517,11 @@ int main(void)
   test_set_torque_holds_id_at_zero();
   test_set_torque_reports_what_it_accepted();
   test_set_torque_is_symmetric_for_regen();
+  test_fw_inert_below_saturation();
+  test_fw_recovers_torque_when_saturated();
+  test_fw_never_strengthens();
+  test_fw_respects_the_magnitude_bound();
+  test_fw_gives_back_the_axis_when_disabled();
   printf("----------------\n%d passed, %d failed\n\n", g_pass, g_fail);
   return g_fail == 0 ? 0 : 1;
 }
