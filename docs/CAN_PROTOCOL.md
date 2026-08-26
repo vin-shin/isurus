@@ -35,23 +35,32 @@ Transport implementation: [`Core/Src/can.c`](../Core/Src/can.c).
 | Identifiers | 11-bit standard |
 | Bit rate | 1 Mbit/s (`CAN_BITRATE_BPS`) |
 | Sample point | 81.25%, the CiA recommendation |
-| Peripheral | FDCAN1 |
-| Pins | PA12 (TX), PB8 (RX) |
+| Peripheral | FDCAN2 |
+| Pins | PB6 (TX), PB5 (RX) |
 
-Bit timing is derived from a 128 MHz kernel clock: prescaler 8 gives a 16 MHz
+Bit timing is derived from a 160 MHz kernel clock: prescaler 10 gives a 16 MHz
 time-quantum clock, and 1 sync + 12 + 3 = 16 tq per bit is exactly 1 Mbit/s.
 The sample point at (1 + 12) / 16 is what other nodes on a bus will have been
 set up for.
+
+Only the prescaler differs from Mako Longfin, which ran the same segment split
+off a 128 MHz clock with a prescaler of 8. The sample point is therefore
+identical to the one validated there. Carrying the old prescaler onto this
+board would have given 1.25 Mbit/s, which does not present as a wrong number
+anywhere - the node just never acknowledges a frame, and every other node
+trying to talk to it goes error-passive.
 
 Classic frames rather than FD because every message here fits in 8 bytes and
 2.0 talks to every analyser, transceiver and node in existence. Moving to FD
 later would change the frame format only, not the protocol.
 
-> **PB8 is also BOOT0 on this package.** A chip with factory option bytes boots
-> the ST system bootloader instead of the application, because the transceiver
-> idles the RX line high. See
-> [HARDWARE_NOTES.md section 1](../HARDWARE_NOTES.md#1-boot0--fdcan1_rx-pin-conflict-critical)
-> before debugging a board that shows no CAN activity at all.
+> **The BOOT0 conflict does not apply to this board.** On Mako Longfin the CAN
+> RX line was PB8, which is also BOOT0, so a chip with factory option bytes
+> booted the ST system bootloader instead of the application - the transceiver
+> idles RX high. The GR MotherFOCer does not use PB8 at all. The story is still
+> worth knowing, because the symptom was a board that looked like broken
+> firmware in every respect:
+> [HARDWARE_NOTES.md section 1](../HARDWARE_NOTES.md#1-boot0--fdcan1_rx-pin-conflict-critical).
 
 ## Frame format
 

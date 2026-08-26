@@ -1,7 +1,7 @@
 /**
   ******************************************************************************
   * @file    can.c
-  * @brief   FDCAN1 transport for the control protocol in can_proto.h.
+  * @brief   FDCAN2 transport for the control protocol in can_proto.h.
   ******************************************************************************
   */
 
@@ -75,10 +75,10 @@ int32_t Can_Init(uint8_t loopback)
   s_recover_tick = 0U;
   s_timed_out    = 0U;
 
-  hfdcan1.Instance                  = FDCAN1;
-  hfdcan1.Init.ClockDivider         = FDCAN_CLOCK_DIV1;
-  hfdcan1.Init.FrameFormat          = FDCAN_FRAME_CLASSIC;
-  hfdcan1.Init.Mode                 = loopback ? FDCAN_MODE_INTERNAL_LOOPBACK
+  hfdcan2.Instance                  = FDCAN2;
+  hfdcan2.Init.ClockDivider         = FDCAN_CLOCK_DIV1;
+  hfdcan2.Init.FrameFormat          = FDCAN_FRAME_CLASSIC;
+  hfdcan2.Init.Mode                 = loopback ? FDCAN_MODE_INTERNAL_LOOPBACK
                                                : FDCAN_MODE_NORMAL;
   /* SINGLE-SHOT transmission. This was ENABLE, on the reasoning that a
    * dropped ESTOP is catastrophic - but this node never TRANSMITS an ESTOP.
@@ -94,31 +94,40 @@ int32_t Can_Init(uint8_t loopback)
    * the backoff in Can_PublishTelem can then actually outrun. The cost is that
    * a frame losing arbitration is dropped rather than retried; at 1.3% bus
    * load per drive that is rare, and the next telemetry frame is 20 ms away. */
-  hfdcan1.Init.AutoRetransmission   = DISABLE;
-  hfdcan1.Init.TransmitPause        = DISABLE;
-  hfdcan1.Init.ProtocolException    = DISABLE;
+  hfdcan2.Init.AutoRetransmission   = DISABLE;
+  hfdcan2.Init.TransmitPause        = DISABLE;
+  hfdcan2.Init.ProtocolException    = DISABLE;
 
-  /* 1 Mbit/s from a 128 MHz kernel clock (PCLK1, see HAL_FDCAN_MspInit):
-   *   128 MHz / 8 = 16 MHz time-quantum clock
+  /* 1 Mbit/s from a 160 MHz kernel clock (PCLK1, see HAL_FDCAN_MspInit):
+   *   160 MHz / 10 = 16 MHz time-quantum clock
    *   1 sync + 12 + 3 = 16 tq per bit -> 1 Mbit/s
    * Sample point at (1+12)/16 = 81.25%, which is what CiA recommends and
-   * what every other node on a bus will have been set up for. */
-  hfdcan1.Init.NominalPrescaler     = 8;
-  hfdcan1.Init.NominalSyncJumpWidth = 3;
-  hfdcan1.Init.NominalTimeSeg1      = 12;
-  hfdcan1.Init.NominalTimeSeg2      = 3;
+   * what every other node on a bus will have been set up for.
+   *
+   * ONLY the prescaler moved, 8 -> 10, because Mako Longfin's kernel clock
+   * was 128 MHz and this board's is 160. The segment split is untouched, so
+   * the sample point is bit-for-bit what was validated on the old board.
+   *
+   * Leaving the prescaler at 8 would have produced 1.25 Mbit/s. That does not
+   * fail as a wrong number somewhere - the node simply never acknowledges a
+   * frame and every other node on the bus goes error-passive trying to talk
+   * to it, which reads as dead hardware. */
+  hfdcan2.Init.NominalPrescaler     = 10;
+  hfdcan2.Init.NominalSyncJumpWidth = 3;
+  hfdcan2.Init.NominalTimeSeg1      = 12;
+  hfdcan2.Init.NominalTimeSeg2      = 3;
 
   /* Unused in classic mode, but HAL validates them. */
-  hfdcan1.Init.DataPrescaler        = 1;
-  hfdcan1.Init.DataSyncJumpWidth    = 1;
-  hfdcan1.Init.DataTimeSeg1         = 1;
-  hfdcan1.Init.DataTimeSeg2         = 1;
+  hfdcan2.Init.DataPrescaler        = 1;
+  hfdcan2.Init.DataSyncJumpWidth    = 1;
+  hfdcan2.Init.DataTimeSeg1         = 1;
+  hfdcan2.Init.DataTimeSeg2         = 1;
 
-  hfdcan1.Init.StdFiltersNbr        = 2;
-  hfdcan1.Init.ExtFiltersNbr        = 0;
-  hfdcan1.Init.TxFifoQueueMode      = FDCAN_TX_FIFO_OPERATION;
+  hfdcan2.Init.StdFiltersNbr        = 2;
+  hfdcan2.Init.ExtFiltersNbr        = 0;
+  hfdcan2.Init.TxFifoQueueMode      = FDCAN_TX_FIFO_OPERATION;
 
-  if (HAL_FDCAN_Init(&hfdcan1) != HAL_OK) { s_t.init_rc = -1; return -1; }
+  if (HAL_FDCAN_Init(&hfdcan2) != HAL_OK) { s_t.init_rc = -1; return -1; }
 
   /* Two acceptance filters, both into FIFO0: one for this node's own command
    * range and one for the broadcast range. Filtering in hardware means a busy
@@ -133,21 +142,21 @@ int32_t Can_Init(uint8_t loopback)
   f.FilterConfig = FDCAN_FILTER_TO_RXFIFO0;
   f.FilterID1    = CAN_ID(CAN_NODE_ID, CAN_CMD_FIRST);
   f.FilterID2    = CAN_ID(CAN_NODE_ID, CAN_CMD_LAST);
-  if (HAL_FDCAN_ConfigFilter(&hfdcan1, &f) != HAL_OK) { s_t.init_rc = -2; return -2; }
+  if (HAL_FDCAN_ConfigFilter(&hfdcan2, &f) != HAL_OK) { s_t.init_rc = -2; return -2; }
 
   f.FilterIndex  = 1;
   f.FilterID1    = CAN_ID(CAN_NODE_BROADCAST, CAN_CMD_FIRST);
   f.FilterID2    = CAN_ID(CAN_NODE_BROADCAST, CAN_CMD_LAST);
-  if (HAL_FDCAN_ConfigFilter(&hfdcan1, &f) != HAL_OK) { s_t.init_rc = -3; return -3; }
+  if (HAL_FDCAN_ConfigFilter(&hfdcan2, &f) != HAL_OK) { s_t.init_rc = -3; return -3; }
 
   /* Anything that got past neither filter is not for us. */
-  if (HAL_FDCAN_ConfigGlobalFilter(&hfdcan1, FDCAN_REJECT, FDCAN_REJECT,
+  if (HAL_FDCAN_ConfigGlobalFilter(&hfdcan2, FDCAN_REJECT, FDCAN_REJECT,
                                    FDCAN_REJECT_REMOTE, FDCAN_REJECT_REMOTE) != HAL_OK)
   {
     s_t.init_rc = -4; return -4;
   }
 
-  if (HAL_FDCAN_Start(&hfdcan1) != HAL_OK) { s_t.init_rc = -5; return -5; }
+  if (HAL_FDCAN_Start(&hfdcan2) != HAL_OK) { s_t.init_rc = -5; return -5; }
 
   s_t.init_rc = 0;
   return 0;
@@ -173,7 +182,7 @@ int32_t Can_Send(uint16_t id, const uint8_t *data, uint8_t len)
   h.TxEventFifoControl  = FDCAN_NO_TX_EVENTS;
   h.MessageMarker       = 0;
 
-  if (HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &h, (uint8_t *)data) != HAL_OK)
+  if (HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan2, &h, (uint8_t *)data) != HAL_OK)
   {
     s_t.tx_errors++;
     return -2;
@@ -314,9 +323,9 @@ void Can_Poll(void)
   FDCAN_RxHeaderTypeDef h;
   uint8_t d[8];
 
-  while (HAL_FDCAN_GetRxFifoFillLevel(&hfdcan1, FDCAN_RX_FIFO0) > 0U)
+  while (HAL_FDCAN_GetRxFifoFillLevel(&hfdcan2, FDCAN_RX_FIFO0) > 0U)
   {
-    if (HAL_FDCAN_GetRxMessage(&hfdcan1, FDCAN_RX_FIFO0, &h, d) != HAL_OK) { break; }
+    if (HAL_FDCAN_GetRxMessage(&hfdcan2, FDCAN_RX_FIFO0, &h, d) != HAL_OK) { break; }
 
     uint8_t node = CAN_ID_NODE(h.Identifier);
     uint8_t cmd  = CAN_ID_CMD(h.Identifier);
@@ -374,8 +383,8 @@ void Can_CheckBus(void)
   FDCAN_ProtocolStatusTypeDef ps;
   FDCAN_ErrorCountersTypeDef  ec;
 
-  (void)HAL_FDCAN_GetProtocolStatus(&hfdcan1, &ps);
-  (void)HAL_FDCAN_GetErrorCounters(&hfdcan1, &ec);
+  (void)HAL_FDCAN_GetProtocolStatus(&hfdcan2, &ps);
+  (void)HAL_FDCAN_GetErrorCounters(&hfdcan2, &ec);
 
   s_t.tec         = ec.TxErrorCnt;
   s_t.rec         = ec.RxErrorCnt;
@@ -419,7 +428,7 @@ void Can_CheckBus(void)
    * the handle is in state READY - and after a bus-off the handle is still
    * BUSY, because nothing told the HAL that the hardware stopped. This is the
    * one line of that function that matters here. */
-  CLEAR_BIT(hfdcan1.Instance->CCCR, FDCAN_CCCR_INIT);
+  CLEAR_BIT(hfdcan2.Instance->CCCR, FDCAN_CCCR_INIT);
   s_t.bus_recoveries++;
 }
 
