@@ -57,6 +57,7 @@ static const char *cause_name(uint32_t c)
     case DRIVE_FAULT_NONE:        return "NONE";
     case DRIVE_FAULT_OVERCURRENT: return "OVERCURRENT";
     case DRIVE_FAULT_OVERVOLTAGE: return "OVERVOLTAGE";
+    case DRIVE_FAULT_OVERTEMP:    return "OVERTEMP";
     case DRIVE_FAULT_UNDERVOLT:   return "UNDERVOLT";
     case DRIVE_FAULT_ENCODER:     return "ENCODER";
     case DRIVE_FAULT_CSENSE:      return "CSENSE";
@@ -424,6 +425,78 @@ static void test_monitor_inactive_outside_run(void)
          "the monitor is inert while the bridge is down");
 }
 
+/* ---- winding temperature ------------------------------------------------ *
+ *
+ * These matter more than their size suggests. LIM_IQ_MAX_MA is deliberately
+ * set ABOVE the machine's continuous rating so short bursts are available,
+ * which means the current limit does not protect the motor from a sustained
+ * overload and was never meant to. This is the thing that does.
+ */
+
+static void test_hot_motor_refuses_to_arm(void)
+{
+  Stub_Reset();
+  g_stub.therm_c_x10 = LIM_TEMP_MOTOR_MAX_CX10 + 50;   /* 5 K over */
+  boot();
+  expect(DRIVE_FAULT, DRIVE_FAULT_OVERTEMP,
+         "a motor already over temperature refuses to arm");
+}
+
+static void test_lost_temperature_sensor_refuses_to_arm(void)
+{
+  Stub_Reset();
+  g_stub.therm_rc = -1;                  /* KTY open, shorted, or unplugged */
+  boot();
+  /* An absent sensor is treated exactly as harshly as a hot one. A KTY that
+   * has come adrift reads as a fixed, plausible, entirely fictional
+   * temperature, so "no reading" must not degrade to "probably fine" - that
+   * is the failure this check exists to prevent. */
+  expect(DRIVE_FAULT, DRIVE_FAULT_OVERTEMP,
+         "a lost temperature sensor refuses to arm");
+}
+
+static void test_motor_overheating_while_running_trips(void)
+{
+  run_armed();
+
+  /* Cold at first: the monitor must not trip on a healthy machine. */
+  Host_AdvanceTick(DRIVE_THERM_PERIOD_MS + 1U);
+  Drive_Step(HAL_GetTick());
+  int cold_ok = (g_drive.state == (uint32_t)DRIVE_RUN);
+
+  g_stub.therm_c_x10 = LIM_TEMP_MOTOR_MAX_CX10 + 100;
+  Host_AdvanceTick(DRIVE_THERM_PERIOD_MS + 1U);
+  Drive_Step(HAL_GetTick());
+
+  char d[192];
+  snprintf(d, sizeof(d), "cold held RUN: %d, then %s/%s",
+           cold_ok, Drive_StateName(g_drive.state), cause_name(g_drive.fault));
+  check(cold_ok && g_drive.state == (uint32_t)DRIVE_FAULT &&
+        g_drive.fault == (uint32_t)DRIVE_FAULT_OVERTEMP,
+        "a motor that overheats while running trips OVERTEMP", d);
+}
+
+static void test_warn_flag_precedes_the_trip(void)
+{
+  Stub_Reset();
+  boot();
+
+  g_stub.therm_c_x10 = LIM_TEMP_MOTOR_WARN_CX10 + 50;   /* warm, not fatal */
+  Host_AdvanceTick(DRIVE_THERM_PERIOD_MS + 1U);
+  Drive_Step(HAL_GetTick());
+
+  char d[192];
+  snprintf(d, sizeof(d), "warn %u, state %s at %ld C x10",
+           (unsigned)g_drive.therm_warn, Drive_StateName(g_drive.state),
+           (long)g_drive.motor_c_x10);
+  /* The warning has to arrive WITHOUT faulting, or it is not a warning. The
+   * gap between warn and trip is the notice a host gets to back the torque
+   * off before it is cut off instead. */
+  check(g_drive.therm_warn == 1U && g_drive.state != (uint32_t)DRIVE_FAULT,
+        "the over-temperature warning arrives before the trip, without faulting",
+        d);
+}
+
 int main(void)
 {
   printf("\ndrive.c fault injection\n-----------------------\n");
@@ -448,6 +521,10 @@ int main(void)
   test_saturation_holds_rather_than_trips();
   test_saturation_does_not_reset_the_accumulator();
   test_monitor_inactive_outside_run();
+  test_hot_motor_refuses_to_arm();
+  test_lost_temperature_sensor_refuses_to_arm();
+  test_motor_overheating_while_running_trips();
+  test_warn_flag_precedes_the_trip();
   printf("-----------------------\n%d passed, %d failed\n\n", g_pass, g_fail);
   return g_fail == 0 ? 0 : 1;
 }

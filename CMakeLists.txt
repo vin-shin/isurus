@@ -106,6 +106,7 @@ target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     ${CMAKE_SOURCE_DIR}/Core/Src/encoder.c
     ${CMAKE_SOURCE_DIR}/Core/Src/csense.c
+    ${CMAKE_SOURCE_DIR}/Core/Src/thermal.c
     ${CMAKE_SOURCE_DIR}/Core/Src/motor_pwm.c
     ${CMAKE_SOURCE_DIR}/Core/Src/openloop.c
     ${CMAKE_SOURCE_DIR}/Core/Src/foc.c
@@ -145,7 +146,9 @@ set_source_files_properties(
 )
 # can.c is deliberately NOT in that list. It is polled from the main loop and
 # never runs in interrupt context, so it has no deadline to miss and is more
-# useful left steppable.
+# useful left steppable. thermal.c is out for the same reason and more so: it
+# is read every 200 ms, its conversion is a bisection loop that is far easier
+# to step through than to reason about, and nothing waits on it.
 
 # Add include paths
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE

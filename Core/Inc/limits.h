@@ -111,6 +111,50 @@ extern "C" {
  * which is what this warning is for on a traction drive. */
 #define LIM_VBUS_WARN_MV        567000
 
+/* ---- temperature -------------------------------------------------------- *
+ *
+ * The EMRAX 228 datasheet gives 120 C as the maximum winding temperature.
+ * That is a LIMIT, not an operating point, so the trip sits below it.
+ *
+ * This is load-bearing rather than belt-and-braces, and the reason is
+ * LIM_IQ_MAX_MA above. That ceiling is 113 Arms against a machine rated 100
+ * Arms continuous - deliberately, so short bursts past continuous are
+ * available - which means the CURRENT limit does not protect the motor from
+ * sustained overload and was never meant to. This does. Remove it and the
+ * drive will happily hold 113 Arms until something melts.
+ *
+ * 110 C to fault, 95 C to warn. The gap exists because thermal time constants
+ * on a machine this size are tens of seconds: a warning that arrives 15 K
+ * before the trip is minutes of notice, which is enough for a host to back
+ * the torque off rather than be cut off mid-corner.
+ *
+ * Tenths of a degree, matching what thermal.c reports, so that no call site
+ * has to remember a scale factor. */
+#define LIM_TEMP_MOTOR_MAX_CX10   1100
+#define LIM_TEMP_MOTOR_WARN_CX10   950
+
+/* ---- temperature -------------------------------------------------------- *
+ *
+ * The EMRAX 228 datasheet gives 120 C as the maximum winding temperature.
+ * That is a LIMIT, not an operating point, so the trip sits below it.
+ *
+ * This is load-bearing rather than belt-and-braces, and the reason is
+ * LIM_IQ_MAX_MA above. That ceiling is 113 Arms against a machine rated 100
+ * Arms continuous - deliberately, so short bursts past continuous are
+ * available - which means the CURRENT limit does not protect the motor from
+ * sustained overload and was never meant to. This does. Remove it and the
+ * drive will happily hold 113 Arms until something melts.
+ *
+ * 110 C to fault, 95 C to warn. The gap exists because thermal time constants
+ * on a machine this size are tens of seconds: a warning that arrives 15 K
+ * before the trip is minutes of notice, which is enough for a host to back
+ * the torque off rather than be cut off mid-corner.
+ *
+ * Tenths of a degree, matching what thermal.c reports, so that no call site
+ * has to remember a scale factor. */
+#define LIM_TEMP_MOTOR_MAX_CX10   1100
+#define LIM_TEMP_MOTOR_WARN_CX10   950
+
 /* ---- speed -------------------------------------------------------------- *
  *
  * This is a control sanity bound, not a hardware one. The drive is back-EMF

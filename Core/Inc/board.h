@@ -244,25 +244,50 @@ extern "C" {
  *
  * A Hall-effect current transducer with an analogue voltage output.
  *
- * !! THE THREE NUMBERS BELOW ARE NOT FROM THE DATASHEET AND MUST BE. !!
- * They are placeholders with the right SHAPE so that the scaling code is
- * correct and only the constants move. Do not energise the bridge against
- * them.
+ * !! THE NUMBERS BELOW ARE NOT FROM THE DATASHEET AND MUST BE. !! They are
+ * placeholders with the right SHAPE so that the scaling code is correct and
+ * only the constants move. Do not energise the bridge against them.
+ *
+ * THE SENSOR DOES NOT DRIVE THE PIN DIRECTLY. There is a signal conditioning
+ * stage between the two which maps the sensor onto a 0..3V3 range and is
+ * referenced to a VREF of its own. That changes what the constant below
+ * means, and mostly for the better:
+ *
+ *   - BOARD_I_SENS_UV_PER_A is the sensitivity AT THE ADC PIN, after
+ *     conditioning gain. It is NOT the sensor's own mV/A, and reading one off
+ *     the TL200 datasheet and dropping it in here would be wrong by whatever
+ *     that gain is.
+ *   - "conditioned to a 3V3 range" is what makes the earlier rail-to-rail
+ *     guess reasonable rather than optimistic. The conditioning exists
+ *     precisely to fill the converter's span, so the swing should be close to
+ *     full scale.
+ *   - a zero at mid-scale is now a design intent rather than an accident,
+ *     since the stage sets its own zero. The self-test's mid-scale check
+ *     therefore becomes a real check on the CONDITIONING, not just on the
+ *     sensor.
+ *   - if that stage's reference is the same one feeding VREF+, gain and
+ *     reference track together and the reading is ratiometric end to end. If
+ *     it is a separate reference, they do not, and the measured VREF+ has to
+ *     divide in - which is what csense.c does.
+ *
+ * So the number to obtain is the amps-per-volt (or volts-per-amp) of the
+ * WHOLE chain, sensor plus conditioning, measured at the pin. One known
+ * current through the sensor and a voltmeter on the ADC input settles it in
+ * a minute and is worth more than either datasheet.
  *
  * What the datasheet has to settle, in order of how badly each one bites:
  *
- *   1. SUPPLY AND ZERO OUTPUT. If this is a 5 V part whose output sits at
- *      2.5 V for zero current, then against a 3V3 ADC reference the zero
- *      lands at about 3103 counts, not 2048 - and the usable range becomes
- *      violently asymmetric, because positive current has only 0.8 V of
- *      headroom to the rail while negative current has 2.5 V. It would also
- *      trip DRIVE_FAULT_CSENSE immediately, since Drive_SelfTest requires the
- *      captured zero to sit within DRIVE_CS_ZERO_TOL_CODES of mid-scale.
- *      Unless there is a divider or level shift between sensor and ADC, in
- *      which case that network is part of the scaling too.
+ *   1. WHERE THE CONDITIONED ZERO SITS. Expected at mid-scale, since the
+ *      stage is built to fill 0..3V3, and Drive_SelfTest enforces that: a
+ *      captured zero further than DRIVE_CS_ZERO_TOL_CODES from 2048 raises
+ *      DRIVE_FAULT_CSENSE. That check is now doing useful work rather than
+ *      merely being satisfied - if the conditioning is not what is assumed
+ *      here, it says so at boot instead of at full current.
  *
- *   2. SENSITIVITY, in mV per amp. This is what actually converts a count to
- *      a current, and it is what BOARD_I_SENS_UV_PER_A holds. Expressing the
+ *   2. SENSITIVITY OF THE WHOLE CHAIN, in mV per amp at the pin - sensor
+ *      times conditioning gain, not the sensor alone. This is what actually
+ *      converts a count to a current, and it is what BOARD_I_SENS_UV_PER_A
+ *      holds. Expressing the
  *      scale as a sensitivity rather than as full-scale-over-half-the-codes
  *      is deliberate: sensitivity is what a datasheet publishes, it stays
  *      correct if the output never reaches the rails, and it does not quietly

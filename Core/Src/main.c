@@ -30,6 +30,7 @@
 /* USER CODE BEGIN Includes */
 #include "encoder.h"
 #include "csense.h"
+#include "thermal.h"
 #include "motor_pwm.h"
 #include "openloop.h"
 #include "foc.h"
@@ -141,6 +142,12 @@ volatile CSenseTelem_t g_cs = {0};
 /* Parameter identification state. Read r_mohm / l_uh over SWD after a run. */
 volatile IdentState_t g_ident = {0};
 volatile int32_t g_cs_init_rc = 0;
+
+/* Motor and power-stage temperature. The drive reads this - it is what stops
+ * a sustained overload, since LIM_IQ_MAX_MA deliberately sits above the
+ * machine's continuous rating. See thermal.h. */
+volatile ThermalTelem_t g_therm;
+volatile int32_t g_therm_init_rc = 0;
 
 /* HRTIM three-phase PWM telemetry. Outputs stay DISABLED at boot. */
 volatile MotorPwmTelem_t g_pwm = {0};
@@ -530,6 +537,11 @@ int main(void)
    * de-energised and at rest at this point - which it is: nothing drives the
    * gate outputs yet. */
   g_cs_init_rc = CSense_Init((CSenseTelem_t *)&g_cs);
+
+  /* Winding temperature. Brought up before the power stage so that
+   * Drive_SelfTest has a real reading to refuse to arm on, rather than a
+   * zeroed struct that happens to look cold. */
+  g_therm_init_rc = Thermal_Init((ThermalTelem_t *)&g_therm);
 
   /* Three-phase PWM. Counters run so the timebase can be verified, but the
    * outputs are NOT enabled - nothing is commanded to the gate drivers. */

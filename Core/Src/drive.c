@@ -11,6 +11,7 @@
 #include "foc.h"
 #include "position.h"
 #include "csense.h"
+#include "thermal.h"
 #include "encoder.h"
 #include "limits.h"
 
@@ -19,6 +20,7 @@ volatile DriveTelem_t g_drive = {0};
 extern volatile FocState_t    g_foc;
 extern volatile PosState_t    g_pos;
 extern volatile CSenseTelem_t g_cs;
+extern volatile ThermalTelem_t g_therm;
 
 /* Mirror of DRIVE_FAULT for the SWD tools and the CAN status flag, which both
  * predate this file and address g_faulted directly. It is derived here and
@@ -28,6 +30,7 @@ extern volatile uint32_t g_faulted;
 
 static uint32_t s_state_t0 = 0U;
 static uint32_t s_selftest_tick = 0U;
+static uint32_t s_therm_tick    = 0U;
 
 /* How often SELFTEST re-checks while waiting for the bus to come up. */
 #define DRIVE_SELFTEST_RETRY_MS   500U
@@ -285,6 +288,34 @@ void Drive_SelfTest(void)
     }
   }
 
+  /* 4. Motor winding temperature, and that the sensor answering is real.
+   *
+   *    Checked here as well as periodically, because arming into a motor left
+   *    hot by the previous run is exactly the case a periodic check cannot
+   *    catch in time: the drive would be armed and making torque before the
+   *    first monitor tick.
+   *
+   *    An INVALID reading fails just as hard as a hot one. A KTY that has
+   *    come adrift reads as a fixed, plausible, entirely fictional
+   *    temperature - and the whole reason this check exists is that
+   *    LIM_IQ_MAX_MA sits deliberately above the machine's continuous
+   *    rating, so nothing else is protecting the winding. */
+  if (bad == DRIVE_FAULT_NONE)
+  {
+    if (Thermal_Read((ThermalTelem_t *)&g_therm) != 0)
+    {
+      bad = DRIVE_FAULT_OVERTEMP;
+    }
+    else
+    {
+      g_drive.motor_c_x10 = g_therm.motor_c_x10;
+      if (g_drive.motor_c_x10 > LIM_TEMP_MOTOR_MAX_CX10)
+      {
+        bad = DRIVE_FAULT_OVERTEMP;
+      }
+    }
+  }
+
   g_drive.selftest_fail = (uint32_t)bad;
   s_selftest_tick = HAL_GetTick();
 
@@ -347,6 +378,41 @@ void Drive_ClearFault(void)
 void Drive_Step(uint32_t now_ms)
 {
   g_drive.ms_in_state = now_ms - s_state_t0;
+
+  /* Winding temperature, unconditionally and in every state.
+   *
+   * Before the state machine rather than inside one of its branches, because
+   * a motor cools in every state and the warning flag is worth maintaining
+   * whether or not the bridge is live. Thermal time constants here are tens
+   * of seconds, so this does not need to be fast - it needs to be always. */
+  if ((now_ms - s_therm_tick) >= DRIVE_THERM_PERIOD_MS)
+  {
+    s_therm_tick = now_ms;
+
+    if (Thermal_Read((ThermalTelem_t *)&g_therm) != 0)
+    {
+      /* Sensor lost. Faults only if the bridge is actually live: a
+       * disconnected KTY on a drive that is not running is a bring-up
+       * nuisance rather than a hazard, and latching there would stop anyone
+       * diagnosing it. Arming is still blocked, because Drive_SelfTest makes
+       * the same check and does treat it as fatal. */
+      if (g_drive.state == (uint32_t)DRIVE_RUN)
+      {
+        Drive_Fault(DRIVE_FAULT_OVERTEMP);
+      }
+    }
+    else
+    {
+      g_drive.motor_c_x10 = g_therm.motor_c_x10;
+      g_drive.therm_warn  = (g_therm.motor_c_x10 > LIM_TEMP_MOTOR_WARN_CX10)
+                              ? 1U : 0U;
+
+      if (g_therm.motor_c_x10 > LIM_TEMP_MOTOR_MAX_CX10)
+      {
+        Drive_Fault(DRIVE_FAULT_OVERTEMP);
+      }
+    }
+  }
 
   /* INIT is left automatically once the caller has finished bringing
    * peripherals up and started calling this. Every other transition is

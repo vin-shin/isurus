@@ -109,8 +109,24 @@ if [ "${1:-}" = "--mutants" ]; then
   sed 's|  if (g_drive.state != (uint32_t)DRIVE_RUN)|  if (0)|' \
       "$ROOT/Core/Src/drive.c" > "$OUT/mut_torqrun.c"
 
+  # 8. Drop the winding over-temperature trip in Drive_Step, keeping the
+  #    reading and the warning flag. This is the one that matters most of the
+  #    set: LIM_IQ_MAX_MA sits deliberately ABOVE the machine's continuous
+  #    rating so short bursts are available, so nothing else in the drive
+  #    stops a sustained overload. Without this trip the firmware will hold
+  #    113 Arms into a 100 Arms motor until something melts, and every other
+  #    test still passes.
+  sed 's|      if (g_therm.motor_c_x10 > LIM_TEMP_MOTOR_MAX_CX10)|      if (0)|' \
+      "$ROOT/Core/Src/drive.c" > "$OUT/mut_hotrun.c"
+  # 9. Let a LOST temperature sensor arm the drive - the "no reading means
+  #    probably fine" mistake. A KTY that has come adrift reads as a fixed,
+  #    plausible, entirely fictional temperature, so this is indistinguishable
+  #    from a cold motor right up until it is not.
+  sed 's|      bad = DRIVE_FAULT_OVERTEMP;|      ;|' \
+      "$ROOT/Core/Src/drive.c" > "$OUT/mut_hotsensor.c"
+
   fails=0
-  for m in clear nosafe miso uvlatch torqsat torqfast torqrun; do
+  for m in clear nosafe miso uvlatch torqsat torqfast torqrun hotrun hotsensor; do
     "$CC" -std=gnu11 -O2 "${INC[@]}" "${DSRC[@]}" "$OUT/mut_$m.c"           -o "$OUT/mut_$m.exe" -lm 2>/dev/null
     if "$OUT/mut_$m.exe" >"$OUT/mut_$m.log" 2>&1; then
       echo "  NOT CAUGHT  drive mutant '$m' passed - the tests are too weak"

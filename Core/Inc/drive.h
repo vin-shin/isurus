@@ -55,7 +55,8 @@ typedef enum {
   DRIVE_FAULT_CSENSE      = 5U,   /* current-sense zero out of tolerance    */
   DRIVE_FAULT_SELFTEST    = 6U,   /* a check failed that has no finer cause */
   DRIVE_FAULT_WATCHDOG    = 7U,   /* control ISR stopped feeding the WWDG   */
-  DRIVE_FAULT_COMMAND     = 8U    /* a command was refused as implausible   */
+  DRIVE_FAULT_COMMAND     = 8U,   /* a command was refused as implausible   */
+  DRIVE_FAULT_OVERTEMP    = 9U    /* motor winding too hot, or sensor lost   */
 } DriveFault_t;
 
 /* Self-test tolerance on the current-sense zero.
@@ -96,7 +97,24 @@ typedef struct {
   uint32_t torq_dev_ms;   /* 56  how long the deviation has persisted      */
   uint32_t torq_trips;    /* 60  monitor trips since boot                  */
   uint32_t torq_held_ms;  /* 64  time the monitor spent held by saturation */
+  /* Winding temperature. Appended for the same reason as the block above -
+   * every field before this one is addressed by a fixed byte offset, so
+   * inserting rather than appending would silently move all of them. */
+  int32_t  motor_c_x10;   /* 68  motor winding, tenths of a degree C       */
+  uint32_t therm_warn;    /* 72  1 once past LIM_TEMP_MOTOR_WARN_CX10      */
 } DriveTelem_t;
+
+/* How often Drive_Step re-reads the winding temperature.
+ *
+ * 200 ms: glacial next to the control loop, and still far faster than
+ * anything thermal on a 13 kg machine, whose winding time constant is tens of
+ * seconds. Reading it at the main loop rate would be thousands of conversions
+ * a second spent watching something that moves in minutes.
+ *
+ * In the header rather than drive.c because the tests have to advance the
+ * clock past it, and a test that hardcoded 200 would silently stop exercising
+ * the monitor the moment this changed. */
+#define DRIVE_THERM_PERIOD_MS   200U
 
 extern volatile DriveTelem_t g_drive;
 

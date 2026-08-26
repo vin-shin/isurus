@@ -47,6 +47,7 @@ DbgmcuHostRegs_t g_dbgmcu_host;
 /* ---- globals drive.c reaches across for --------------------------------- */
 
 volatile CSenseTelem_t g_cs;
+volatile ThermalTelem_t g_therm;
 volatile PosState_t    g_pos;
 volatile uint32_t      g_faulted;
 
@@ -130,6 +131,18 @@ int CSense_ReadVbus(CSenseTelem_t *t)
   return 0;
 }
 
+int Thermal_Read(ThermalTelem_t *t)
+{
+  g_stub.therm_reads++;
+  if (g_stub.therm_rc != 0) { return g_stub.therm_rc; }
+  if (t != NULL)
+  {
+    t->motor_c_x10 = g_stub.therm_c_x10;
+    t->valid       = 1U;
+  }
+  return 0;
+}
+
 /* ---- harness control ----------------------------------------------------- */
 
 void Stub_Reset(void)
@@ -143,11 +156,17 @@ void Stub_Reset(void)
   g_stub.enc_raw    = 0x1234U;      /* any plausible angle */
   g_stub.vbus_rc    = 0;
   g_stub.vbus_mv    = 22000U;       /* inside the LIM_VBUS window */
+  g_stub.therm_rc   = 0;
+  g_stub.therm_c_x10 = 300;         /* 30.0 C - a cold motor */
 
   memset((void *)&g_cs, 0, sizeof(g_cs));
   g_cs.u_zero = 2040U;              /* HARDWARE_NOTES section 6 records 2037 */
   g_cs.w_zero = 2041U;              /* and 2039 measured on this board       */
   g_cs.vbus_mv = g_stub.vbus_mv;
+
+  memset((void *)&g_therm, 0, sizeof(g_therm));
+  g_therm.motor_c_x10 = g_stub.therm_c_x10;
+  g_therm.valid       = 1U;
 
   memset((void *)&g_pos, 0, sizeof(g_pos));
   g_faulted = 0U;
