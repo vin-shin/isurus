@@ -206,15 +206,53 @@ extern "C" {
 #define BOARD_ADC_IDX_TEMP0     5U
 #define BOARD_ADC_IDX_AUDIO     9U
 
-/* ---- DC bus divider: 400:1, from the schematic ----------------------------
+/* ---- DC bus sense: an ISOLATED chain, not a bare divider ------------------
  *
- *     4M7 + 4M7 + 560k + 15k  =  9.975 MOhm   over   25 kOhm
- *     9.975M + 25k = 10.000 MOhm exactly, so the ratio is exactly 400:1
+ * Schematic sheet 5. The full path from the pack to PA3:
  *
- * The four-resistor top leg is not redundancy, it is HV practice: at 588 V
- * each part drops under 300 V and the creepage is spread over four
- * footprints. The exact 10 MOhm total says the ratio was chosen rather than
- * fallen into.
+ *     TS+ --[ 4M7 + 4M7 + 560k + 15k ]--+-- TS_DIV --> AMC0311 INP
+ *                                       |
+ *                                     [ 25k ]
+ *                                       |
+ *                                      TS-            AMC0311 INN --> TS-
+ *
+ *     AMC0311MDWV  reinforced isolated amplifier, HV side fed by 5V_TS from
+ *                  an isolated supply (SN6505B push-pull driver, a 750315230
+ *                  transformer, NSR0240 rectifiers, TPS782 LDO)
+ *          |
+ *     OUT_P / OUT_N differential
+ *          |
+ *     MCP6496 difference amplifier, 4k7 network, biased from 3V3A
+ *          |
+ *        TS_VSENSE --> PA3
+ *
+ * The divider is exactly 400:1 - 9.975 MOhm over 25 kOhm, totalling exactly
+ * 10 MOhm - and the four-resistor top leg is HV practice rather than
+ * redundancy: at 588 V each part drops under 300 V and the creepage is spread
+ * over four footprints. A full pack presents 1.47 V at TS_DIV, which sits
+ * nicely inside the isolated amplifier's input range, so the front end is
+ * well matched to the pack.
+ *
+ * !! BUT THE DIVIDER IS ONLY THE FIRST THIRD OF THE TRANSFER FUNCTION. !!
+ *
+ * The code models the bus as (raw / 4096) * VREF * 400, which is the divider
+ * and nothing else. The real relationship is
+ *
+ *     V_pin = (V_bus / 400) * G_iso * G_diff + V_offset
+ *
+ * with G_iso the isolated amplifier's gain, G_diff the 4k7 network's, and
+ * V_offset whatever the 3V3A bias puts at the output for zero bus. NONE of
+ * those three are known here, and the OFFSET matters as much as the gain: an
+ * isolated amplifier of this class commonly sits its output at mid-rail for
+ * zero input, in which case a zero bus does not read as ADC code zero and the
+ * present model is wrong at both ends of the range.
+ *
+ * DO NOT try to derive this from three datasheets. The whole chain is a
+ * straight line, so TWO KNOWN BUS VOLTAGES AND TWO ADC CODES give the gain
+ * and the offset directly, and they measure what the board actually does
+ * rather than what three parts should do in series. That is the same
+ * calibration the current chain needs, and it can be done in the same
+ * sitting.
  *
  * !! THE INHERITED SCALE FACTOR WAS WRONG BY ABOUT 6x, IN THE DANGEROUS
  * DIRECTION. !! The board's bring-up loop used `vbus = raw * 0.05`, which is
@@ -420,19 +458,22 @@ extern "C" {
  * hysteresis, non-inverted output and an interrupt on both edges. The DAC
  * channel is internally connected only - no output buffer, no pin.
  *
- * !! The comparator input is PA3, which is ALSO ADC1_IN4: the .ioc records
- * PA3 as SharedAnalog carrying both COMP2_INP and ADC1_IN4. ADC1_IN4 is the
- * DC bus voltage in the sequence above. Taken at face value, this comparator
- * watches the BUS VOLTAGE, which would make it an overvoltage trip rather
- * than the overcurrent trip the error masks imply.
+ * RESOLVED by the schematic: the comparator input is PA3, which sheet 2 names
+ * TS_VSENSE - the tractive-system bus voltage, shared with ADC1_IN4. So COMP2
+ * is an OVERVOLTAGE trip, not the overcurrent one this project first guessed
+ * from the board's ERR_OCP mask.
  *
- * That contradiction is not resolvable from the .ioc. The board's error masks
- * define ERR_OCP, ERR_OVP, ERR_UVP and ERR_OTP, and nothing says which one
- * COMP2 raises. It has to be settled from the schematic before the comparator
- * is armed, because arming it against the wrong signal buys a hardware trip
- * that either never fires or fires constantly.
+ * That is a sensible thing for this machine to have. On a traction drive the
+ * fast overvoltage case is regen into a full or disconnected pack, where the
+ * bus can climb far quicker than a 20 kHz control loop and a millisecond
+ * telemetry path will catch it.
  *
- * BOARD_UNKNOWN: what COMP2 actually protects against.
+ * Still needed before it can be armed: the DAC threshold, which nothing in
+ * gr_motherfocer ever writes, and the trip response. COMP1_2_3_IRQHandler is
+ * an empty stub there, so the hardware trip was scaffolded and never
+ * finished. The threshold has to be expressed through the same isolated
+ * sense chain the ADC uses - see section 4 - so it cannot be set until that
+ * chain's transfer function is known.
  */
 #define BOARD_COMP_INSTANCE     COMP2
 #define BOARD_COMP_DAC_CHANNEL  2U
@@ -554,22 +595,64 @@ extern "C" {
 #define BOARD_HAS_DEBUG_UART    1
 
 /* ==========================================================================
- * 9. Pins CubeMX configured and did not explain
+ * 9. Gate driver fault and ready lines - ALL TWELVE, and all unread
  * ==========================================================================
- * All of these are plain inputs, no pull, no label:
+ * These were "twelve configured, unexplained inputs" until the schematic
+ * arrived. Every one of them is a per-switch gate-driver status line:
  *
- *   PA8  PA9  PA12
- *   PB0  PB2  PB4  PB10  PB11  PB14  PB15
- *   PC9
- *   PD2
+ *      PB4   DRV_RDY_UH      PD2   DRV_FLT_UH
+ *      PA9   DRV_RDY_UL      PA12  DRV_FLT_UL
+ *      PC9   DRV_RDY_VH      PA8   DRV_FLT_VH
+ *      PB14  DRV_RDY_VL      PB15  DRV_FLT_VL
+ *      PB0   DRV_RDY_WH      PB11  DRV_FLT_WH
+ *      PB10  DRV_RDY_WL      PB2   DRV_FLT_WL
  *
- * BOARD_UNKNOWN, every one of them. Some are almost certainly gate-driver
- * fault outputs, and a fault line read as a floating input is a fault that is
- * never noticed - so this list is worth closing out early rather than late.
+ * Six READY and six FAULT, one pair per switch, plus PC8 = DRV_RST which
+ * MotorPwm_GateInit already owns.
  *
- * There is no LED among the labelled pins either, so docs/LED_CODES.md
- * describes a front panel this board may not have: led.c drives GPIOB pins
- * that are configured as inputs here.
+ * !! NONE OF THEM ARE READ BY THIS FIRMWARE. !!
+ *
+ * That is the largest protection gap left on this board, and it is worth
+ * being blunt about the shape of it. These drivers are telling the MCU, per
+ * switch, that they have desaturated, lost their isolated supply, or gone
+ * into thermal shutdown - and the pins are sitting in their reset state with
+ * nobody listening. A fault line read as a floating input is not a fault that
+ * is handled badly; it is a fault that never happened as far as the firmware
+ * is concerned.
+ *
+ * They are also the FASTEST protection available here, by a wide margin. The
+ * current loop can only react at 20 kHz and only to current the sensor can
+ * measure; a desaturation detection fires in hundreds of nanoseconds and
+ * catches shoot-through and short-circuit events that no ADC-based limit
+ * will ever see in time.
+ *
+ * What implementing them needs, and none of it is derivable from a pinout:
+ *
+ *   - the driver part number, for the polarity of each line and whether
+ *     READY asserts on healthy or on not-ready
+ *   - whether FAULT latches in the driver until DRV_RST is pulsed, which
+ *     decides whether firmware may clear it or must reset the driver
+ *   - whether they are open-drain, which decides whether they need pulls
+ *
+ * The natural firmware shape once that is known: all twelve as EXTI inputs
+ * feeding MotorPwm_EmergencyStop directly, plus a periodic READY check in
+ * Drive_SelfTest so the drive refuses to arm into a driver that is already
+ * unhappy. A new DRIVE_FAULT_GATEDRV would carry which switch complained,
+ * which is exactly the information a pit crew wants and which no other
+ * signal on this board can provide.
+ *
+ * ==========================================================================
+ * 10. Pins that really are unused
+ * ==========================================================================
+ * From the schematic: PA2, PA4, PC2, PC5, PB1, PB7, PB9, PC13, PC14, PC15,
+ * PF0, PF1.
+ *
+ * PA2 is worth one line of its own, because gr_motherfocer's bring-up code
+ * reads a DC link current from it and this project copied that before the
+ * schematic was available. It is not connected. The DC link sensor is on PA1.
+ *
+ * PB1 and PB2 were Mako Longfin's two front-panel LEDs. PB2 is a gate fault
+ * line here, so that is not a place to put one back; see BOARD_HAS_LEDS.
  */
 
 #ifdef __cplusplus

@@ -7,9 +7,9 @@
   *          absolute magnetic encoders read over SPI, and that is where the
   *          resemblance stops:
   *
-  *                          A1333                  RM44SI
+  *                          A1333                  this board
   *            bus           SPI1 PA5/PB4/PB5       SPI3 PC10/PC11/PC12
-  *            chip select   PA4                    PA15
+  *            PA15          -                      XDIR, NOT a chip select
   *            resolution    15-bit, 32768 counts   13-bit, 8192 counts
   *            transaction   two 16-bit frames      one 14-bit frame
   *            zeroing       ZERO_OFFSET register   none - see below
@@ -20,6 +20,34 @@
   *          take the response. The angle is the low 13 bits of the 14 clocked
   *          back; what the 14th bit means is not documented in the material
   *          this port was written from, and it is masked off.
+  *
+  * ---------------------------------------------------------------------------
+  * !! PA15 IS A TRANSCEIVER DIRECTION PIN, NOT A CHIP SELECT !!
+  * ---------------------------------------------------------------------------
+  *          Schematic sheet 3 ("Emrax Position Encoder"). The link is not
+  *          plain SPI at all - it is DIFFERENTIAL, through a pair of SN65176B
+  *          RS485 transceivers and an NXU0304BQ 3V3/5V level shifter:
+  *
+  *              SCK  -> ENCLK_P / ENCLK_N     clock pair
+  *              MOSI \
+  *              MISO / -> ENDAT_P / ENDAT_N   bidirectional data pair
+  *              PA15 -> XDIR, driving DE/RE on the data transceiver
+  *
+  *          So this is an SSI / BiSS / EnDat class interface, where the master
+  *          clocks a differential pair and the encoder answers on a shared
+  *          data pair - not a four-wire SPI device with a select line.
+  *
+  *          This code drives PA15 low for the duration of a frame and calls it
+  *          a chip select. With DE and RE tied together that happens to hold
+  *          the transceiver in RECEIVE for the transfer, which is the right
+  *          state for reading, so it may well work as written. It works for
+  *          the wrong reason, and it can never TRANSMIT - so any protocol
+  *          needing a command sent to the encoder first is not reachable
+  *          without driving XDIR the other way around the write.
+  *
+  *          BOARD_UNKNOWN, and worth settling before trusting the angle: the
+  *          actual encoder part and its protocol, whether the 14-bit frame
+  *          size is right for it, and the idle sense of XDIR.
   *
   * ---------------------------------------------------------------------------
   * Counts are reported in the 15-bit convention, not the sensor's 13

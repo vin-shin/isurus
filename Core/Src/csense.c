@@ -130,15 +130,14 @@ static int CSense_Adc1Sequence(uint8_t triggered)
   uint32_t i;
 
   static const uint32_t chan[CS_SEQ_LEN] = {
-    ADC_CHANNEL_9,      /* PC3  phase W */
-    ADC_CHANNEL_1,      /* PA0  phase V */
-    ADC_CHANNEL_2,      /* PA1  phase U */
-    ADC_CHANNEL_3,      /* PA2  DC link */
-    ADC_CHANNEL_4       /* PA3  DC bus  */
+    ADC_CHANNEL_9,      /* PC3  UC_ISNS_U  */
+    ADC_CHANNEL_1,      /* PA0  UC_ISNS_W  */
+    ADC_CHANNEL_2,      /* PA1  UC_ISNS_DC */
+    ADC_CHANNEL_4       /* PA3  TS_VSENSE  */
   };
   static const uint32_t rank[CS_SEQ_LEN] = {
-    ADC_REGULAR_RANK_1, ADC_REGULAR_RANK_2, ADC_REGULAR_RANK_3,
-    ADC_REGULAR_RANK_4, ADC_REGULAR_RANK_5
+    ADC_REGULAR_RANK_1, ADC_REGULAR_RANK_2,
+    ADC_REGULAR_RANK_3, ADC_REGULAR_RANK_4
   };
 
   hadc1.Init.ScanConvMode          = ADC_SCAN_ENABLE;
@@ -164,7 +163,8 @@ static int CSense_Adc1Sequence(uint8_t triggered)
     sConfig.Rank         = rank[i];
     /* 12.5 cycles, matching the board's own configuration. Five conversions
      * at 12.5 + 12.5 cycles on a 40 MHz ADC clock is 3.125 us, which is what
-     * PWM_ADC_LEAD_NS was sized against. Lengthening this without revisiting
+     * PWM_ADC_LEAD_NS was sized against - four conversions now that the
+     * unconnected PA2 is gone, so 2.5 us. Lengthening this without revisiting
      * that lead pushes the conversion past the control ISR that reads it. */
     sConfig.SamplingTime = ADC_SAMPLETIME_12CYCLES_5;
     sConfig.SingleDiff   = ADC_SINGLE_ENDED;
@@ -230,8 +230,19 @@ static uint32_t CSense_RawToVbusMv(uint32_t raw)
 {
   /* (raw / 4096) * VREF+ * 400, ordered so the intermediate stays inside 32
    * bits: raw is at most 4095 and the reference a few thousand mV, so the
-   * product is about 1.3e7 microvolts and the divide happens before the 400x. */
-  uint32_t at_pin_uv = (raw * s_vref_mv * 1000U) / CS_ADC_FULL_SCALE;
+   * product is about 1.3e7 microvolts and the divide happens before the 400x.
+   *
+   * !! This models the DIVIDER ONLY. The real chain is divider, then an
+   * isolated amplifier, then a difference amplifier - see board.h section 4.
+   * The gains of the latter two are missing and are folded into nothing, so
+   * this is right only if they multiply to 1. Two known bus voltages settle
+   * both this and the offset below. */
+  uint32_t at_pin_uv;
+
+  if (raw <= (uint32_t)CS_VBUS_ZERO_CODE) { return 0U; }
+  raw -= (uint32_t)CS_VBUS_ZERO_CODE;
+
+  at_pin_uv = (raw * s_vref_mv * 1000U) / CS_ADC_FULL_SCALE;
   return (at_pin_uv * CS_VBUS_DIV_NUM) / (CS_VBUS_DIV_DEN * 1000U);
 }
 
@@ -267,14 +278,13 @@ int CSense_Init(CSenseTelem_t *t)
 
 int CSense_CalibrateZero(CSenseTelem_t *t)
 {
-  uint32_t u_acc = 0, v_acc = 0, w_acc = 0, dc_acc = 0;
+  uint32_t u_acc = 0, w_acc = 0, dc_acc = 0;
   uint32_t n = 0;
   uint32_t i;
 
   for (i = 0; i < CS_ZERO_SAMPLES; i++)
   {
     u_acc  += s_seq[CS_IDX_U];
-    v_acc  += s_seq[CS_IDX_V];
     w_acc  += s_seq[CS_IDX_W];
     dc_acc += s_seq[CS_IDX_DC];
     n++;
@@ -290,7 +300,6 @@ int CSense_CalibrateZero(CSenseTelem_t *t)
   if (n == 0U) { return -1; }
 
   t->u_zero  = u_acc  / n;
-  t->v_zero  = v_acc  / n;
   t->w_zero  = w_acc  / n;
   t->dc_zero = dc_acc / n;
 
@@ -311,34 +320,23 @@ int CSense_UseHrtimTrigger(void)
 int CSense_ReadPhases(CSenseTelem_t *t)
 {
   uint32_t u = s_seq[CS_IDX_U];
+  uint32_t w = s_seq[CS_IDX_W];
+
   /* Reported rather than merely tracked. Free-running conversions still
    * produce plausible-looking currents, so "is the sequence actually locked
    * to the PWM period" is not visible from the values themselves - and it is
    * exactly the thing that reads fine in a static test and destabilises the
    * loop the moment anything moves. See PWM_ADC_LEAD_NS. */
-  uint32_t v = s_seq[CS_IDX_V];
-  uint32_t w = s_seq[CS_IDX_W];
-  int32_t iu, iv, iw, resid, corr;
-
   t->u_raw = u;
-  t->v_raw = v;
   t->w_raw = w;
 
-  iu = CSense_RawToMa(u, t->u_zero);
-  iv = CSense_RawToMa(v, t->v_zero);
-  iw = CSense_RawToMa(w, t->w_zero);
+  t->u_ma = CSense_RawToMa(u, t->u_zero);
+  t->w_ma = CSense_RawToMa(w, t->w_zero);
 
-  /* The three must sum to zero in a three-wire machine. Whatever they do sum
-   * to is common-mode error, so it is reported and then divided out across
-   * the three. See the note in csense.h: a residual that GROWS WITH CURRENT
-   * is a gain mismatch, and this does not fix that one. */
-  resid = iu + iv + iw;
-  corr  = resid / 3;
-
-  t->resid_ma = resid;
-  t->u_ma = iu - corr;
-  t->v_ma = iv - corr;
-  t->w_ma = iw - corr;
+  /* The third phase is inferred, not measured - there is no V sensor on this
+   * board. Exact in a three-wire machine, where the currents must sum to
+   * zero. */
+  t->v_ma = -(t->u_ma + t->w_ma);
 
   t->u_mv = CSense_RawToMv(u);
   t->w_mv = CSense_RawToMv(w);

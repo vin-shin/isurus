@@ -269,119 +269,84 @@ anything. Nothing below step 3 should run with the bus energised.
    20 kHz, and the core is 25% faster, so the existing 21.1 us figure means
    nothing here.
 
-## 4. What is not known, and must not be guessed
+## 4. What the schematic answered, and what is still open
 
-These are blocking questions for anything that energises the bridge. Each one
-is unanswerable from the material available.
+`docs/powerunit.pdf` arrived after most of this port was written. It resolved
+five of the open questions, corrected two firmware bugs, and left three
+things open that no schematic can settle.
 
-1. **Twelve configured, unlabelled input pins**: PA8, PA9, PA12, PB0, PB2,
-   PB4, PB10, PB11, PB14, PB15, PC9, PD2. Some of these are near-certainly
-   gate-driver fault outputs. A fault line left as a floating input is a fault
-   nobody ever hears about, which is the failure mode that fault lines exist
-   to prevent.
+### Answered — and two of them were bugs
 
-2. **What COMP2 protects against.** Its input is PA3, which the .ioc also
-   assigns to ADC1_IN4 — the DC bus voltage. So the hardware comparator
-   appears to watch bus voltage, while the board's error masks
-   (`ERR_OCP`/`ERR_OVP`/`ERR_UVP`/`ERR_OTP`) suggest an overcurrent trip was
-   intended. One of those readings is wrong. Arming the comparator against
-   the wrong signal gives a trip that either never fires or fires constantly.
+**The twelve "unexplained" pins are all gate-driver status lines.** Six
+`DRV_RDY_*` and six `DRV_FLT_*`, one pair per switch:
 
-3. ~~**`N_POLES = 10` - poles or pole pairs?**~~ **Probably answered, worth
-   confirming.** Read as ten *pole pairs*. The evidence is the sibling
-   project: MiniFOCer, same author and same `defines.h` layout, sets
-   `N_POLES` to 7 - and a motor cannot have an odd number of poles, since
-   they come in north/south pairs. So `N_POLES` means pole pairs in these
-   projects. That is an inference from a naming convention rather than a
-   datasheet, and bring-up step 6 settles it in seconds: with the pole count
-   wrong, an open-loop spin gives visibly the wrong number of electrical
-   revolutions per mechanical one.
+| | ready | fault | | ready | fault |
+|---|---|---|---|---|---|
+| U high | PB4 | PD2 | V high | PC9 | PA8 |
+| U low | PA9 | PA12 | V low | PB14 | PB15 |
+| W high | PB0 | PB11 | W low | PB10 | PB2 |
 
-4. ~~**The sense scales.**~~ **Answered from the schematic, and they came out
-   differently from each other.**
+**None of them are read.** That is now the largest protection gap on the
+board — see `board.h` section 9 for why they are also the *fastest*
+protection available, and what implementing them needs.
 
-   **The bus divider is fine — the firmware constant was not.** The divider is
-   4M7 + 4M7 + 560k + 15k over 25k: 9.975 MOhm over 25 kOhm, totalling exactly
-   10 MOhm, so exactly **400:1**. A full 588 V pack presents 1.47 V to the pin
-   and the conversion has better than 2x headroom.
+**The high and low gates were swapped in `motor_pwm.c`.** The schematic has
+`HG_U` on PA11 and `LG_U` on PA10, and similarly for V and W — the opposite
+of what this port assumed. HRTIM output 1 carries the programmed waveform and
+output 2 is its dead-time complement, so the commanded duty was landing on the
+*low* gate: every phase inverted, which negates the applied voltage vector and
+turns the current loop into positive feedback. Fixed by swapping the set and
+reset sources so output 1 is low across the middle of the period; compare
+values, centring and ADC trigger position are all unchanged.
 
-   The inherited `vbus = raw * 0.05` implies a 62:1 divider, so it was wrong
-   by about 6x, and would have **reported a 588 V bus as 91 V**. That divides
-   into every current-loop gain through `FOC_SetGainsForVbus`, so the gains
-   would have come out 6.4x too large on a machine whose coupling terms are
-   already three quarters of the supply. The one saving grace is that it would
-   also have tripped undervoltage permanently, so the drive would have refused
-   to arm rather than armed badly. The earlier claim in this document that the
-   bus sense "cannot read the pack" was wrong, and wrong because it trusted
-   that constant.
+**There are two phase current sensors, not three.** PC3 is `UC_ISNS_U`, PA0 is
+`UC_ISNS_W`, PA1 is `UC_ISNS_DC` — and **PA2 is not connected**.
+`gr_motherfocer`'s bring-up code reads a "V current" from PA0 and a DC current
+from PA2, and this port copied that mapping. So U and W were transposed, the
+"V" channel was the W sensor read twice, and the DC link was being read from a
+floating pin — which the three-phase common-mode correction then averaged into
+the two real measurements. Reverted to measuring U and W and inferring
+`iv = -(iu+iw)`, which is exact in a three-wire machine.
 
-   **VREF+ must be measured, not assumed.** The board disables the internal
-   VREFBUF and drives VREF+ externally, and the candidates (3.3 / 3.0 / 2.5 /
-   2.048 V) span a 60% difference in volts-per-count. VREFINT is a factory-
-   calibrated on-die bandgap, so the firmware can measure it at startup —
-   `csense.c` already does this on the previous board.
+**COMP2 is an OVERVOLTAGE trip.** Its input PA3 is `TS_VSENSE`, the tractive
+system bus. That is the right thing for this machine to have — regen into a
+full or disconnected pack climbs faster than a 20 kHz loop will catch — but
+the DAC threshold is still unset and `COMP1_2_3_IRQHandler` is an empty stub.
 
-   **The current sensor is genuinely undersized.** +/-200 A bidirectional,
-   which lands between the machine's two ratings:
+**PA15 is `XDIR`, a transceiver direction pin, not a chip select.** The
+encoder link is differential, through SN65176B RS485 transceivers and an
+NXU0304BQ level shifter: clock pair, bidirectional data pair, direction
+control. That is an SSI/BiSS/EnDat-class interface. The current code drives
+PA15 low for the frame and calls it a chip select, which happens to hold the
+transceiver in receive and so may work — for the wrong reason, and it can
+never transmit.
 
-   | | | |
-   |---|---|---|
-   | motor continuous | 100 Arms = 141 A peak | fits, ~30% margin |
-   | **sensor** | **200 A peak = 141 Arms** | |
-   | motor peak | 240 Arms = 339 A peak | 1.7x over |
+### Still open
 
-   So continuous operation is fully measurable and roughly half the machine's
-   peak torque is not reachable — 200 A peak is 59% of the 240 Arms that makes
-   the EMRAX's 240 Nm, and 47% once a sane 80% margin is applied. A **+/-350 A
-   part** covers the 339 A peak with 3% to spare.
+1. **The current sense chain's amps-per-volt at the pin.** The sensors are
+   Mornsun TL200-A2PV on 5 V, conditioned by op-amps referenced to `VREFHALF`
+   from `3V3A` (sheet 6). The resistor values on that sheet are unassigned
+   placeholders, so the gain cannot be read off it. One known current and a
+   voltmeter at the ADC pin settles the whole chain at once.
 
-   This is a hardware limit and is not to be worked around in firmware:
-   current the sensor cannot measure is current the loop cannot control, and a
-   loop reading a saturated sensor believes it has arrived and stops pushing
-   while the real current climbs. `LIM_IQ_MAX_MA` is 160 A — 80% of the
-   sensor — which is 113 Arms, above the machine's continuous rating, so short
-   bursts past continuous are permitted and sustained overload is the
-   temperature channels' job rather than the current limit's.
+2. **The bus sense gain AND offset.** Sheet 5 shows the divider is only the
+   first third: 400:1, then an AMC0311 reinforced isolated amplifier on an
+   isolated supply, then an MCP6496 difference amplifier biased from 3V3A. The
+   firmware models the divider alone with zero offset. Two known bus voltages
+   and two ADC codes give both terms directly, and measure what the board does
+   rather than what three datasheets say it should.
 
-   Still needed for `csense.c`: **the current sensor's part number or its volts
-   per amp.** The range bounds the limit correctly either way, but scaling a
-   reading needs the sensitivity.
+3. **The dead time, from the new FETs.** See §3 item 6.
 
-5. ~~**The RM44SI frame format.**~~ **Answered**, from the board's own SPI3
-   interrupt handler: 14-bit frames, angle in the low 13 bits. What the 14th
-   bit carries is still unknown - it is masked off, so a status or error flag
-   living there is currently being ignored.
+4. **Gate driver part number**, for the polarity and latching behaviour of the
+   twelve lines above.
 
-6. **The dead time, which the FET change puts back on the table.** 160 counts
-   at DT prescaler DIV1 is 1.0 us, taking fDTG = fHRTIM = 160 MHz as the LL
-   header states.
+5. **The encoder part and its protocol**, and the idle sense of XDIR.
 
-   Dead time covers the device's turn-off delay plus the mismatch between the
-   two gate-driver channels, and turn-off delay is a property of the FET — its
-   gate charge, the gate resistor, the driver's sink current. Different FETs,
-   different requirement. This is precisely the constant that the otherwise
-   very helpful "same hardware except the FETs" does not carry across.
+6. **Phase sense polarity**, still — the schematic shows the sensors but not
+   which way round they read current.
 
-   1.0 us is also long for a MOSFET bridge, where 100-500 ns is typical. That
-   asymmetry is the reason it is being left alone rather than trimmed: too
-   long costs modulation range and adds distortion near the zero crossing, and
-   too short is a shoot-through that the firmware cannot detect, cannot fault
-   on, and that damages the bridge cumulatively. Re-derive from the new FETs'
-   datasheet, then confirm on a scope at a switch node.
-
-7. **Phase sense POLARITY.** MiniFOCer negates its W phase current and not
-   its U (`* -0.040584...`); `gr_motherfocer` negates nothing. Which is right
-   here is a wiring question that a pinout cannot answer, and it does not fail
-   loudly - a reversed phase sensor corrupts the Clarke transform into a
-   rotating error rather than an obvious one. Check the sign of each phase
-   against a known current before closing the loop.
-
-8. ~~**Which motor is actually attached.**~~ **Answered: EMRAX 228 HV on a
-   140s2p pack.** The inherited constants turned out to be EMRAX constants
-   rather than placeholders - `foc.h`'s HV analysis quotes 917 Hz electrical
-   (10 pole pairs at 5500 rpm) and back-solves to exactly the 255 uH in the
-   board's own defines. R and L should still be confirmed with `ident.c` on
-   the machine, and lambda_m must be measured; see step 7 above.
+7. **`lambda_m`**, which is a measurement on the machine and not a document.
 
 ## 5. Suggested bring-up order
 

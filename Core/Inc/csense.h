@@ -4,17 +4,18 @@
   * @brief   Analogue front end - three phase currents, DC link current and bus
   *          voltage, all from one HRTIM-triggered ADC1 sequence over DMA.
   *
-  *          A different shape from Mako Longfin, which polled two phases
-  *          through internal OPAMP followers on ADC2 and ADC5. There are no
-  *          OPAMPs in this path: the sensors drive the pins directly.
+  *          Sensor outputs are conditioned by op-amps on the board (schematic
+  *          sheet 6) and drive the pins directly - unlike Mako Longfin, which
+  *          used the MCU's internal OPAMP followers on ADC2 and ADC5.
   *
-  *            rank 1  PC3  ADC1_IN9   phase W current
-  *            rank 2  PA0  ADC1_IN1   phase V current
-  *            rank 3  PA1  ADC1_IN2   phase U current
-  *            rank 4  PA2  ADC1_IN3   DC link current
-  *            rank 5  PA3  ADC1_IN4   DC bus voltage
+  *          From the schematic, sheets 2 and 6:
   *
-  *          One trigger converts all five, so every quantity the control loop
+  *            rank 1  PC3  ADC1_IN9   UC_ISNS_U   phase U current
+  *            rank 2  PA0  ADC1_IN1   UC_ISNS_W   phase W current
+  *            rank 3  PA1  ADC1_IN2   UC_ISNS_DC  DC link current
+  *            rank 4  PA3  ADC1_IN4   TS_VSENSE   DC bus voltage
+  *
+  *          One trigger converts all four, so every quantity the control loop
   *          uses comes from the same instant in the switching period. The
   *          board's own bring-up code left ADC1 free-running and read whatever
   *          DMA had last written, which is fine for a print loop and not for a
@@ -22,23 +23,25 @@
   *          version of why sampling position is a correctness requirement.
   *
   * ---------------------------------------------------------------------------
-  * Three phases measured, two handed on
+  * There are TWO phase current sensors, not three
   * ---------------------------------------------------------------------------
-  *          Mako Longfin measured two and inferred the third. This board
-  *          measures all three, which makes the set overdetermined: iu+iv+iw
-  *          must be zero in a three-wire machine, so whatever they actually
-  *          sum to is common-mode error - sensor offset drift, a shifted
-  *          reference, thermal drift since the last zero capture.
+  *          U and W, plus the DC link. Same shape as Mako Longfin: the third
+  *          phase is inferred as -(iu+iw), which is exact in a three-wire
+  *          machine.
   *
-  *          That sum is divided out across the three before anything else
-  *          sees them. It costs two adds and a multiply and it removes the
-  *          error term that a two-phase measurement has no way to observe:
-  *          with two sensors, an offset on either one is indistinguishable
-  *          from real current, and it lands in the Park transform as a
-  *          once-per-revolution torque ripple.
+  *          This module briefly measured three and did a common-mode
+  *          correction on iu+iv+iw. That was wrong and worth recording, since
+  *          the mistake is easy to repeat: gr_motherfocer's own bring-up code
+  *          reads a "V_current" from PA0 and a DC current from PA2, and this
+  *          module copied that mapping before the schematic was available.
   *
-  *          FOC still receives U and W, so foc.c is untouched and its tests
-  *          stay valid. The third sensor buys accuracy, not a new interface.
+  *          The schematic says PA0 is UC_ISNS_W and PA2 is NOT CONNECTED. So
+  *          the phantom V channel was actually the W sensor read a second
+  *          time, U and W were transposed, and the DC link was being read from
+  *          an unconnected pin. The common-mode correction then took that
+  *          fictional residual and subtracted a third of it from the two real
+  *          measurements - actively corrupting good data with noise from a
+  *          floating input.
   ******************************************************************************
   */
 #ifndef CSENSE_H
@@ -61,27 +64,26 @@ extern "C" {
 /* Fallback reference until VREFINT has been read. See CSense_MeasureVdda. */
 #define CS_VREF_MV          BOARD_VREF_NOMINAL_MV
 
-/* Ranks in the ADC1 sequence, and so indices into the DMA buffer. */
-#define CS_IDX_W            0U
-#define CS_IDX_V            1U
-#define CS_IDX_U            2U
-#define CS_IDX_DC           3U
-#define CS_IDX_VBUS         4U
-#define CS_SEQ_LEN          5U
+/* Ranks in the ADC1 sequence, and so indices into the DMA buffer.
+ *
+ * PA2 is deliberately absent: the schematic shows it unconnected, and
+ * converting it would spend 625 ns per period digitising a floating pin. */
+#define CS_IDX_U            0U
+#define CS_IDX_W            1U
+#define CS_IDX_DC           2U
+#define CS_IDX_VBUS         3U
+#define CS_SEQ_LEN          4U
 
 typedef struct {
   uint32_t u_raw;      /* last raw ADC code, U phase            */
-  uint32_t v_raw;      /* last raw ADC code, V phase            */
   uint32_t w_raw;      /* last raw ADC code, W phase            */
   int32_t  u_mv;       /* sensor output in mV, U                */
   int32_t  w_mv;       /* sensor output in mV, W                */
   int32_t  u_ma;       /* current in mA, signed, U              */
-  int32_t  v_ma;       /* current in mA, signed, V              */
   int32_t  w_ma;       /* current in mA, signed, W              */
+  int32_t  v_ma;       /* INFERRED, -(iu+iw). Not measured.     */
   int32_t  dc_ma;      /* DC link current in mA, signed         */
-  int32_t  resid_ma;   /* iu+iv+iw before correction - see below*/
   uint32_t u_zero;     /* calibrated zero code, U               */
-  uint32_t v_zero;     /* calibrated zero code, V               */
   uint32_t w_zero;     /* calibrated zero code, W               */
   uint32_t dc_zero;    /* calibrated zero code, DC link         */
   uint32_t samples;    /* successful sample sets                */
@@ -93,15 +95,14 @@ typedef struct {
   uint32_t triggered;  /* 1 once the sequence is HRTIM-triggered */
 } CSenseTelem_t;
 
-/* resid_ma is the diagnostic that the third sensor makes possible: the sum of
- * the three phase currents, which is zero in a healthy three-wire machine.
- *
- * It is worth watching rather than merely correcting. A steady residual is
- * offset drift and is exactly what the correction removes. A residual that
- * grows with current is a GAIN mismatch between sensors, which the correction
- * cannot fix and which no amount of zero calibration will touch. A residual
- * that appears suddenly is a sensor or a phase connection that has failed.
- * None of those are observable at all with only two sensors. */
+/* v_ma is computed, not measured: -(iu + iw), exact in a three-wire machine
+ * because the currents must sum to zero. It is published because a host
+ * plotting three phase currents is a normal thing to want, and because
+ * leaving it out invites someone to re-add a third sensor that does not
+ * exist. With two sensors there is no residual to check it against - an
+ * offset on either sensor is indistinguishable from real current, and lands
+ * in the Park transform as a once-per-revolution torque ripple. That is a
+ * limitation of the hardware, not of this code. */
 
 /* Brings up ADC1 with its five-channel sequence and DMA, runs ADC
  * self-calibration, measures VREF+ against VREFINT, then captures the
@@ -153,6 +154,13 @@ int32_t CSense_RawToMv(uint32_t raw);
  * the divider and the MEASURED reference for exactly that reason. */
 #define CS_VBUS_DIV_NUM     BOARD_VBUS_DIV_NUM
 #define CS_VBUS_DIV_DEN     BOARD_VBUS_DIV_DEN
+
+/* Zero-bus ADC code. The isolated sense chain may not put zero volts at code
+ * zero - see board.h section 4 - so the conversion carries an offset even
+ * though it is 0 until somebody calibrates it. Present and named so that the
+ * calibration has an obvious home, rather than being discovered as a missing
+ * term later. */
+#define CS_VBUS_ZERO_CODE   0
 
 /* Both retained for the existing call sites. The bus is part of the same
  * sequence now, so starting it is a no-op and reading it is a buffer copy. */

@@ -221,17 +221,23 @@ static int MotorPwm_ConfigCompare(uint32_t timer_idx, uint32_t unit, uint32_t va
  * compare units had to be rationed between them, which is why the ADC trigger
  * ended up on a specific unit "because 1 and 3 were taken". Here CMP3 and CMP4
  * are free on every timer. */
-static int MotorPwm_ConfigPhase(uint32_t timer_idx, uint32_t out_high)
+static int MotorPwm_ConfigPhase(uint32_t timer_idx, uint32_t out_low)
 {
   if (MotorPwm_ConfigCompare(timer_idx, HRTIM_COMPAREUNIT_1, PWM_CMP_MIN) != 0) { return -1; }
   if (MotorPwm_ConfigCompare(timer_idx, HRTIM_COMPAREUNIT_2, PWM_CMP_MIN) != 0) { return -1; }
 
-  /* High side only. The low side of the leg is produced by the dead-time unit
-   * and must NOT be given set/reset sources of its own - doing so overrides
-   * the complement and removes the dead band. */
-  if (MotorPwm_ConfigOutput(timer_idx, out_high,
-                            HRTIM_OUTPUTSET_TIMCMP1,
-                            HRTIM_OUTPUTRESET_TIMCMP2) != 0) { return -1; }
+  /* Output 1 only, which on this board is the LOW gate. The high gate is
+   * produced from it by the dead-time unit and must NOT be given set/reset
+   * sources of its own - doing so overrides the complement and removes the
+   * dead band.
+   *
+   * SET on CMP2 and RESET on CMP1, which is the reverse of the obvious
+   * ordering and is the whole correction: it makes output 1 low between CMP1
+   * and CMP2, i.e. across the middle of the period, so its complement - the
+   * high gate - is a centred pulse. See MotorPwm_ApplyPhase. */
+  if (MotorPwm_ConfigOutput(timer_idx, out_low,
+                            HRTIM_OUTPUTSET_TIMCMP2,
+                            HRTIM_OUTPUTRESET_TIMCMP1) != 0) { return -1; }
 
   return 0;
 }
@@ -252,6 +258,7 @@ int MotorPwm_Init(void)
   if (MotorPwm_ConfigTimer(PWM_TIMER_V) != 0) { return -1; }
   if (MotorPwm_ConfigTimer(PWM_TIMER_W) != 0) { return -1; }
 
+  /* TB1 / TF1 / TC1 are PA10, PC6 and PB12 - the LOW gates. See motor_pwm.h. */
   if (MotorPwm_ConfigPhase(PWM_TIMER_U, HRTIM_OUTPUT_TB1) != 0) { return -1; }
   if (MotorPwm_ConfigPhase(PWM_TIMER_V, HRTIM_OUTPUT_TF1) != 0) { return -1; }
   if (MotorPwm_ConfigPhase(PWM_TIMER_W, HRTIM_OUTPUT_TC1) != 0) { return -1; }
@@ -274,33 +281,43 @@ int MotorPwm_Init(void)
   return 0;
 }
 
-/* Apply one phase.
+/* Apply one phase. `counts` is the HIGH-side on-time.
  *
- * A commanded 0 must produce a genuinely dead high side, and a small compare
- * cannot do that: below PWM_CMP_MIN the compare is ignored and the output
- * latches high for the whole period. So 0 clears the set-source instead - the
- * output is never driven high, and the (still valid) compare guarantees any
- * currently-high output gets reset once and stays low.
+ * Output 1 is the LOW gate on this board, so the waveform programmed here is
+ * the low gate's and the high gate is its dead-time complement.
  *
- * setxr points at the SETx1R register for the phase's high-side output. */
-static void MotorPwm_ApplyPhase(volatile uint32_t *setxr, uint32_t timer_idx,
-                                uint32_t counts)
+ * Centre-aligned in plain UP counting, with the compare values placed exactly
+ * as they would be for a centred high-side pulse:
+ *
+ *     ca = PER/2 - counts/2      cb = PER/2 + counts/2
+ *
+ * and then output 1 is RESET at ca and SET at cb. That leaves the low gate
+ * LOW between ca and cb and HIGH across the period boundary - so the high
+ * gate, being the complement, is a pulse of width `counts` centred on PER/2.
+ *
+ * The zero vector therefore still straddles the period boundary, which is
+ * where the ADC samples and where the ripple current equals its average. None
+ * of that changed when the high/low mix-up was corrected; only which register
+ * gets the set source and which gets the reset.
+ *
+ * setxr and rstxr point at SETx1R and RSTx1R for the phase. */
+static void MotorPwm_ApplyPhase(volatile uint32_t *setxr, volatile uint32_t *rstxr,
+                                uint32_t timer_idx, uint32_t counts)
 {
-  /* Centre-aligned in plain UP counting: place the pulse symmetrically about
-   * the period midpoint using two compares.
-   *
-   *     SET   on CMP1 = PER/2 - counts/2
-   *     RESET on CMP2 = PER/2 + counts/2
-   *
-   * The HIGH pulse is centred on PER/2 and the zero vector straddles the
-   * period boundary, which is where the ADC samples - the point at which the
-   * ripple current equals its average. Up-down mode is not needed for this.
-   * (Technique taken from the minifocer implementation.) */
   uint32_t centre = s_period / 2U;
 
   if (counts == 0U)
   {
-    *setxr = 0U;                       /* never set -> high side stays off */
+    /* High side off for the whole period, so the LOW gate must be on for the
+     * whole period - set at the period rollover and never reset.
+     *
+     * This is the case the high/low mix-up made dangerous. Clearing the set
+     * source, which is what a "dead output" meant when output 1 was believed
+     * to be the high gate, leaves output 1 permanently LOW here - and its
+     * complement, the HIGH gate, permanently ON. A commanded zero would have
+     * clamped every phase to the positive rail. */
+    *setxr = HRTIM_OUTPUTSET_TIMPER;
+    *rstxr = 0U;
     __HAL_HRTIM_SETCOMPARE(&hhrtim1, timer_idx, HRTIM_COMPAREUNIT_1, centre);
     __HAL_HRTIM_SETCOMPARE(&hhrtim1, timer_idx, HRTIM_COMPAREUNIT_2, centre + 1U);
     return;
@@ -316,7 +333,8 @@ static void MotorPwm_ApplyPhase(volatile uint32_t *setxr, uint32_t timer_idx,
   if (cb > s_period - 1U)   { cb = s_period - 1U; }
   if (cb <= ca)             { cb = ca + 1U; }
 
-  *setxr = HRTIM_OUTPUTSET_TIMCMP1;
+  *setxr = HRTIM_OUTPUTSET_TIMCMP2;
+  *rstxr = HRTIM_OUTPUTRESET_TIMCMP1;
   __HAL_HRTIM_SETCOMPARE(&hhrtim1, timer_idx, HRTIM_COMPAREUNIT_1, ca);
   __HAL_HRTIM_SETCOMPARE(&hhrtim1, timer_idx, HRTIM_COMPAREUNIT_2, cb);
 }
@@ -327,9 +345,9 @@ void MotorPwm_SetDuty(uint32_t u, uint32_t v, uint32_t w)
   volatile HRTIM_Timerx_TypeDef *tv = &hhrtim1.Instance->sTimerxRegs[PWM_TIMER_V];
   volatile HRTIM_Timerx_TypeDef *tw = &hhrtim1.Instance->sTimerxRegs[PWM_TIMER_W];
 
-  MotorPwm_ApplyPhase(&tu->SETx1R, PWM_TIMER_U, u);
-  MotorPwm_ApplyPhase(&tv->SETx1R, PWM_TIMER_V, v);
-  MotorPwm_ApplyPhase(&tw->SETx1R, PWM_TIMER_W, w);
+  MotorPwm_ApplyPhase(&tu->SETx1R, &tu->RSTx1R, PWM_TIMER_U, u);
+  MotorPwm_ApplyPhase(&tv->SETx1R, &tv->RSTx1R, PWM_TIMER_V, v);
+  MotorPwm_ApplyPhase(&tw->SETx1R, &tw->RSTx1R, PWM_TIMER_W, w);
 }
 
 void MotorPwm_SetDutyPermille(uint32_t u, uint32_t v, uint32_t w)
