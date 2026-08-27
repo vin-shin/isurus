@@ -6,6 +6,7 @@
   */
 
 #include "led.h"
+#include "board.h"
 #include "main.h"
 #include "motor_pwm.h"
 #include "drive.h"
@@ -19,7 +20,15 @@
  * which matters because the two lamps are driven from different contexts. */
 static inline void led_write(uint16_t pin, uint32_t on)
 {
+#if !BOARD_HAS_LEDS
+  /* No LEDs on this board - see BOARD_HAS_LEDS in board.h. Swallowed here
+   * rather than at each call site, so the pattern logic below stays compiled
+   * and reviewable instead of rotting behind an #if. */
+  (void)pin; (void)on;
+  return;
+#else
   LED_PORT->BSRR = on ? (uint32_t)pin : ((uint32_t)pin << 16);
+#endif
 }
 
 /* Derived, not written down: the pattern stays one second long whatever the
@@ -29,11 +38,13 @@ static inline void led_write(uint16_t pin, uint32_t on)
 
 void Led_Init(void)
 {
-  /* gpio.c already configures both as push-pull outputs; this only settles
-   * them into a known state. Dark means "no firmware", so leaving them lit
-   * here would make a hung boot look healthy. */
+#if BOARD_HAS_LEDS
+  /* gpio.c configures both as push-pull outputs; this only settles them into
+   * a known state. Dark means "no firmware", so leaving them lit here would
+   * make a hung boot look healthy. */
   led_write(LED_STAGE_PIN, 0U);
   led_write(LED_STATUS_PIN, 0U);
+#endif
 }
 
 void Led_StepIsr(void)

@@ -129,8 +129,18 @@ anything. Nothing below step 3 should run with the bus energised.
    that had not been told the rate changed. `SIM_TS` derives from
    `PWM_FREQ_HZ` now.
 
-4. **`csense.c` / `.h`** — **refused at run time, not yet rewritten.** This
-   is the largest single rewrite.
+4. **`csense.c` / `.h`** — **done.** Five channels off one HRTIM-triggered
+   ADC1 sequence into a circular DMA buffer: three phase currents, DC link
+   current, bus voltage. Three phases are measured and the residual
+   `iu+iv+iw` is reported and divided out as common-mode error; FOC still
+   receives U and W, so `foc.c` is untouched. Scaling is derived from the
+   measured VREF+ and the sensor sensitivity rather than from any literal.
+
+   Wiring it up turned up two pin conflicts: `MX_GPIO_Init` drove PA2 - the DC
+   link current input - as a push-pull output, and ADC1's MSP claimed PF0
+   while claiming none of the five channels in use.
+
+   What this replaced, for the record:
 
    `CSense_Init` now returns an error immediately and the Mako Longfin
    implementation is fenced behind `BOARD_HAS_OPAMP_CSENSE`, which is 0.
@@ -239,7 +249,15 @@ anything. Nothing below step 3 should run with the bus energised.
    HV current loop works, and it is a motor-test-rig task rather than a
    firmware one.
 
-8. **`led.c`, `docs/LED_CODES.md`** — no LED appears in the new pinout, and
+8. **`led.c`, `docs/LED_CODES.md`** — **done, by removal.**
+   `BOARD_HAS_LEDS` is 0 and `led.c` compiles to nothing. It had been writing
+   BSRR at pins that stopped being outputs when `gpio.c` was retargeted, so it
+   was already doing nothing - just not saying so. The diagnostic that is lost
+   is worth reading in `board.h`: the stage lamp asked the hardware whether
+   the gates were live rather than asking the state machine, which on a 588 V
+   bridge is the one indicator worth having without a debugger.
+
+   ~~Superseded:~~ — no LED appears in the new pinout, and
    `led.c` drives GPIOB pins that this board configures as inputs. Either the
    LEDs move to whichever of the unexplained pins turn out to be LEDs, or the
    two-LED front panel and its documentation go away on this branch.

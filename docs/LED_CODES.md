@@ -1,5 +1,12 @@
 # Debug LEDs — Isurus
 
+> **This board has no LEDs.** The GR MotherFOCer pinout has nothing spare for
+> them - PB1 is an ADC3 input and PB2 is one of the unexplained inputs in
+> `board.h` section 9 - so `BOARD_HAS_LEDS` is 0 and `led.c` compiles to
+> nothing. Everything below describes Mako Longfin and is kept because the
+> patterns are the design, not the wiring: if a pin is ever found, this is
+> what should go on it. See `docs/PORT-POWER-UNIT.md`.
+
 Two LEDs on PB1 and PB2 are the whole front panel. Once the board leaves the
 bench there is no debugger, no UART and no CAN host, so the pair has to answer
 the only three questions anyone actually asks of a drive:

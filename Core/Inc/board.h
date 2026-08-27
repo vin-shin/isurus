@@ -375,6 +375,44 @@ extern "C" {
  * known in advance - only the slope does. */
 #define BOARD_ADC_ZERO_SAMPLES  128U
 
+/* No front-panel LEDs on this board.
+ *
+ * Mako Longfin had two, on PB1 and PB2. Here PB1 is an ADC3 input and PB2 is
+ * one of the unexplained inputs in section 9, so neither is available and
+ * nothing in the pinout replaces them.
+ *
+ * led.c compiles to nothing under this flag rather than being left writing
+ * BSRR at pins that are not outputs - which is what it was doing, silently,
+ * once gpio.c stopped configuring them.
+ *
+ * What is LOST is worth stating, because it is not cosmetic. The stage lamp
+ * asked the HARDWARE whether the gates were live rather than asking the state
+ * machine, specifically so that a bench tool bringing the bridge up outside
+ * Drive_Arm could not produce a lamp that lied. On a 588 V traction inverter
+ * "is the bridge live" is exactly the question a person standing next to it
+ * wants answered without a debugger. If a spare pin can be found, this is the
+ * thing to spend it on. */
+#define BOARD_HAS_LEDS          0
+
+/* No front-panel LEDs on this board.
+ *
+ * Mako Longfin had two, on PB1 and PB2. Here PB1 is an ADC3 input and PB2 is
+ * one of the unexplained inputs in section 9, so neither is available and
+ * nothing in the pinout replaces them.
+ *
+ * led.c compiles to nothing under this flag rather than being left writing
+ * BSRR at pins that are not outputs - which is what it was doing, silently,
+ * once gpio.c stopped configuring them.
+ *
+ * What is LOST is worth stating, because it is not cosmetic. The stage lamp
+ * asked the HARDWARE whether the gates were live rather than asking the state
+ * machine, specifically so that a bench tool bringing the bridge up outside
+ * Drive_Arm could not produce a lamp that lied. On a 588 V traction inverter
+ * "is the bridge live" is exactly the question a person standing next to it
+ * wants answered without a debugger. If a spare pin can be found, this is the
+ * thing to spend it on. */
+#define BOARD_HAS_LEDS          0
+
 /* ==========================================================================
  * 5. Overcurrent comparator - COMP2 + DAC1_CH2
  * ==========================================================================
