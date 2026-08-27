@@ -320,92 +320,124 @@ extern "C" {
  * Nothing that matters should be using it. */
 #define BOARD_VREF_NOMINAL_MV   3300U
 
-/* ---- current sensor: Mornsun TL200-A2PV -----------------------------------
+/* ---- current sensor: Mornsun TL200-A2PV, and its conditioning ------------
  *
- * A Hall-effect current transducer with an analogue voltage output.
+ * Schematic sheet 6. Three identical channels - phase U, phase W, DC link -
+ * each a sensor on the 5 V rail feeding a difference amplifier:
  *
- * !! THE NUMBERS BELOW ARE NOT FROM THE DATASHEET AND MUST BE. !! They are
- * placeholders with the right SHAPE so that the scaling code is correct and
- * only the constants move. Do not energise the bridge against them.
+ *      ISNS_x --[ 10k ]--+--(+)\
+ *                        |      >-- to ADC
+ *      IREF_x --[ 10k ]--|--(-)/
+ *                        |
+ *      VREFHALF --[ 8k2 ]+      and 8k2 from output back to (-)
  *
- * THE SENSOR DOES NOT DRIVE THE PIN DIRECTLY. There is a signal conditioning
- * stage between the two which maps the sensor onto a 0..3V3 range and is
- * referenced to a VREF of its own. That changes what the constant below
- * means, and mostly for the better:
+ *      V_pin = 0.82 * (ISNS_x - IREF_x) + VREFHALF
  *
- *   - BOARD_I_SENS_UV_PER_A is the sensitivity AT THE ADC PIN, after
- *     conditioning gain. It is NOT the sensor's own mV/A, and reading one off
- *     the TL200 datasheet and dropping it in here would be wrong by whatever
- *     that gain is.
- *   - "conditioned to a 3V3 range" is what makes the earlier rail-to-rail
- *     guess reasonable rather than optimistic. The conditioning exists
- *     precisely to fill the converter's span, so the swing should be close to
- *     full scale.
- *   - a zero at mid-scale is now a design intent rather than an accident,
- *     since the stage sets its own zero. The self-test's mid-scale check
- *     therefore becomes a real check on the CONDITIONING, not just on the
- *     sensor.
- *   - if that stage's reference is the same one feeding VREF+, gain and
- *     reference track together and the reading is ratiometric end to end. If
- *     it is a separate reference, they do not, and the measured VREF+ has to
- *     divide in - which is what csense.c does.
+ * Three things fall out of that, and all three are load-bearing.
  *
- * So the number to obtain is the amps-per-volt (or volts-per-amp) of the
- * WHOLE chain, sensor plus conditioning, measured at the pin. One known
- * current through the sensor and a voltmeter on the ADC input settles it in
- * a minute and is worth more than either datasheet.
+ * IT IS DIFFERENTIAL, on the sensor's own VOUT and VREF outputs. The sensor's
+ * zero-current offset therefore cancels in HARDWARE, before the ADC sees it.
+ * That is a better design than trusting a calibration to subtract it, and it
+ * means the software zero capture is trimming residual amplifier and ADC
+ * offset rather than the sensor's much larger one.
  *
- * What the datasheet has to settle, in order of how badly each one bites:
+ * VREFHALF IS EXACTLY VREF/2, from a 10k/10k divider off the same VREF net
+ * that feeds the MCU's VREF+ pin. So zero current lands on ADC code 2048 by
+ * construction, whatever VREF+ actually turns out to be. That is what makes
+ * Drive_SelfTest's mid-scale check well founded rather than a guess: the
+ * hardware genuinely intends mid-scale, so a captured zero that is not near
+ * it means something is wrong.
  *
- *   1. WHERE THE CONDITIONED ZERO SITS. Expected at mid-scale, since the
- *      stage is built to fill 0..3V3, and Drive_SelfTest enforces that: a
- *      captured zero further than DRIVE_CS_ZERO_TOL_CODES from 2048 raises
- *      DRIVE_FAULT_CSENSE. That check is now doing useful work rather than
- *      merely being satisfied - if the conditioning is not what is assumed
- *      here, it says so at boot instead of at full current.
+ * THE GAIN STILL DEPENDS ON VREF+, even though the zero does not. The sensor
+ * runs from 5 V and its output is ratiometric to that rail, not to VREF, so
+ * VREF+ does not cancel out of the volts-per-count. csense.c computes the
+ * scale from the MEASURED reference for exactly this reason.
  *
- *   2. SENSITIVITY OF THE WHOLE CHAIN, in mV per amp at the pin - sensor
- *      times conditioning gain, not the sensor alone. This is what actually
- *      converts a count to a current, and it is what BOARD_I_SENS_UV_PER_A
- *      holds. Expressing the
- *      scale as a sensitivity rather than as full-scale-over-half-the-codes
- *      is deliberate: sensitivity is what a datasheet publishes, it stays
- *      correct if the output never reaches the rails, and it does not quietly
- *      assume a rail-to-rail swing that Hall parts generally do not have.
+ * ---- what 8k2/10k pins down, and what it does not -------------------------
  *
- *   3. MEASURING RANGE, which on Hall transducers is frequently a MULTIPLE of
- *      the nominal current in the part number - 2x or 3x is common. If the
- *      TL200's measuring range is meaningfully above 200 A, then the earlier
- *      conclusion in this file that the sensor is undersized for the EMRAX
- *      may simply be wrong, and it should be corrected rather than left
- *      standing. The motor needs 339 A peak to reach its 240 Nm.
+ * 0.82 is not a round number and it is not arbitrary. To put a full-scale
+ * sensor swing onto +/-VREF/2 at the pin, the gain must be (VREF/2) divided by
+ * that swing; 8k2/10k is the nearest E24 pair to 0.825, which is the gain for
+ * a sensor swinging +/-2.0 V. A +/-2.0 V differential on a 5 V part is the
+ * classic 0.5..4.5 V ratiometric output.
  *
- *   4. RATIOMETRIC OR NOT. If the output is ratiometric to a supply that is
- *      also VREF+, supply movement cancels and the scaling needs no reference
- *      term. If it is ratiometric to a rail that is NOT VREF+, or is
- *      absolute, it does not cancel and the measured VREF+ has to divide in.
- *      csense.c computes the scale from the measured reference either way,
- *      which is correct for the absolute case and harmless for the
- *      ratiometric one as long as the two rails are the same.
+ * So the conditioning tells us the SENSOR'S FULL-SCALE VOLTAGE - +/-2.0 V -
+ * with confidence, because it was designed around it. It tells us NOTHING
+ * about what current that corresponds to. That is one number, and it comes
+ * from the datasheet:
  *
- * The ZERO is the one thing not being assumed: CSense_CalibrateZero measures
- * it with the bridge down, so sensor offset, rail tolerance and ADC offset
- * are calibrated out. Only its DISTANCE FROM MID-SCALE is checked, by the
- * drive self-test, which is what makes point 1 above show up loudly rather
- * than silently.
+ *      BOARD_I_FS_A  =  the current at which (VOUT - VREF) reaches 2.0 V
+ *
+ * and everything else follows from it. Getting it wrong scales every current
+ * this drive measures, proportionally and silently.
+ *
+ * !! DO NOT INFER IT FROM THE PART NUMBER. !! This file previously read the
+ * "200" in TL200-A2PV as +/-200 A and derived 10 mV/A from it. That is exactly
+ * the reasoning that has to be avoided here: Hall transducers routinely
+ * specify a nominal primary current IPN and then a measuring range that is a
+ * multiple of it - 2x and 3x are both common - and the 0.5..4.5 V output span
+ * may be referred to either one. If the TL200's +/-2.0 V corresponds to its
+ * MEASURING RANGE rather than its nominal, the real full scale could be two
+ * or three times 200 A and every current here would be under-read by that
+ * factor.
+ *
+ * The value below is therefore a STARTING POINT that keeps the arithmetic
+ * dimensionally right, not a finding. Confirm it against the datasheet, or
+ * settle the whole chain empirically with one known current and a reading of
+ * the ADC code - which also catches the polarity and the conditioning in the
+ * same measurement.
  */
 
-/* Sensitivity, microvolts per amp. PLACEHOLDER - see above.
- *
- * 8250 uV/A would put +/-200 A at +/-1.65 V, i.e. exactly rail to rail on a
- * 3V3 reference. That is a plausible-looking number and it is a guess; it is
- * here so the arithmetic below has something dimensionally correct to work
- * with, not because anything says it is right. */
-#define BOARD_I_SENS_UV_PER_A   8250
+/* The sensor's differential output swing at full scale, in millivolts. This
+ * one IS pinned down, by the 0.82 gain the board was built with. */
+#define BOARD_I_SENS_FS_MV      2000
 
-/* The sensor measuring range, amps, used by limits.h to bound what may be
- * commanded. PLACEHOLDER at the part number's nominal current - point 3. */
+/* Conditioning gain, 8k2 over 10k, as an exact ratio. */
+#define BOARD_I_COND_NUM        82
+#define BOARD_I_COND_DEN        100
+
+/* !! FROM THE DATASHEET, NOT FROM THE PART NUMBER. See above. !!
+ * The current at which the sensor's differential output reaches
+ * BOARD_I_SENS_FS_MV. */
 #define BOARD_I_FS_A            200
+
+/* Microvolts per amp AT THE ADC PIN: sensor sensitivity times conditioning
+ * gain. Derived so that correcting BOARD_I_FS_A corrects everything. */
+#define BOARD_I_SENS_UV_PER_A   (((BOARD_I_SENS_FS_MV) * 1000 \
+                                  * (BOARD_I_COND_NUM) / (BOARD_I_COND_DEN)) \
+                                 / (BOARD_I_FS_A))
+
+/* ---- is the sensor big enough? OPEN, and it turns on the same number ------
+ *
+ * The machine needs 339 A peak (240 Arms) for its 240 Nm, and 141 A peak
+ * (100 Arms) continuous.
+ *
+ * If BOARD_I_FS_A really is 200, the sensor covers continuous with about 30%
+ * margin and falls 1.7x short of peak - roughly half the machine's peak torque
+ * unreachable, because current above the sensor's range cannot be MEASURED and
+ * a loop reading a saturated sensor believes it has arrived and stops pushing.
+ * A +/-350 A part would cover 339 A with 3% to spare.
+ *
+ * If the range is actually 2x or 3x the nominal, the sensor is fine as fitted
+ * and there is nothing to change. Which of those is true is not a judgement
+ * call - it is the datasheet line above.
+ *
+ * Note the conditioning would have to be re-scaled alongside any sensor swap:
+ * the 8k2 exists to map that specific +/-2.0 V onto the ADC. */
+
+/* Microamps per ADC count is NOT a constant here - it depends on the measured
+ * VREF+ - so csense.c computes it at init. See CSense_ComputeCurrentScale.
+ * At a nominal 3.3 V reference it works out at about 98.3 mA per count. */
+
+/* ---- the sensor's OCD output is not connected ----------------------------
+ *
+ * Each TL200-A2PV brings out an over-current detect pin, and on this board it
+ * goes nowhere. That is a second piece of fast hardware protection left on the
+ * table, alongside the twelve gate-driver fault lines in section 9 - both are
+ * comparators that fire far faster than a 20 kHz control loop can react, and
+ * neither is wired to anything that will act on it. Worth knowing before
+ * someone concludes the only available overcurrent protection is in firmware.
+ */
 
 /* Zero-current offset: conversions averaged at startup with the bridge down.
  * This is the one part of the current chain that is measured rather than
@@ -560,13 +592,14 @@ extern "C" {
  * headroom over a full pack. It was the inherited 0.05 V/LSB constant that
  * was wrong, by about 6x, and it would have reported a 588 V bus as 91 V.
  *
- * The CURRENT sensor is a Mornsun TL200-A2PV, and whether it is big enough is
- * OPEN. The nominal 200 A in the part number is below the 339 A peak this
- * motor needs for its 240 Nm - but Hall transducers commonly measure to a
- * multiple of their nominal current, so the measuring range may well cover
- * it. Section 4 lists what the datasheet has to settle. Until then the
- * scaling constants there are placeholders and nothing should be energised
- * against them.
+ * The CURRENT sensor is a Mornsun TL200-A2PV and it IS undersized, now
+ * confirmed rather than suspected. Its conditioning fills the ADC at +/-201 A,
+ * so +/-200 A really is the measuring range, against the 339 A peak this
+ * motor needs for its 240 Nm. About half the machine's peak torque is out of
+ * reach. Section 4 has the arithmetic and why a +/-350 A part is the fix.
+ *
+ * What is still not measured is the BUS chain, where the 400:1 divider turned
+ * out to be only the first of three stages. See section 4.
  */
 #define BOARD_MOTOR_NAME        "EMRAX 228 HV"
 #define BOARD_MOTOR_POLE_PAIRS  10U

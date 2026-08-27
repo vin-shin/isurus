@@ -323,11 +323,37 @@ never transmit.
 
 ### Still open
 
-1. **The current sense chain's amps-per-volt at the pin.** The sensors are
-   Mornsun TL200-A2PV on 5 V, conditioned by op-amps referenced to `VREFHALF`
-   from `3V3A` (sheet 6). The resistor values on that sheet are unassigned
-   placeholders, so the gain cannot be read off it. One known current and a
-   voltmeter at the ADC pin settles the whole chain at once.
+1. **The current sense chain — conditioning solved, full-scale current still
+   open.** Sheet 6 is a difference amplifier per channel across the sensor's
+   own `VOUT`/`VREF` pair: 10k in and 8k2 to `VREFHALF` on the non-inverting
+   side, 10k in and 8k2 feedback on the inverting side. That gives
+
+   ```
+   V_pin = 0.82 * (ISNS - IREF) + VREFHALF
+   ```
+
+   Three useful consequences. The sensor's zero cancels in **hardware**,
+   because the stage is differential across its own reference. `VREFHALF` is
+   `VREF/2` from a 10k/10k divider off the same net that feeds `VREF+`, so
+   zero current lands on ADC code 2048 by construction — which is what makes
+   `Drive_SelfTest`'s mid-scale check well founded. And the stage does **not**
+   invert, so it contributes no sign flip.
+
+   The gain also pins down the sensor's full-scale *voltage*: 8k2/10k is the
+   nearest E24 pair to 0.825, which is the gain for a ±2.0 V swing — the
+   classic 0.5–4.5 V ratiometric output on 5 V.
+
+   **What it does not pin down is the current that corresponds to ±2.0 V**,
+   and that is the one number still needed. `BOARD_I_FS_A` holds it, and
+   everything else derives from it. It must come from the datasheet, **not**
+   from the part number: Hall transducers routinely quote a nominal primary
+   current and a measuring range that is a multiple of it, and the 0.5–4.5 V
+   span may refer to either. Reading the "200" in TL200-A2PV as ±200 A is a
+   guess, and if the real span is 2x or 3x that, every current here is
+   under-read by that factor.
+
+   One known current and one ADC code settles it, along with the polarity, in
+   a single measurement.
 
 2. **The bus sense gain AND offset.** Sheet 5 shows the divider is only the
    first third: 400:1, then an AMC0311 reinforced isolated amplifier on an
@@ -343,8 +369,9 @@ never transmit.
 
 5. **The encoder part and its protocol**, and the idle sense of XDIR.
 
-6. **Phase sense polarity**, still — the schematic shows the sensors but not
-   which way round they read current.
+6. **Phase sense polarity**, still. The conditioning is now known not to
+   invert, so any sign flip is the sensor's own convention plus which way the
+   conductor passes through it — which a schematic cannot show.
 
 7. **`lambda_m`**, which is a measurement on the machine and not a document.
 
