@@ -323,37 +323,39 @@ never transmit.
 
 ### Still open
 
-1. **The current sense chain — conditioning solved, full-scale current still
-   open.** Sheet 6 is a difference amplifier per channel across the sensor's
-   own `VOUT`/`VREF` pair: 10k in and 8k2 to `VREFHALF` on the non-inverting
-   side, 10k in and 8k2 feedback on the inverting side. That gives
+1. ~~**The current sense chain.**~~ **Closed, from the datasheet.**
+
+   Conditioning, from sheet 6: a difference amplifier per channel across the
+   sensor's own `VOUT`/`VREF` pair, 10k in and 8k2 feedback, referenced to
+   `VREFHALF`:
 
    ```
    V_pin = 0.82 * (ISNS - IREF) + VREFHALF
    ```
 
-   Three useful consequences. The sensor's zero cancels in **hardware**,
-   because the stage is differential across its own reference. `VREFHALF` is
-   `VREF/2` from a 10k/10k divider off the same net that feeds `VREF+`, so
-   zero current lands on ADC code 2048 by construction — which is what makes
-   `Drive_SelfTest`'s mid-scale check well founded. And the stage does **not**
-   invert, so it contributes no sign flip.
+   The sensor's zero cancels in *hardware*, `VREFHALF` is `VREF/2` so zero
+   current lands on ADC code 2048 by construction, and the stage does not
+   invert.
 
-   The gain also pins down the sensor's full-scale *voltage*: 8k2/10k is the
-   nearest E24 pair to 0.825, which is the gain for a ±2.0 V swing — the
-   classic 0.5–4.5 V ratiometric output on 5 V.
+   Sensor, from `docs/TLxxx-A2(T)PV.pdf`: **G = 3.125 mV/A**, `Vref` 2.5 V,
+   `Vout = Vref + G*Ip`. So **2.5625 mV/A at the pin, 314 mA per ADC count**,
+   and the converter clips at ±644 A.
 
-   **What it does not pin down is the current that corresponds to ±2.0 V**,
-   and that is the one number still needed. `BOARD_I_FS_A` holds it, and
-   everything else derives from it. It must come from the datasheet, **not**
-   from the part number: Hall transducers routinely quote a nominal primary
-   current and a measuring range that is a multiple of it, and the 0.5–4.5 V
-   span may refer to either. Reading the "200" in TL200-A2PV as ±200 A is a
-   guess, and if the real span is 2x or 3x that, every current here is
-   under-read by that factor.
+   **Two earlier conclusions on this branch were wrong and are withdrawn.**
+   The "200" in TL200-A2PV is the *effective* range IPN, not a ceiling — every
+   part in the family gives ±0.625 V at its own IPN — and the **measurement
+   range is ±500 A**. So the sensor is not undersized; the ±350 A part
+   recommended earlier is unnecessary. And inferring 10 mV/A from the 0.82
+   gain, on the assumption the design fills the ADC at full scale, was wrong
+   by 3.2x: the gain exists to fit ±500 A into the converter, not IPN.
 
-   One known current and one ADC code settles it, along with the polarity, in
-   a single measurement.
+   Both mistakes came from reasoning about a part number instead of reading
+   the part.
+
+   Left over: the **OCD pin trips at ±400 A** and is not connected — above the
+   motor's 339 A peak so it cannot nuisance trip, below the sensor's range so
+   the reading is still good when it fires, and a comparator inside the sensor
+   so it responds in 0.3 µs. Three of them, unconnected.
 
 2. **The bus sense gain AND offset.** Sheet 5 shows the divider is only the
    first third: 400:1, then an AMC0311 reinforced isolated amplifier on an

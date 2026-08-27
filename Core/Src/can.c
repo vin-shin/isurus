@@ -366,7 +366,17 @@ static int32_t can_round_div(int32_t v, int32_t d)
   return (v >= 0) ? ((v + d / 2) / d) : -(((-v) + d / 2) / d);
 }
 
-static int32_t can_ma_to_ca(int32_t ma)   { return can_round_div(ma, 10); }
+/* Milliamps -> DECIAMPS, 100 mA per count.
+ *
+ * This was centiamps, which caps an i16 at 327.67 A - and the motor's peak is
+ * 339 A, so the field overflowed again the moment LIM_IQ_MAX_MA was corrected
+ * from the sensor's rating to the machine's. Deciamps caps at 3276.7 A.
+ *
+ * The resolution given up is not real: the current chain resolves 314 mA per
+ * ADC count, so 100 mA on the wire is already finer than anything being
+ * measured. Chasing centiamps here would have been reporting three digits of
+ * a number known to two. */
+static int32_t can_ma_to_da(int32_t ma)   { return can_round_div(ma, 100); }
 static int32_t can_mv_to_cv(int32_t mv)   { return can_round_div(mv, 10); }
 
 /* Degrees per second -> rpm. 360 dps is 60 rpm, so the factor is 6. */
@@ -491,7 +501,7 @@ void Can_PublishTelem(void)
    * zero, which on a current telemetry is a systematic under-report. */
   wr_i32(d,     g_pos.pos_deg_x10);
   wr_i16(d + 4, (int32_t)can_dps_to_rpm(g_pos.vel_dps));
-  wr_i16(d + 6, (int32_t)can_ma_to_ca(g_pos.iq_out_ma));
+  wr_i16(d + 6, (int32_t)can_ma_to_da(g_pos.iq_out_ma));
   (void)Can_Send(CAN_ID(CAN_NODE_ID, CAN_MSG_TELEM_MOTION), d, 8);
 
   uint8_t flags = 0U;
@@ -507,7 +517,7 @@ void Can_PublishTelem(void)
   d[1] = flags;
   wr_u16(d + 2, (uint32_t)can_mv_to_cv(g_cs.vbus_mv));
   wr_i16(d + 4, g_pos.err_deg_x10);
-  wr_u16(d + 6, (uint32_t)can_ma_to_ca(g_pos.iq_max_ma));
+  wr_u16(d + 6, (uint32_t)can_ma_to_da(g_pos.iq_max_ma));
   (void)Can_Send(CAN_ID(CAN_NODE_ID, CAN_MSG_TELEM_STATE), d, 8);
 
   /* Drive state and the latched cause. See CAN_MSG_TELEM_DRIVE. */

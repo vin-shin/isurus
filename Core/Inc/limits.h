@@ -24,19 +24,17 @@
   * ---------------------------------------------------------------------------
   *   motor            EMRAX 228 HV, 100 Arms continuous / 240 Arms peak
   *   pack             140s2p, 350 V empty to 588 V full, 518 V nominal
-  *   current sensor   +/-200 A bidirectional
-  *   bus sense        400:1 divider, 9.975 MOhm over 25 kOhm
+  *   current sensor   Mornsun TL200-A2PV, +/-500 A measurement range
+  *   bus sense        400:1 divider into an isolated amplifier chain
   *
-  *   The CURRENT SENSOR is the binding constraint, and it lands awkwardly:
-  *   between the machine continuous rating and its peak one. Continuous
-  *   current is measurable with margin; roughly half the peak torque is not
-  *   reachable, because current the sensor cannot measure is current the loop
-  *   cannot control. That is a hardware limit - a +/-350 A part fixes it -
-  *   and it must not be worked around in this file.
+  *   The MOTOR is the binding constraint on current, at 339 A peak against a
+  *   sensor good for 500 A and a converter that clips at 644 A. That is the
+  *   right way round. Sustained overload is the winding temperature's job,
+  *   not the current limit's.
   *
-  *   The bus divider is fine and has better than 2x headroom. It was the
-  *   inherited firmware scale factor that was wrong, by 6x. See board.h
-  *   section 4.
+  *   Neither analogue chain's absolute scaling is verified on hardware yet.
+  *   The current one is now datasheet-derived end to end; the bus one models
+  *   only the first of its three stages. See board.h section 4.
   ******************************************************************************
   */
 #ifndef LIMITS_H
@@ -50,35 +48,34 @@ extern "C" {
 
 /* ---- current ------------------------------------------------------------ *
  *
- * iq_ref is a PEAK amplitude, not an RMS phase current. The EMRAX ratings are
- * published in Arms, so they are converted before being compared here.
+ * iq_ref is a PEAK amplitude, not an RMS phase current. The EMRAX's ratings
+ * are published in Arms, so they are converted before being compared here.
  *
  * Four numbers bound this and the smallest wins:
  *
- *   339 A  motor, peak       240 Arms - CANNOT BE MEASURED, see below
- *   200 A  current sensor              - BOARD_I_FS_A, bidirectional
- *   160 A  this bound                  - 80% of the sensor
- *   141 A  motor, continuous 100 Arms  - the thermal limit of the machine
+ *   644 A  ADC clip                    - 2048 counts at 314 mA per count
+ *   500 A  sensor measurement range    - BOARD_I_FS_A, TL200-A2PV IPM
+ *   400 A  sensor OCD trip             - fires in hardware, unconnected here
+ *   339 A  motor, peak 240 Arms        - THIS ONE, and it is the right one
  *
- * The ordering is the interesting part: the sensor sits BETWEEN the motor
- * continuous and peak ratings. So continuous operation is fully measurable
- * with about 30% to spare, and roughly half the machine peak torque is not
- * reachable at all - 200 A peak is 141 Arms, which is 59% of the 240 Arms
- * that produces the EMRAX 240 Nm.
+ * So the MOTOR binds, which is the correct arrangement and the same one Mako
+ * Longfin had. An earlier version of this file set the ceiling from the
+ * sensor because the part number was misread as a +/-200 A range; the
+ * datasheet says +/-500 A and that claim is withdrawn.
  *
- * That is a HARDWARE limit and must not be worked around here. Current above
- * the sensor range cannot be measured, so it cannot be controlled: the loop
- * reads a ceiling, concludes it has arrived, and stops pushing while the real
- * current keeps climbing. A +/-350 A part covers the motor 339 A peak with 3%
- * to spare and is the right fix.
+ * 339 A peak is the machine's 10-second rating, not a place to live. Nothing
+ * here stops the drive sitting at it - deliberately, because a current limit
+ * that enforced the CONTINUOUS rating would also forbid the bursts this
+ * machine exists to deliver. Sustained overload is caught by winding
+ * temperature instead, which is why LIM_TEMP_MOTOR_MAX_CX10 below is not
+ * optional and why Drive_SelfTest refuses to arm without a working KTY.
  *
- * 160 A is 80% of the sensor - the same margin the bench carried to its trip
- * - and is 113 Arms, which is above the machine 100 Arms continuous rating.
- * So this ceiling permits short bursts past continuous and relies on the
- * motor and MOSFET temperature channels rather than on current alone to stop
- * a sustained overload. That is the correct division of labour, but those
- * channels are not read yet: see docs/PORT-POWER-UNIT.md. */
-#define LIM_IQ_MAX_MA           160000
+ * The OCD line at 400 A would be the right backstop for this: above the
+ * motor's peak so it cannot nuisance trip, below the sensor's range so the
+ * reading is still good when it fires, and a comparator inside the sensor so
+ * it responds in 0.3 us rather than a control period. It is not connected.
+ * See board.h. */
+#define LIM_IQ_MAX_MA           339000
 
 /* ---- bus voltage -------------------------------------------------------- *
  *

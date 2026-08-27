@@ -66,7 +66,7 @@ later would change the frame format only, not the protocol.
 
 Commands are in millivolts, milliamps and degrees per second, matching the
 firmware's own units. **Telemetry is not.** The bus is reported in centivolts
-and currents in centiamps, and velocity in RPM.
+and currents in deciamps, and velocity in RPM.
 
 That asymmetry is deliberate and it is the fix for a real defect. Four
 telemetry fields were sized for Mako Longfin, a 50 V / 12 A bench drive, and
@@ -75,18 +75,24 @@ all four overflow on this board:
 | field | type | caps at | this board needs |
 |---|---|---|---|
 | bus | `u16` mV | 65.5 V | 588 V |
-| `iq_max` | `u16` mA | 65.5 A | 160 A |
-| `iq` | `i16` mA | ±32.8 A | ±160 A |
+| `iq_max` | `u16` mA | 65.5 A | 339 A |
+| `iq` | `i16` mA | ±32.8 A | ±339 A |
 | velocity | `i16` dps | 32767 | 33600 |
 
 The velocity field is the one worth dwelling on. It overflows by 2.5%, so it
 reads correctly across the whole useful speed range and then wraps to a large
 negative number near maximum rpm — a channel that lies only at full speed.
 
-Centi- units buy 655 V and ±327 A, four to six times the headroom this machine
-needs, and cost resolution that the sensors do not have anyway: the current
-chain resolves about 80 mA per ADC count and the bus about 320 mV, both far
-coarser than the 10 mA and 10 mV the wire now carries. Velocity is in RPM
+Centivolts buy 655 V and deciamps ±3276 A, against a machine that needs 588 V
+and 339 A. Currents were briefly centiamps, which caps at 327.67 A — enough
+for the 160 A limit in force at the time, and an overflow again as soon as
+`LIM_IQ_MAX_MA` was corrected to the motor's 339 A peak. Sizing a wire field
+against the current value of a limit, rather than against what the machine can
+physically do, is how this protocol collected four overflows to begin with.
+
+Resolution is not the constraint anywhere here: the current chain resolves
+314 mA per ADC count and the bus about 320 mV, both coarser than the 100 mA
+and 10 mV the wire carries. Velocity is in RPM
 because a traction motor's datasheet, limits and every conversation about it
 already are.
 
@@ -226,7 +232,7 @@ they kept the firmware's own units, while four telemetry fields overflowed on
 |---|---|---|---|
 | Position | tenths of a mechanical degree | same | signed, **multi-turn** — 3600 is one full turn, no wrap to reason about |
 | Velocity | degrees per second | **RPM** | signed |
-| Current | milliamps of iq | **centiamps** | signed; for this motor iq is torque-producing current |
+| Current | milliamps of iq | **deciamps** | signed; for this motor iq is torque-producing current |
 | Acceleration | deg/s² | — | |
 | Jerk | deg/s³ | — | 0 selects a trapezoid profile instead of S-curve |
 | Bus voltage | — | **centivolts** | unsigned |
@@ -299,7 +305,7 @@ boot. There is no polling command.
  byte   0        1        2        3        4        5        6        7
       +----------------------------------+-----------------+-----------------+
       | i32  position, tenths of a degree| i16 velocity    | i16 iq          |
-      |      multi-turn, signed          |     RPM         |     centiamps   |
+      |      multi-turn, signed          |     RPM         |     deciamps    |
       +----------------------------------+-----------------+-----------------+
 ```
 
@@ -309,13 +315,13 @@ boot. There is no polling command.
  byte   0        1        2        3        4        5        6        7
       +--------+--------+-----------------+-----------------+-----------------+
       | u8     | u8     | u16 bus         | i16 following   | u16 iq_max      |
-      | mode   | flags  |     centivolts  |     err, deg*10 |     centiamps   |
+      | mode   | flags  |     centivolts  |     err, deg*10 |     deciamps    |
       +--------+--------+-----------------+-----------------+-----------------+
 ```
 
 Velocity and current are 16-bit because, IN THESE UNITS, ±32767 covers
 everything this drive can reach — ±32767 rpm against a 5600 rpm machine and
-±327 A against a 160 A limit — and it keeps
+±3276 A against a 339 A limit — and it keeps
 each message to a single frame. Both are **saturated, not wrapped**, on the way
 out: a velocity that overflowed would otherwise be reported with the opposite
 sign, which is worse than being clipped.

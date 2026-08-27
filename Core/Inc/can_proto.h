@@ -218,12 +218,12 @@ extern "C" {
  *  ----  ---------------  ---  ------------------------------------------
  *  0x10  TELEM_MOTION       8  i32 position, tenths of a degree, multi-turn
  *                              i16 velocity, RPM
- *                              i16 iq, CENTIAMPS
+ *                              i16 iq, DECIAMPS
  *  0x11  TELEM_STATE        8  u8  mode
  *                              u8  flags, CAN_FLAG_*
  *                              u16 bus CENTIVOLTS
  *                              i16 following error, tenths of a degree
- *                              u16 iq_max CENTIAMPS
+ *                              u16 iq_max DECIAMPS
  *  0x12  TELEM_DRIVE        8  u8  drive state, DriveState_t
  *                              u8  latched fault cause, DriveFault_t
  *                              u8  self-test failure cause, DriveFault_t
@@ -243,8 +243,8 @@ extern "C" {
  *  drive - and every one of them OVERFLOWS on this board:
  *
  *      bus       u16 millivolts   caps at  65.5 V   pack reaches 588 V
- *      iq_max    u16 milliamps    caps at  65.5 A   limit is 160 A
- *      iq        i16 milliamps    caps at  32.8 A   command reaches 160 A
+ *      iq_max    u16 milliamps    caps at  65.5 A   limit is 339 A
+ *      iq        i16 milliamps    caps at  32.8 A   command reaches 339 A
  *      velocity  i16 dps          caps at  32767    LIM_VEL_MAX_DPS is 33600
  *
  *  The velocity one is the reason this is worth being blunt about. It
@@ -253,11 +253,19 @@ extern "C" {
  *  telemetry channel that lies only at full speed, which is the worst place
  *  for it to start lying.
  *
- *  So: bus and currents move to centi- units and velocity to RPM. That buys
- *  655 V, +/-327 A and +/-32767 rpm, which is 4x to 6x headroom on this
- *  machine rather than the 0.4x it had. Resolution goes to 10 mV and 10 mA,
- *  which is far finer than the sensors resolve anyway - the current chain is
- *  about 80 mA per ADC count and the bus about 320 mV.
+ *  So: the bus moves to CENTIVOLTS, currents to DECIAMPS, velocity to RPM.
+ *  That buys 655 V, +/-3276 A and +/-32767 rpm, against a machine that needs
+ *  588 V, 339 A and 5600 rpm.
+ *
+ *  Currents were briefly centiamps, which caps at 327.67 A - fine against the
+ *  160 A limit in force at the time, and an overflow again the moment
+ *  LIM_IQ_MAX_MA was corrected to the motor's 339 A peak. Sizing a wire field
+ *  against the current value of a limit rather than against the machine is
+ *  how this protocol acquired four overflows in the first place.
+ *
+ *  Resolution is not the constraint anywhere here. The current chain resolves
+ *  314 mA per ADC count and the bus about 320 mV, so 100 mA and 10 mV on the
+ *  wire are both already finer than the measurements they carry.
  *
  *  RPM rather than dps for velocity because this is a traction motor and
  *  every datasheet, limit and conversation about it is already in rpm.

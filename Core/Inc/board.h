@@ -353,77 +353,83 @@ extern "C" {
  * VREF+ does not cancel out of the volts-per-count. csense.c computes the
  * scale from the MEASURED reference for exactly this reason.
  *
- * ---- what 8k2/10k pins down, and what it does not -------------------------
+ * ---- from the datasheet, TLxxx-A2(T)PV --------------------------------
  *
- * 0.82 is not a round number and it is not arbitrary. To put a full-scale
- * sensor swing onto +/-VREF/2 at the pin, the gain must be (VREF/2) divided by
- * that swing; 8k2/10k is the nearest E24 pair to 0.825, which is the gain for
- * a sensor swinging +/-2.0 V. A +/-2.0 V differential on a 5 V part is the
- * classic 0.5..4.5 V ratiometric output.
+ *      Vout = Vref + G * Ip,  Vref = 2.5 V
  *
- * So the conditioning tells us the SENSOR'S FULL-SCALE VOLTAGE - +/-2.0 V -
- * with confidence, because it was designed around it. It tells us NOTHING
- * about what current that corresponds to. That is one number, and it comes
- * from the datasheet:
+ *      TL200-A2PV   G = 3.125 mV/A          sensitivity, fixed
+ *                   IPN  = 200 A            "effective range", where the
+ *                                           output reaches its +/-0.625 V
+ *                                           full-scale figure
+ *                   IPM  = +/-500 A         MEASUREMENT range
+ *                   OCD trips at +/-400 A
  *
- *      BOARD_I_FS_A  =  the current at which (VOUT - VREF) reaches 2.0 V
+ * The two current figures are the trap this file walked into twice. IPN is
+ * not a ceiling - every part in the family gives +/-0.625 V at its own IPN
+ * (6.25 mV/A x 100, 4.167 x 150, 3.125 x 200) - and the part goes on
+ * measuring linearly to IPM, which for this one is two and a half times IPN.
  *
- * and everything else follows from it. Getting it wrong scales every current
- * this drive measures, proportionally and silently.
+ * So an earlier version of this file read the "200" in TL200-A2PV as the
+ * measuring range and concluded the sensor was undersized for the motor.
+ * THAT WAS WRONG. It then inferred 10 mV/A from the conditioning gain, on the
+ * assumption that the design fills the ADC at full scale. THAT WAS ALSO
+ * WRONG, and by a factor of 3.2: the real sensitivity is 3.125 mV/A and the
+ * 0.82 gain exists to fit the +/-500 A MEASUREMENT range into the converter,
+ * not to fill it at IPN.
  *
- * !! DO NOT INFER IT FROM THE PART NUMBER. !! This file previously read the
- * "200" in TL200-A2PV as +/-200 A and derived 10 mV/A from it. That is exactly
- * the reasoning that has to be avoided here: Hall transducers routinely
- * specify a nominal primary current IPN and then a measuring range that is a
- * multiple of it - 2x and 3x are both common - and the 0.5..4.5 V output span
- * may be referred to either one. If the TL200's +/-2.0 V corresponds to its
- * MEASURING RANGE rather than its nominal, the real full scale could be two
- * or three times 200 A and every current here would be under-read by that
- * factor.
- *
- * The value below is therefore a STARTING POINT that keeps the arithmetic
- * dimensionally right, not a finding. Confirm it against the datasheet, or
- * settle the whole chain empirically with one known current and a reading of
- * the ADC code - which also catches the polarity and the conditioning in the
- * same measurement.
+ * Both mistakes came from reasoning about a part number instead of reading
+ * the part. The numbers below are now datasheet values.
  */
 
-/* The sensor's differential output swing at full scale, in millivolts. This
- * one IS pinned down, by the 0.82 gain the board was built with. */
-#define BOARD_I_SENS_FS_MV      2000
+/* Sensor sensitivity, microvolts per amp. Datasheet G for TL200-A2PV. */
+#define BOARD_I_SENS_G_UV_PER_A 3125
 
-/* Conditioning gain, 8k2 over 10k, as an exact ratio. */
+/* Conditioning gain, 8k2 over 10k. */
 #define BOARD_I_COND_NUM        82
 #define BOARD_I_COND_DEN        100
 
-/* !! FROM THE DATASHEET, NOT FROM THE PART NUMBER. See above. !!
- * The current at which the sensor's differential output reaches
- * BOARD_I_SENS_FS_MV. */
-#define BOARD_I_FS_A            200
+/* At the ADC pin: 3125 x 0.82 = 2562.5 uV/A. */
+#define BOARD_I_SENS_UV_PER_A   ((BOARD_I_SENS_G_UV_PER_A) \
+                                 * (BOARD_I_COND_NUM) / (BOARD_I_COND_DEN))
 
-/* Microvolts per amp AT THE ADC PIN: sensor sensitivity times conditioning
- * gain. Derived so that correcting BOARD_I_FS_A corrects everything. */
-#define BOARD_I_SENS_UV_PER_A   (((BOARD_I_SENS_FS_MV) * 1000 \
-                                  * (BOARD_I_COND_NUM) / (BOARD_I_COND_DEN)) \
-                                 / (BOARD_I_FS_A))
+/* The sensor's measurement range, and so the widest current this board can
+ * measure at all. The converter itself does not clip until about 644 A, so
+ * the sensor is the limit and it has 29% of headroom above it. */
+#define BOARD_I_FS_A            500
 
-/* ---- is the sensor big enough? OPEN, and it turns on the same number ------
+/* ---- the sensor is NOT undersized. Correcting an earlier claim -----------
  *
- * The machine needs 339 A peak (240 Arms) for its 240 Nm, and 141 A peak
- * (100 Arms) continuous.
+ *      sensor IPM           500 A   78% of the converter's half-range
+ *      OCD trip             400 A   62%
+ *      motor peak, 240 Arms 339 A   53%
+ *      motor cont, 100 Arms 141 A   22%
  *
- * If BOARD_I_FS_A really is 200, the sensor covers continuous with about 30%
- * margin and falls 1.7x short of peak - roughly half the machine's peak torque
- * unreachable, because current above the sensor's range cannot be MEASURED and
- * a loop reading a saturated sensor believes it has arrived and stops pushing.
- * A +/-350 A part would cover 339 A with 3% to spare.
+ * The machine's peak sits at just over half the measurable range, so the
+ * binding limit on current is the MOTOR, not the sensor - which is the same
+ * arrangement Mako Longfin had and the right way round. The recommendation
+ * elsewhere in this branch's history to fit a +/-350 A part is withdrawn:
+ * there is nothing to change.
  *
- * If the range is actually 2x or 3x the nominal, the sensor is fine as fitted
- * and there is nothing to change. Which of those is true is not a judgement
- * call - it is the datasheet line above.
+ * Resolution is 314 mA per ADC count. Coarse next to the 98 mA this file
+ * briefly claimed, and still far finer than anything that depends on it - a
+ * thousandth of the peak rating. */
+
+/* ---- OCD is a free hardware overcurrent trip, and it is not wired --------
  *
- * Note the conditioning would have to be re-scaled alongside any sensor swap:
- * the 8k2 exists to map that specific +/-2.0 V onto the ADC. */
+ * Pin 1 of each sensor goes high when the primary current passes +/-400 A,
+ * and on this board it goes nowhere.
+ *
+ * That threshold is well chosen for this machine without anybody having
+ * chosen it: 400 A is above the motor's 339 A peak, so it will not nuisance
+ * trip, and it is below the 500 A the sensor can still measure, so it fires
+ * while the reading is still trustworthy. It is also a comparator inside the
+ * sensor, so it responds in the 0.3 us the datasheet quotes for a current
+ * step rather than in a 50 us control period.
+ *
+ * Three of them, one per sensed conductor, unconnected. Together with the
+ * twelve gate-driver fault lines in section 9 that is fifteen fast hardware
+ * protection signals on this board that no firmware can currently see. */
+#define BOARD_I_OCD_TRIP_A      400
 
 /* Microamps per ADC count is NOT a constant here - it depends on the measured
  * VREF+ - so csense.c computes it at init. See CSense_ComputeCurrentScale.
@@ -592,11 +598,12 @@ extern "C" {
  * headroom over a full pack. It was the inherited 0.05 V/LSB constant that
  * was wrong, by about 6x, and it would have reported a 588 V bus as 91 V.
  *
- * The CURRENT sensor is a Mornsun TL200-A2PV and it IS undersized, now
- * confirmed rather than suspected. Its conditioning fills the ADC at +/-201 A,
- * so +/-200 A really is the measuring range, against the 339 A peak this
- * motor needs for its 240 Nm. About half the machine's peak torque is out of
- * reach. Section 4 has the arithmetic and why a +/-350 A part is the fix.
+ * The CURRENT sensor is a Mornsun TL200-A2PV and it is FINE. Its measurement
+ * range is +/-500 A - the 200 in the part number is the "effective range",
+ * not a ceiling - against the 339 A peak this motor needs for its 240 Nm. So
+ * the binding limit on current is the motor, not the sensor. An earlier claim
+ * in this file that it was undersized, and the suggestion to fit a +/-350 A
+ * part, are both withdrawn; see section 4.
  *
  * What is still not measured is the BUS chain, where the 400:1 divider turned
  * out to be only the first of three stages. See section 4.
