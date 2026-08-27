@@ -125,8 +125,21 @@ if [ "${1:-}" = "--mutants" ]; then
   sed 's|      bad = DRIVE_FAULT_OVERTEMP;|      ;|' \
       "$ROOT/Core/Src/drive.c" > "$OUT/mut_hotsensor.c"
 
+  # 10. Ignore a latched gate driver fault at arming. The driver has already
+  #     shut that switch down on DESAT; arming anyway commands a bridge with a
+  #     switch missing, and every other test still passes.
+  #     Replaces the condition rather than deleting the line: the next line is
+  #     an `else if`, so deleting this one leaves a dangling else and the
+  #     mutant does not compile - which set -e turns into an aborted run
+  #     rather than a reported miss.
+  sed 's|if (g_drive.gd_flt_mask != 0U)       { bad = DRIVE_FAULT_GATEDRV; }|if (0) { }|' \
+      "$ROOT/Core/Src/drive.c" > "$OUT/mut_gdarm.c"
+  # 11. Ignore a gate driver that faults while running.
+  sed 's|      Drive_Fault(DRIVE_FAULT_GATEDRV);||' \
+      "$ROOT/Core/Src/drive.c" > "$OUT/mut_gdrun.c"
+
   fails=0
-  for m in clear nosafe miso uvlatch torqsat torqfast torqrun hotrun hotsensor; do
+  for m in clear nosafe miso uvlatch torqsat torqfast torqrun hotrun hotsensor gdarm gdrun; do
     "$CC" -std=gnu11 -O2 "${INC[@]}" "${DSRC[@]}" "$OUT/mut_$m.c"           -o "$OUT/mut_$m.exe" -lm 2>/dev/null
     if "$OUT/mut_$m.exe" >"$OUT/mut_$m.log" 2>&1; then
       echo "  NOT CAUGHT  drive mutant '$m' passed - the tests are too weak"

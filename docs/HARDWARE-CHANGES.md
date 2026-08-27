@@ -40,7 +40,7 @@ real diagnostic value. Any EXTI-capable pin works; the handler calls
 `MotorPwm_EmergencyStop()`, which is already written to run from a broken
 context using single-store register writes.
 
-### 1b. The gate drivers' fault and ready lines — twelve pins, already wired
+### 1b. The gate drivers' fault and ready lines — DONE, they are read now
 
 These *are* connected — to the MCU, on the twelve pins this port spent weeks
 calling "unexplained inputs":
@@ -51,8 +51,12 @@ calling "unexplained inputs":
 | U low | PA9 | PA12 | V low | PB14 | PB15 |
 | W high | PB0 | PB11 | W low | PB10 | PB2 |
 
-So this one is **not a hardware change at all** — it is firmware that has not
-been written. The drivers are reporting desaturation, loss of isolated supply
+So this one was never a hardware change — it was firmware that had not been
+written, and now is: see `Core/Src/gatedrv.c`. Kept here because the pin map
+and the driver behaviour below are board facts, and because §1a is the part
+that still needs a soldering iron.
+
+**Before that module existed**, the situation was: The drivers are reporting desaturation, loss of isolated supply
 and thermal shutdown, per switch, and the pins sit in their reset state with
 nobody listening. A fault line read as a floating input is not a fault handled
 badly; it is a fault that never happened as far as the firmware is concerned.
@@ -73,11 +77,13 @@ firmware work:
   path.
 - DESAT response is **200 ns**, against a 50 µs control period.
 
-The natural shape: all twelve as EXTI inputs with pull-ups, feeding
-`MotorPwm_EmergencyStop()` — already written to run from a broken context
-using single-store register writes. Plus a `RDY` check in `Drive_SelfTest` so
-the drive refuses to arm into a driver that is already unhappy, and a
-`DRIVE_FAULT_GATEDRV` carrying which switch complained.
+**What was built**, and one thing that surprised: not EXTI. Two pairs collide
+— PA9/PC9 and PD2/PB2 — and EXTI lines are numbered by pin rather than port,
+so there is no subset of the useful signals that fits. It does not matter,
+because the driver's DESAT protection has already turned the switch off 200 ns
+before the pin moves; `FLT` is the driver *telling* us, not a trip the MCU has
+to catch. So `GateDrv_Poll` samples all twelve from the control ISR in four
+port reads. `DRIVE_FAULT_GATEDRV` carries which switch complained.
 
 ---
 
@@ -208,18 +214,9 @@ operation:
    conductor passes through it. A reversed phase sensor does not fail loudly —
    it corrupts the Clarke transform into a rotating error.
 
-3. **The KTY front end.** Sheet 9 is a two-stage TLV9302 circuit, not the
-   pull-up divider `thermal.c` models — so that conversion has the wrong
-   *shape*, not just the wrong constant. The resistor values did not render
-   legibly enough to commit to. Substituting two known resistors for the KTY
-   and reading the ADC calibrates the whole chain regardless of topology.
-
-4. **Are `TEMP_U/V/W` analogue or PWM?** The UCC21756 offers an isolated
-   analogue sense channel whose output `APWM` encodes the measurement as a
-   *duty cycle*, and each driver brings APWM off-sheet. If those are the three
-   TEMP nets, they want a timer input capture rather than an ADC. Nothing
-   reads them yet, so nothing is currently wrong — but they must not be
-   plumbed in as voltages until this is settled.
+The KTY front end and the `TEMP_U/V/W` question have moved to
+[`LATER.md`](LATER.md) §1 and §2 — they are deferred firmware work rather than
+board changes.
 
 Both are one bench session, and the same session that answers §5.1 can answer
 §5.2.

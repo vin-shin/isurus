@@ -6,7 +6,7 @@ inverter on a 140s2p pack. It follows the repo's convention that a hardware
 target is a branch, not a repository.
 
 **Status: the software port is complete and nothing has been run on hardware.**
-It builds clean and 47 host tests pass. Several constants are derived rather
+It builds clean and 53 host tests pass. Several constants are derived rather
 than measured, and those are listed in §5.
 
 ## Sources, and how far each can be trusted
@@ -40,7 +40,7 @@ available.** They are recorded in §4 rather than quietly corrected.
 | HRTIM timers | A, B | B (U), F (V), C (W) |
 | Dead time | gate driver RDT, ~185 ns | HRTIM, 160 counts ≈ 1.0 µs |
 | Gate enable | PC5, **active low** | PC8 `DRV_RST`, **active high** |
-| Gate driver status | none | **12 fault/ready lines, unread** |
+| Gate driver status | none | 12 fault/ready lines, polled by `gatedrv.c` |
 | Phase current | 2 phases via internal OPAMPs | 2 phases (U, W) + DC link, external op-amps |
 | Current sensor | CT4022, ±40 A | Mornsun TL200-A2PV, ±500 A |
 | Bus sense | PF0, 190k/10k divider | PA3, 400:1 into an **isolated** amp chain |
@@ -149,7 +149,31 @@ Ordered so each step can be checked before the next can hurt anything.
    a hot one**: a KTY adrift reads as a fixed, plausible, fictional
    temperature.
 
-6. **`encoder.c` / `.h`** — **done, with the protocol unconfirmed.** SPI3,
+6. **`gatedrv.c` / `.h`** — **done, and new.** The twelve gate-driver status
+   lines, polled from the control ISR in four port reads.
+
+   Not EXTI, and the reason is worth keeping. It does not fit — PA9/PC9 and
+   PD2/PB2 collide, and EXTI lines are numbered by pin rather than port — but
+   more to the point it is not needed. The UCC21756 protects itself: DESAT
+   turns the switch off in 200 ns without the MCU, and `FLT` is the driver
+   *telling* us afterwards. What the MCU owes is to stop commanding, latch the
+   reason and say which switch, none of which is measured in nanoseconds.
+
+   `FLT` is active low and latches in the driver; `RDY` is active high, a
+   power-good on that driver's isolated supply. Both are open drain, so
+   `GateDrv_Init` gives all twelve pull-ups — until it ran they floated.
+
+   `DRIVE_FAULT_GATEDRV` latches on `FLT`. **Not-ready is treated as a
+   precondition**, like an undervoltage bus: the isolated supplies take
+   milliseconds to come up, and latching there would need a manual clear after
+   every quick power-on. Not-ready alone also does not trip a *running* drive
+   — a driver that genuinely cannot drive asserts `FLT` too, and faulting on a
+   marginal rail buys nothing.
+
+   There is no per-switch clear: `FLT` clears by pulsing `RST/EN`, which is
+   PC8 and shared by all six drivers, so recovery is a whole-bridge operation.
+
+7. **`encoder.c` / `.h`** — **done, with the protocol unconfirmed.** SPI3,
    manual control of PA15, one 14-bit frame per read. The angle is the low 13
    bits, from `gr_motherfocer`'s own SPI3 interrupt handler.
 
@@ -163,7 +187,7 @@ Ordered so each step can be checked before the next can hurt anything.
 
    **PA15 is `XDIR`, not a chip select.** See §4.
 
-7. **`can.c`** — **done.** FDCAN2 on PB6/PB5, prescaler 8 → 10 so 1 Mbit
+8. **`can.c`** — **done.** FDCAN2 on PB6/PB5, prescaler 8 → 10 so 1 Mbit
    survives 128 → 160 MHz. The segment split is untouched, so the 81.25%
    sample point is the one validated on the old board.
 
@@ -172,7 +196,7 @@ Ordered so each step can be checked before the next can hurt anything.
    which leaves the two directions in different units; `docs/CAN_PROTOCOL.md`
    now carries a per-direction table.
 
-8. **Motor constants and `limits.h`** — **done, one number unmeasured.**
+9. **Motor constants and `limits.h`** — **done, one number unmeasured.**
    EMRAX 228 HV, 140s2p: 350 V empty, 518 V nominal, 588 V full.
 
    `foc.h` describes it — 10 pole pairs, 23.22 mΩ, 255 µH, Ld = Lq. The
@@ -201,13 +225,13 @@ Ordered so each step can be checked before the next can hurt anything.
    specified as physical quantities and converted through the actual bus and
    tick rate.
 
-9. **`led.c`** — **done, by removal.** `BOARD_HAS_LEDS` is 0. It had been
+10. **`led.c`** — **done, by removal.** `BOARD_HAS_LEDS` is 0. It had been
    writing BSRR at pins that stopped being outputs when `gpio.c` was
    retargeted. What is lost is worth knowing: the stage lamp asked the
    *hardware* whether the gates were live rather than the state machine, so a
    bench tool arming outside `Drive_Arm` could not produce a lamp that lied.
 
-10. **`tools/`** — **not revisited.** They resolve symbols from the ELF at run
+11. **`tools/`** — **not revisited.** They resolve symbols from the ELF at run
     time, so they should survive, but `isr_budget.sh` still names a 33.3 µs
     deadline and it is 50 µs here.
 
@@ -261,7 +285,7 @@ Firmware cannot close any of these.
    A reversed sensor corrupts the Clarke transform into a *rotating* error.
 
 3. **`FOC_LAMBDA_M_WB`**, by spinning the motor with the feedforward disabled
-   and reading back the voltage the loop demands. See §3.8.
+   and reading back the voltage the loop demands. See §3.9.
 
 4. **Dead time**, from the new FETs. See `docs/HARDWARE-CHANGES.md` §4.
 
@@ -276,9 +300,14 @@ Firmware cannot close any of these.
    the core is 25% faster, so the old 21.1 µs figure means nothing here.
    **Owed, and needs the target.**
 
-Hardware recommendations that came out of the port are in
-**[`HARDWARE-CHANGES.md`](HARDWARE-CHANGES.md)** — chiefly fifteen fast
-protection signals that nothing currently reads.
+Deliberately deferred work — the KTY conversion's shape, whether `TEMP_U/V/W`
+are analogue or PWM, power-stage over-temperature, `tools/` — is in
+**[`LATER.md`](LATER.md)**. None of it blocks bring-up steps 1–5.
+
+Hardware recommendations are in **[`HARDWARE-CHANGES.md`](HARDWARE-CHANGES.md)**.
+The twelve gate-driver fault and ready lines listed there are now **read** —
+see `gatedrv.c` — leaving the three TL200 `OCD` outputs as the remaining
+unconnected fast protection.
 
 ## 6. Bring-up order
 

@@ -58,6 +58,7 @@ static const char *cause_name(uint32_t c)
     case DRIVE_FAULT_OVERCURRENT: return "OVERCURRENT";
     case DRIVE_FAULT_OVERVOLTAGE: return "OVERVOLTAGE";
     case DRIVE_FAULT_OVERTEMP:    return "OVERTEMP";
+    case DRIVE_FAULT_GATEDRV:     return "GATEDRV";
     case DRIVE_FAULT_UNDERVOLT:   return "UNDERVOLT";
     case DRIVE_FAULT_ENCODER:     return "ENCODER";
     case DRIVE_FAULT_CSENSE:      return "CSENSE";
@@ -497,6 +498,101 @@ static void test_warn_flag_precedes_the_trip(void)
         d);
 }
 
+/* ---- gate driver fault and ready lines ----------------------------------- *
+ *
+ * The UCC21756 has already shut the switch down 200 ns before the MCU sees
+ * FLT. These tests are about the POLICY that follows, not about speed.
+ */
+
+static void test_latched_gate_fault_refuses_to_arm(void)
+{
+  Stub_Reset();
+  g_stub.gd_flt = (1U << GD_VH);
+  boot();
+  expect(DRIVE_FAULT, DRIVE_FAULT_GATEDRV,
+         "a latched gate driver fault refuses to arm");
+}
+
+static void test_gate_fault_reports_which_switch(void)
+{
+  Stub_Reset();
+  g_stub.gd_flt = (1U << GD_WL);
+  boot();
+
+  char d[192];
+  snprintf(d, sizeof(d), "gd_flt_mask 0x%02lx, expected 0x%02lx (%s)",
+           (unsigned long)g_drive.gd_flt_mask, (unsigned long)(1U << GD_WL),
+           GateDrv_SwitchName(1U << GD_WL));
+  /* "A driver faulted" is not actionable; "the W low side faulted" is. The
+   * mask is the only place that survives to a pit crew. */
+  check(g_drive.gd_flt_mask == (1U << GD_WL),
+        "a gate fault records which switch complained", d);
+}
+
+static void test_drivers_not_ready_waits_rather_than_latching(void)
+{
+  Stub_Reset();
+  g_stub.gd_nrdy = GD_ALL_MASK;      /* isolated supplies still coming up */
+  boot();
+
+  char d[192];
+  snprintf(d, sizeof(d), "state %s, selftest_fail %s",
+           Drive_StateName(g_drive.state), cause_name(g_drive.selftest_fail));
+  /* Same shape as an undervoltage bus: a precondition, not a failure. The
+   * drivers are fed from on-board DC-DCs and this resolves in milliseconds;
+   * latching would mean a manual clear after every slightly-quick power-up. */
+  check(g_drive.state == DRIVE_SELFTEST &&
+        g_drive.selftest_fail == (uint32_t)DRIVE_FAULT_GATEDRV,
+        "drivers merely not ready stay in SELFTEST and record the reason", d);
+}
+
+static void test_drivers_becoming_ready_arms_on_their_own(void)
+{
+  Stub_Reset();
+  g_stub.gd_nrdy = GD_ALL_MASK;
+  boot();
+  g_stub.gd_nrdy = 0U;                       /* supplies arrive */
+  Host_AdvanceTick(DRIVE_SELFTEST_TIMEOUT_MS + 1000U);
+  Drive_Step(HAL_GetTick());
+  expect(DRIVE_READY, DRIVE_FAULT_NONE,
+         "the drive becomes READY by itself once the drivers report ready");
+}
+
+static void test_gate_fault_while_running_trips(void)
+{
+  run_armed();
+
+  /* Healthy first: the monitor must not trip a working bridge. */
+  Drive_Step(HAL_GetTick());
+  int healthy_ok = (g_drive.state == (uint32_t)DRIVE_RUN);
+
+  g_stub.gd_flt = (1U << GD_UL);
+  Drive_Step(HAL_GetTick());
+
+  char d[192];
+  snprintf(d, sizeof(d), "healthy held RUN: %d, then %s/%s",
+           healthy_ok, Drive_StateName(g_drive.state), cause_name(g_drive.fault));
+  check(healthy_ok && g_drive.state == (uint32_t)DRIVE_FAULT &&
+        g_drive.fault == (uint32_t)DRIVE_FAULT_GATEDRV,
+        "a gate driver faulting while running trips GATEDRV", d);
+}
+
+static void test_not_ready_alone_does_not_trip_a_running_drive(void)
+{
+  run_armed();
+  g_stub.gd_nrdy = (1U << GD_VL);       /* marginal isolated rail, no FLT */
+  Drive_Step(HAL_GetTick());
+
+  char d[192];
+  snprintf(d, sizeof(d), "state %s after not-ready with no fault",
+           Drive_StateName(g_drive.state));
+  /* A driver that actually cannot drive will assert FLT as well. Tripping on
+   * not-ready alone converts a marginal rail into an intermittent drive fault
+   * and buys no safety. */
+  check(g_drive.state == (uint32_t)DRIVE_RUN,
+        "not-ready alone does not trip a running drive", d);
+}
+
 int main(void)
 {
   printf("\ndrive.c fault injection\n-----------------------\n");
@@ -525,6 +621,12 @@ int main(void)
   test_lost_temperature_sensor_refuses_to_arm();
   test_motor_overheating_while_running_trips();
   test_warn_flag_precedes_the_trip();
+  test_latched_gate_fault_refuses_to_arm();
+  test_gate_fault_reports_which_switch();
+  test_drivers_not_ready_waits_rather_than_latching();
+  test_drivers_becoming_ready_arms_on_their_own();
+  test_gate_fault_while_running_trips();
+  test_not_ready_alone_does_not_trip_a_running_drive();
   printf("-----------------------\n%d passed, %d failed\n\n", g_pass, g_fail);
   return g_fail == 0 ? 0 : 1;
 }

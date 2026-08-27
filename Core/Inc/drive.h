@@ -56,7 +56,8 @@ typedef enum {
   DRIVE_FAULT_SELFTEST    = 6U,   /* a check failed that has no finer cause */
   DRIVE_FAULT_WATCHDOG    = 7U,   /* control ISR stopped feeding the WWDG   */
   DRIVE_FAULT_COMMAND     = 8U,   /* a command was refused as implausible   */
-  DRIVE_FAULT_OVERTEMP    = 9U    /* motor winding too hot, or sensor lost   */
+  DRIVE_FAULT_OVERTEMP    = 9U,   /* motor winding too hot, or sensor lost   */
+  DRIVE_FAULT_GATEDRV     = 10U   /* a gate driver asserted FLT              */
 } DriveFault_t;
 
 /* Self-test tolerance on the current-sense zero.
@@ -102,6 +103,10 @@ typedef struct {
    * inserting rather than appending would silently move all of them. */
   int32_t  motor_c_x10;   /* 68  motor winding, tenths of a degree C       */
   uint32_t therm_warn;    /* 72  1 once past LIM_TEMP_MOTOR_WARN_CX10      */
+  /* Gate drivers. Appended, like everything else - the fields above are
+   * addressed by fixed byte offset over SWD. */
+  uint32_t gd_flt_mask;   /* 76  bit per switch, GD_* - which one complained */
+  uint32_t gd_nrdy_mask;  /* 80  bit per switch, drivers not reporting ready */
 } DriveTelem_t;
 
 /* How often Drive_Step re-reads the winding temperature.

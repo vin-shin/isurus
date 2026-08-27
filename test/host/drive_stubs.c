@@ -143,6 +143,24 @@ int Thermal_Read(ThermalTelem_t *t)
   return 0;
 }
 
+uint32_t GateDrv_FaultMask(void)    { return g_stub.gd_flt; }
+uint32_t GateDrv_NotReadyMask(void) { return g_stub.gd_nrdy; }
+
+/* The real one lives in gatedrv.c, which is not linked here because that
+ * module reads GPIO registers directly. Duplicated rather than shared: it is
+ * six strings, and a test that imported the table would be checking the
+ * table against itself. */
+const char *GateDrv_SwitchName(uint32_t mask)
+{
+  static const char *const n[GD_SWITCHES] = { "UH","UL","VH","VL","WH","WL" };
+  uint32_t i;
+  for (i = 0U; i < GD_SWITCHES; i++)
+  {
+    if ((mask & (1UL << i)) != 0U) { return n[i]; }
+  }
+  return "--";
+}
+
 /* ---- harness control ----------------------------------------------------- */
 
 void Stub_Reset(void)
@@ -158,6 +176,8 @@ void Stub_Reset(void)
   g_stub.vbus_mv    = 22000U;       /* inside the LIM_VBUS window */
   g_stub.therm_rc   = 0;
   g_stub.therm_c_x10 = 300;         /* 30.0 C - a cold motor */
+  g_stub.gd_flt     = 0U;           /* all six drivers healthy */
+  g_stub.gd_nrdy    = 0U;
 
   memset((void *)&g_cs, 0, sizeof(g_cs));
   g_cs.u_zero = 2040U;              /* HARDWARE_NOTES section 6 records 2037 */

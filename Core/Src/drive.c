@@ -12,6 +12,7 @@
 #include "position.h"
 #include "csense.h"
 #include "thermal.h"
+#include "gatedrv.h"
 #include "encoder.h"
 #include "limits.h"
 
@@ -316,6 +317,25 @@ void Drive_SelfTest(void)
     }
   }
 
+  /* 5. The gate drivers themselves.
+   *
+   *    A latched FLT means a driver has already shut its switch down on
+   *    DESAT, 200 ns after the event and without asking anyone. Arming into
+   *    that would be commanding a bridge that is missing a switch.
+   *
+   *    NOT-READY is treated differently, and deliberately: it means an
+   *    isolated supply has not come up, which at boot is a precondition
+   *    rather than a failure - the same shape as an undervoltage bus, and
+   *    softened in the same place below. */
+  if (bad == DRIVE_FAULT_NONE)
+  {
+    g_drive.gd_flt_mask  = GateDrv_FaultMask();
+    g_drive.gd_nrdy_mask = GateDrv_NotReadyMask();
+
+    if (g_drive.gd_flt_mask != 0U)       { bad = DRIVE_FAULT_GATEDRV; }
+    else if (g_drive.gd_nrdy_mask != 0U) { bad = DRIVE_FAULT_GATEDRV; }
+  }
+
   g_drive.selftest_fail = (uint32_t)bad;
   s_selftest_tick = HAL_GetTick();
 
@@ -333,6 +353,20 @@ void Drive_SelfTest(void)
    * running is a different event on a different path and is not softened
    * here. */
   if (bad == DRIVE_FAULT_UNDERVOLT)
+  {
+    return;   /* stay in SELFTEST; Drive_Step retries */
+  }
+
+  /* Gate drivers that are merely NOT READY, with no fault asserted, are the
+   * same kind of thing: their isolated supplies have not come up yet. The
+   * drivers are fed from on-board DC-DCs, so this resolves itself in
+   * milliseconds and latching would mean a drive that needs a manual clear
+   * every time it is powered on a little too quickly.
+   *
+   * A latched FLT is NOT softened. That is a driver reporting it has already
+   * shut a switch down, and it will not fix itself - clearing it needs
+   * RST/EN pulsed, which resets the whole bridge. */
+  if ((bad == DRIVE_FAULT_GATEDRV) && (GateDrv_FaultMask() == 0U))
   {
     return;   /* stay in SELFTEST; Drive_Step retries */
   }
@@ -378,6 +412,29 @@ void Drive_ClearFault(void)
 void Drive_Step(uint32_t now_ms)
 {
   g_drive.ms_in_state = now_ms - s_state_t0;
+
+  /* Gate driver faults, every call and in every state.
+   *
+   * The mask itself is maintained by GateDrv_Poll from the control ISR, so
+   * this is only the policy: a fault that appears while the bridge is live
+   * trips the drive. Cheap enough to do unconditionally - it is a compare
+   * against a volatile word.
+   *
+   * NOT-READY is deliberately not a running fault. A driver whose supply
+   * sags while the bridge is live will assert FLT too, and faulting on
+   * not-ready alone would turn a marginal isolated rail into an intermittent
+   * drive fault with no extra safety. */
+  {
+    uint32_t flt = GateDrv_FaultMask();
+
+    g_drive.gd_flt_mask  = flt;
+    g_drive.gd_nrdy_mask = GateDrv_NotReadyMask();
+
+    if ((flt != 0U) && (g_drive.state == (uint32_t)DRIVE_RUN))
+    {
+      Drive_Fault(DRIVE_FAULT_GATEDRV);
+    }
+  }
 
   /* Winding temperature, unconditionally and in every state.
    *

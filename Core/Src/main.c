@@ -31,6 +31,7 @@
 #include "encoder.h"
 #include "csense.h"
 #include "thermal.h"
+#include "gatedrv.h"
 #include "motor_pwm.h"
 #include "openloop.h"
 #include "foc.h"
@@ -286,6 +287,14 @@ void HRTIM1_TIMB_IRQHandler(void)
 
   HRTIM1_TIMB->TIMxICR = HRTIM_TIMICR_REPC;
 
+  /* Gate driver status, OUTSIDE the g_foc.enabled gate below.
+   *
+   * The drivers are worth watching whether or not the control loop is
+   * running: a driver that loses its isolated supply while the drive sits in
+   * READY should be known about before someone arms it, not after. Four IDR
+   * reads. */
+  GateDrv_Poll();
+
   /* Re-seed the position unwrapper whenever the control loop is (re)enabled.
    *
    * Position_Step is called from INSIDE the enabled block below, so while the
@@ -531,6 +540,11 @@ int main(void)
   /* USER CODE BEGIN 2 */
   // __enable_irq();
   // HAL_SYSTICK_Config(SystemCoreClock / 1000U);
+  /* Gate driver status lines. Before MotorPwm_Init, so that the twelve pins
+   * have their pull-ups and a couple of polls behind them before anything
+   * asks whether the bridge is fit to arm. */
+  GateDrv_Init();
+
   Encoder_Init();
 
   /* Current sense. Zero-offset capture happens here, so the motor must be
