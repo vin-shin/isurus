@@ -1,401 +1,305 @@
 # Porting Isurus to the GR MotherFOCer
 
-This branch (`power-unit`) retargets the Isurus stack from **Mako Longfin** to
-the **GR MotherFOCer** inverter board. It follows the repo's convention that a
-hardware target is a branch, not a repository.
+This branch (`power-unit`) retargets the Isurus stack from **Mako Longfin** —
+a 15 V bench servo — to the **GR MotherFOCer**, an EMRAX 228 HV traction
+inverter on a 140s2p pack. It follows the repo's convention that a hardware
+target is a branch, not a repository.
 
-The source of truth for the new hardware is the CubeMX project that shipped
-with the board — `Inverter.ioc` and the LL code generated from it, in the
-`gr_motherfocer` tree. `Core/Inc/board.h` is the transcription of that into
-this project, and is the only file a later hardware revision should need to
-touch.
+**Status: the software port is complete and nothing has been run on hardware.**
+It builds clean and 47 host tests pass. Several constants are derived rather
+than measured, and those are listed in §5.
 
-**The `gr_motherfocer` hardware is the same board, except for the FETs.** That
-raises how much of that project can be trusted, and it is worth being precise
-about which parts:
+## Sources, and how far each can be trusted
 
-- **Trust the pinout, peripheral mapping and interrupt layout.** These are
-  CubeMX output describing real silicon on the real board. Its
-  `HRTIM1_TIMB_IRQHandler` independently confirms Timer B as the intended
-  control ISR, which is what this port had already chosen; its Clarke uses all
-  three phase currents, which is what `csense.c` now measures.
-- **Do NOT trust its analogue scaling.** `0.04` A/count is a rounded copy of
-  MiniFOCer's precisely-derived `0.040584415584415584`, and its `0.05` V/count
-  matches neither MiniFOCer's divider nor this board's 400:1. Neither was ever
-  derived for this hardware. Four commits ending at "encoder works" is
-  consistent with that.
-- **Re-derive the DEAD TIME.** It is the one constant that "same except the
-  FETs" directly falsifies — see below.
+| | |
+|---|---|
+| `docs/powerunit.pdf` | The schematic. Authoritative, and the only source for what a pin is *wired to*. |
+| `docs/TLxxx-A2(T)PV.pdf` | Current sensor datasheet. Authoritative. |
+| `gr_motherfocer` tree | The board's CubeMX project and bring-up code. **Trust the pinout, peripheral mapping and interrupt layout; do not trust its analogue scaling.** |
 
-There is still no schematic, so what a pin is *wired to* remains outside the
-source. Section 4 lists what that leaves open, and none of it should be closed
-by guessing.
+That last split cost real time and is worth keeping. The CubeMX output
+describes real silicon — its `HRTIM1_TIMB_IRQHandler` independently confirms
+Timer B as the intended control ISR, which this port had chosen on other
+grounds. But its `0.04` A/count is a rounded copy of MiniFOCer's
+`0.040584415584415584`, and its `0.05` V/count matches neither MiniFOCer's
+divider nor this board's. Neither was derived for this hardware. Four commits
+ending at "encoder works" is consistent with a project that never got as far
+as calibrating current.
+
+**Three of this port's own wrong turns came from trusting that code, or from
+reasoning about part numbers, where the schematic or a datasheet was
+available.** They are recorded in §4 rather than quietly corrected.
 
 ## 1. What the two boards do not share
 
 | | Mako Longfin | GR MotherFOCer |
 |---|---|---|
 | Core clock | 128 MHz | 160 MHz |
-| Bridge drive | 1 pin/phase, external inverter | 3 complementary pairs |
-| Dead time | gate driver RDT, ~185 ns | HRTIM, 160 counts |
 | Switching | 30 kHz | 20 kHz |
-| HRTIM timers | A, B | B, C, F |
-| Gate enable | PC5, **active low** | PC8, **active high** |
-| Phase current | 2 phases, via OPAMP followers | 3 phases, direct to ADC1 |
-| Extra analogue | — | DC link current, 4x temperature, "audio" |
-| Bus sense | PF0, 190k/10k divider | PA3, shared with COMP2 |
-| Overcurrent | firmware threshold | COMP2 + DAC1_CH2 hardware trip |
-| Encoder | A1333, 15-bit, SPI1 | RM44SI, 13-bit, SPI3 |
-| CAN | FDCAN1 (PA12/PB8) | FDCAN2 (PB6/PB5) |
-| Debug output | SWD only | SWD + LPUART1 |
-| Motor | 20 pole pairs, 12S | 10 poles(?), 5600 rpm |
+| Bridge | 1 pin/phase, external inverter | 3 complementary pairs |
+| HRTIM timers | A, B | B (U), F (V), C (W) |
+| Dead time | gate driver RDT, ~185 ns | HRTIM, 160 counts ≈ 1.0 µs |
+| Gate enable | PC5, **active low** | PC8 `DRV_RST`, **active high** |
+| Gate driver status | none | **12 fault/ready lines, unread** |
+| Phase current | 2 phases via internal OPAMPs | 2 phases (U, W) + DC link, external op-amps |
+| Current sensor | CT4022, ±40 A | Mornsun TL200-A2PV, ±500 A |
+| Bus sense | PF0, 190k/10k divider | PA3, 400:1 into an **isolated** amp chain |
+| Temperature | none | motor KTY + 3 power-stage channels |
+| Comparator | — | COMP2 on the bus = **overvoltage** trip, unarmed |
+| Encoder | A1333, 15-bit, SPI1, chip select | differential SSI-class, SPI3 + RS485, **XDIR** |
+| CAN | FDCAN1 (PA12/PB8) | FDCAN2 (PB6/PB5), TCAN1044A |
+| Debug output | SWD only | SWD + LPUART1 (PC0/PC1) |
+| LEDs | 2 | none |
+| Motor | 20 pole pairs, 12S, 22 A | EMRAX 228 HV, 10 pole pairs, 140s2p, 339 A peak |
 
-Two of those rows are the ones that bite.
+Three of those rows bite hardest.
 
-**The gate enable polarity is inverted between the boards.** Mako Longfin's
-PC5 drove a UCC21330 `DIS` pin directly, so low meant enabled and the safe
-state was high. This board's PC8 is the other way round in all three places
-its own code touches it: reset state low, `disableGateDriver()` drives low,
-`resetGateDriver()` ends by driving high. Carrying the old polarity across
-energises the bridge at reset.
+**The gate enable polarity is inverted.** Mako Longfin's PC5 drove a UCC21330
+`DIS` pin directly, so low meant enabled. This board's PC8 is the other way
+round in all three places its own code touches it. Carrying the old polarity
+across energises the bridge at reset — and `MotorPwm_EmergencyStop` wrote the
+raw BSRR bit, so from a fault handler it would have *enabled* the drivers.
 
-**The complementary bridge changes what "off" means.** `motor_pwm.h` on Mako
-Longfin carries a prominent warning that no MCU state turns every FET off,
-because a low pin there turned the *low-side* device on through the external
-inverter — the gate drivers' `DIS` line was the only true all-off. On this
-board the HRTIM drives both devices of each leg directly with hardware dead
-time, so disabling the HRTIM outputs genuinely does open the whole bridge.
-That warning must be rewritten rather than copied; leaving it in place would
-be describing a hazard that no longer exists, which is its own kind of wrong.
+**The complementary bridge changes what "off" means.** Mako Longfin's
+`motor_pwm.h` warned that no MCU state turns every FET off, because a low pin
+turned the *low-side* device on through the external inverter. Here the HRTIM
+drives both devices directly with hardware dead time, so disabling the outputs
+genuinely opens the bridge. That warning was rewritten, not copied — leaving
+it would describe a hazard that no longer exists.
 
-## 2. What carries over untouched
+**Everything is a factor of ten larger.** 518 V against 15.55 V, 339 A against
+12 A, 5600 rpm against 600. Most of the port's real bugs were constants that
+were correct at bench scale and silently wrong at this one.
 
-The point of the branch-per-board layout is that most of the stack is not
-hardware. These need no change beyond constants:
+## 2. What carried over untouched
 
-- `foc.c` — Clarke/Park, the PI current loops, third-harmonic injection
+- `foc.c` — Clarke/Park, the PI current loops, third-harmonic injection, the
+  CORDIC angle conversion
 - `position.c` — position and velocity loops, motion profiling
 - `haptic.c` — force-field rendering
-- `drive.c` — the state machine and fault handling
-- `can_proto.h` / `can.c` — the wire protocol (the transport binds to a
-  different FDCAN instance, the protocol does not change)
-- `ident.c` — phase R and L identification, which is if anything *more*
-  useful here, because the new motor's parameters are inherited from someone
-  else's initialiser and have never been measured on this machine
-- `test/host/` — the whole simulator harness
+- `openloop.c` — open-loop vector drive
+- `can_proto.h`'s **framing** — identifiers, node addressing, command set
 
-## 3. What has to be rewritten, in dependency order
+Note what is *not* on this list and was expected to be. `drive.c` gained an
+over-temperature fault. `can.c` kept its protocol but had four telemetry
+fields rescaled. `ident.c`'s excitation had to be re-sized. The host harness
+needed `SIM_TS`, the motor model and four tests changed. "Only the hardware
+layer moves" was the intent, and it did not survive contact with a 33x bus.
 
-Ordered so that each step can be checked before the next one can hurt
-anything. Nothing below step 3 should run with the bus energised.
+## 3. Module by module
+
+Ordered so each step can be checked before the next can hurt anything.
 
 1. **`board.h`** — **done.** The hardware map, and the record of what is not
-   known about it.
+   known about it. The only file a later board revision should need to touch.
 
-2. **Clock and peripheral init** — **mostly done.** `SystemClock_Config` runs
-   at 160 MHz from `BOARD_PLLN`. `hrtim.c`, `fdcan.c`, `spi.c` and `usart.c`
-   are on the new pinout; `gpio.c` and `adc.c` are not yet.
+2. **Clock and peripheral init** — **done.** 160 MHz from `BOARD_PLLN`.
+   `gpio.c`, `hrtim.c`, `adc.c`, `spi.c`, `fdcan.c` and `usart.c` are on the
+   new pinout.
 
-   The board's generated code is LL; Isurus is HAL throughout and stays HAL,
-   because the entire stack above is written against HAL handles and
-   converting it would be rewriting the parts of the project that are *not*
-   supposed to change between boards.
+   The debug console moved from USART1 (PB6/PB7) to **LPUART1 on PC0/PC1**.
+   Not optional: PB6 is FDCAN2_TX, so the two MspInits were fighting over one
+   pin and the winner was whichever ran first. Mako Longfin had no serial
+   output at all, so this is new capability rather than a port.
 
-   The debug console moved from USART1 on PB6/PB7 to **LPUART1 on PC0/PC1**,
-   which is what the board assigns. That was not optional: PB6 is FDCAN2_TX
-   here, so the two MspInits were fighting over the same pin, and the loser
-   was whichever ran first. Mako Longfin had no serial output at all — every
-   byte went over SWD — so this is new capability rather than a port.
+   `MX_GPIO_Init` was driving **PA2 as a push-pull output** — PA2 is an
+   analogue input — and PC0/PC1, which LPUART1 then took back. Both fixed.
 
-   **`gpio.c` and `adc.c` are still Mako Longfin's** and are the next thing to
-   do. `gpio.c` configures PC13/14/15, PC0, PA2/PA4, PB1/PB2/PB9 and PD2 with
-   no basis on this board, and `adc.c` sets up PF0 and PA6 for the old bus
-   sense. Neither currently collides with a bridge output, a CAN line or the
-   encoder, which is the only reason they are not in the paragraph above.
+3. **`motor_pwm.c` / `.h`** — **done.** Timers B/F/C, complementary outputs
+   with HRTIM dead-time insertion, active-high gate enable, 20 kHz, ADC
+   trigger lead derived from `BOARD_HRTIM_TICK_HZ`. The control ISR moved to
+   the Timer B repetition event. `hrtim.c`'s MSP no longer claims PC8, which
+   is the gate enable — `MotorPwm_GateInit` must stay that pin's only owner.
 
-3. **`motor_pwm.c` / `.h`** — **done.** Timers B/F/C instead of A/B,
-   complementary outputs with dead-time insertion instead of single-ended,
-   active-high gate enable, 20 kHz, and the ADC trigger lead derived from
-   `BOARD_HRTIM_TICK_HZ` instead of a hardcoded 1024 counts per microsecond.
-   `hrtim.c`'s MSP no longer claims PC8, which is the gate enable. The
-   control ISR moved from the Timer A repetition event to Timer B's.
+   **The high and low gates were swapped** on all three phases until the
+   schematic was read. See §4.
 
-   Two things fell out of this that were not on the list. `EmergencyStop`
-   wrote a raw BSRR bit sized for the old board's active-low enable, so from
-   a fault handler it would have *enabled* this board's gate drivers; it goes
-   through a compile-time `GATE_EN_BSRR_DISABLE` now. And the host simulator
-   hardcoded 30 kHz, so moving the firmware to 20 made both inductance tests
-   read +45% - an apparent identification error that was really a harness
-   that had not been told the rate changed. `SIM_TS` derives from
-   `PWM_FREQ_HZ` now.
+4. **`csense.c` / `.h`** — **done.** Four channels off one HRTIM-triggered
+   ADC1 sequence into a circular DMA buffer: phase U (PC3), phase W (PA0),
+   DC link (PA1), bus voltage (PA3). The third phase is inferred as
+   `-(iu+iw)`, exact in a three-wire machine.
 
-4. **`csense.c` / `.h`** — **done.** Five channels off one HRTIM-triggered
-   ADC1 sequence into a circular DMA buffer: three phase currents, DC link
-   current, bus voltage. Three phases are measured and the residual
-   `iu+iv+iw` is reported and divided out as common-mode error; FOC still
-   receives U and W, so `foc.c` is untouched. Scaling is derived from the
-   measured VREF+ and the sensor sensitivity rather than from any literal.
+   The board's own code left ADC1 free-running and read whatever DMA last
+   wrote. Fine for a print loop; not for a current loop, which needs all
+   channels from a known point in the switching period — `PWM_ADC_LEAD_NS`
+   has the long version of why that reads perfectly in a static test and
+   destabilises the loop the moment anything moves.
 
-   Wiring it up turned up two pin conflicts: `MX_GPIO_Init` drove PA2 - the DC
-   link current input - as a push-pull output, and ADC1's MSP claimed PF0
-   while claiming none of the five channels in use.
+   Scaling derives from the measured VREF+ and the sensor sensitivity, never a
+   literal. `CSense_Read` is split so the ISR path (`CSense_ReadPhases`) does
+   phases only — bus voltage and DC link current feed the gain rescale and the
+   voltage trips at a few hundred hertz, and converting them at 20 kHz would
+   spend multiplies and divides inside a hard 50 µs deadline on values nobody
+   reads that often.
 
-   What this replaced, for the record:
+5. **`thermal.c` / `.h`** — **done, and new.** ADC2 over DMA, free-running:
+   the motor KTY on PC4 plus three power-stage channels on PA5/PA6/PA7.
 
-   `CSense_Init` now returns an error immediately and the Mako Longfin
-   implementation is fenced behind `BOARD_HAS_OPAMP_CSENSE`, which is 0.
-   That is deliberate on two counts. The OPAMP MspInits it used to call claim
-   PA1, PA3, PB0, PB11, PB12 and PC3 — and on this board PA1 and PC3 are
-   phase current inputs, PA3 is the bus voltage shared with the overcurrent
-   comparator, and **PB12 is the W high-side gate**. And the refusal doubles
-   as the interlock: leaving the zero-current offsets at 0 puts them 2048
-   codes from mid-scale, far outside `DRIVE_CS_ZERO_TOL_CODES`, so
-   `Drive_SelfTest` raises `DRIVE_FAULT_CSENSE` and the bridge cannot be
-   armed. A board whose current sense has never been read should not arm.
+   Load-bearing rather than a nicety. `LIM_IQ_MAX_MA` is the motor's *peak*
+   rating, deliberately above its continuous one so bursts are available — so
+   the current limit does not protect the winding from sustained overload and
+   was never meant to. This does. The KTY81-2xx curve is inverted by bisection
+   rather than the quadratic formula: sixteen iterations in the main loop
+   where nothing waits, against a square root and a branch choice in fixed
+   point.
 
-   The code is fenced rather than deleted because it is the reference for
-   what replaces it, and fenced rather than left after an early `return`
-   because unreachable code is a cppcheck `style` finding and that job fails
-   the build.
+   `DRIVE_FAULT_OVERTEMP` is checked both in `Drive_SelfTest` — arming into a
+   motor left hot by the last run is what a periodic check cannot catch in
+   time — and every 200 ms in `Drive_Step`. **A lost sensor faults as hard as
+   a hot one**: a KTY adrift reads as a fixed, plausible, fictional
+   temperature.
 
-   What the rewrite involves: Mako Longfin reads two
-   phases through internal OPAMP followers on ADC2 and ADC5, polled on an
-   HRTIM trigger. This board has three phases plus DC link current and bus
-   voltage in one free-running ADC1 sequence with DMA. Two things change at
-   once: the plumbing, and the fact that a third phase measurement makes the
-   Clarke transform overdetermined, which is a genuine improvement worth
-   using rather than dropping.
+6. **`encoder.c` / `.h`** — **done, with the protocol unconfirmed.** SPI3,
+   manual control of PA15, one 14-bit frame per read. The angle is the low 13
+   bits, from `gr_motherfocer`'s own SPI3 interrupt handler.
 
-   **ADC1 must be moved onto the HRTIM trigger as part of this step.** As the
-   board ships it free-runs, and the main loop reads whatever DMA last wrote.
-   For a print loop that is fine. For a current loop it is not: the samples
-   are not aligned to a known point in the switching period, so what the loop
-   sees is a phase current sampled at an arbitrary place in the ripple. Mako
-   Longfin's `PWM_ADC_LEAD_NS` comment describes at length how a mistake in
-   exactly this area reads perfectly in a static test and destabilises the
-   loop the moment anything moves — that lesson transfers directly.
+   Counts are widened to the project's 15-bit convention rather than the angle
+   path being rescaled: `foc.c`'s `counts << 17` is exact only because a half
+   turn lands on the Q31 sign bit. The cost is stated where it belongs — the
+   bottom two bits of every count are always zero.
 
-5. **`encoder.c` / `.h`** — **done.** RM44SI on SPI3, manual CS on PA15, one
-   14-bit frame per read instead of the A1333's command/NOP pipeline. The
-   frame format turned out to be answered after all, by the board's own SPI3
-   interrupt handler: `angle = received & 0x1fff`, so the angle is the low 13
-   bits of the 14 clocked back and the 14th bit is masked off unexamined.
+   The A1333's whole register surface is gone, so electrical zero moves to
+   `g_foc.elec_offset` and **no longer survives a power cycle**.
 
-   The reported count is widened to the project's 15-bit convention rather
-   than the angle path being rescaled to 8192. `foc.c`'s `counts << 17`
-   CORDIC conversion is exact only because a half turn lands on the Q31 sign
-   bit, and the comment there describes how the off-by-pi version of the same
-   expression stays self-consistent and silently inverts torque. That is not
-   code to renegotiate to save a shift. The real cost is stated in
-   `encoder.h`: the bottom two bits of every count are always zero, and
-   mechanical resolution is genuinely 4x coarser than on Mako Longfin.
+   **PA15 is `XDIR`, not a chip select.** See §4.
 
-   The A1333's whole register surface - unlock, direct and extended register
-   access, `SetZeroOffset`, `ZeroHere` - is gone, along with the SWD commands
-   in `main.c` that drove it. Electrical zero moves into `g_foc.elec_offset`,
-   which `foc.c` already applies and the SWD tools already reach. **The
-   consequence is that the offset no longer survives a power cycle**, where
-   the A1333 held it in EEPROM. Re-applying it at boot is an open item.
+7. **`can.c`** — **done.** FDCAN2 on PB6/PB5, prescaler 8 → 10 so 1 Mbit
+   survives 128 → 160 MHz. The segment split is untouched, so the 81.25%
+   sample point is the one validated on the old board.
 
-   Also worth recording: the dead-link detector tested frames against
-   `0xFFFF`. On a 14-bit transfer the top two bits never arrive, so that
-   constant could never have matched - the detector would have compiled,
-   existed, and been permanently blind. It tests `0x3FFF` now.
+   **Four telemetry fields overflowed** and were rescaled — bus to centivolts,
+   currents to deciamps, velocity to RPM. Commands were 32-bit and untouched,
+   which leaves the two directions in different units; `docs/CAN_PROTOCOL.md`
+   now carries a per-direction table.
 
-6. **`can.c`** — **done.** Bound to FDCAN2 on PB6/PB5, prescaler 8 -> 10 so
-   1 Mbit survives the move from a 128 MHz kernel clock to 160. The segment
-   split is untouched, so the 81.25% sample point is bit-for-bit the one
-   validated on the old board. `can_proto.h` did not change at all, which is
-   what it was written for.
+8. **Motor constants and `limits.h`** — **done, one number unmeasured.**
+   EMRAX 228 HV, 140s2p: 350 V empty, 518 V nominal, 588 V full.
 
-7. **The motor constants, and `limits.h`** - **done, with one number still
-   unmeasured.** The machine is an EMRAX 228 HV on a 140s2p pack: 350 V empty,
-   518 V nominal, 588 V full.
+   `foc.h` describes it — 10 pole pairs, 23.22 mΩ, 255 µH, Ld = Lq. The
+   current-loop gains fell ~100x, almost all of it the bus. Holding 1 kHz of
+   bandwidth costs phase margin at the lower switching frequency, 61° against
+   70°, stated in the file rather than inherited silently.
 
-   `foc.h` now describes it - 10 pole pairs, 23.22 mOhm, 255 uH, Ld = Lq
-   (surface-PM axial flux). The current-loop gains fell about 100x, almost all
-   of it the bus: 518 V against 15.55 V is a factor of 33 on its own. Keeping
-   1 kHz of bandwidth costs phase margin at the lower switching frequency -
-   61 degrees here against 70 on the bench - which is stated in the file
-   rather than inherited silently.
+   **`FOC_LAMBDA_M_WB` is provisional. Do not enable the feedforward or the
+   decoupling until it is measured.** Three derivations span 35%: 60.1 mWb
+   from `foc.h`'s own HV analysis, 54.4 mWb from kv as rpm per DC volt,
+   44.4 mWb from kv as EMRAX publish it. The lowest is chosen because the
+   error directions are not symmetric — too low and the integrator walks out
+   the remainder; too high and the feedforward alone exceeds the modulation
+   ceiling, a failure `foc.h` already records at 14% on a machine where
+   back-EMF was a far smaller share of the bus. Here it is 58%.
 
-   **`FOC_LAMBDA_M_WB` is provisional and must be measured before the
-   feedforward or the decoupling is enabled.** Three derivations exist and
-   they span 35%: 60.1 mWb from `foc.h`'s own HV analysis, 54.4 mWb from
-   kv = 10.14 read as rpm per DC volt, 44.4 mWb from kv read the way EMRAX
-   publish it. The disagreement is entirely about which quantity "10.14
-   rpm/V" is per, and no algebra settles that. The lowest is chosen because
-   the error directions are not symmetric - too low and the integrator walks
-   out the remainder, too high and the feedforward alone exceeds the
-   modulation ceiling, which is the failure this file already recorded once at
-   14% on a machine where back-EMF was a much smaller share of the bus.
+   `limits.h`: 588/350 V pack bounds, 33600 deg/s (5600 rpm — 3600 would have
+   capped this drive at 600 rpm), `LIM_IQ_MAX_MA` at the motor's 339 A peak,
+   `LIM_ID_FW_MAX_MA` as the third of it that it always was.
 
-   `limits.h` is rebuilt: 588 V / 350 V pack bounds, 33600 deg/s (5600 rpm,
-   where 3600 deg/s would have capped this drive at 600 rpm), and
-   `LIM_ID_FW_MAX_MA` expressed as a third of `LIM_IQ_MAX_MA` - the ratio it
-   always was - rather than a literal that would have become 6% of the budget.
+   **`ident.h`'s excitation levels were per-unit of bus, and the bus went up
+   33x.** `IDENT_L_V_PU = 0.05` was 0.48 A of ripple on the bench and 5.08 A
+   here — tenfold, not proportional, because the bus rose 33x while the
+   winding got only 4.7x more inductive. It landed under the abort band and
+   identification simply failed. Both that and the R regulator gain are now
+   specified as physical quantities and converted through the actual bus and
+   tick rate.
 
-   `ident.h`'s excitation had to be re-sized, and that is the finding worth
-   keeping: **its levels were per-unit of bus, and the bus went up 33x.**
-   `IDENT_L_V_PU = 0.05` was 0.48 A of ripple on the bench and is 5.08 A here
-   - not proportional, because the bus rose 33x while the winding only got
-   4.7x more inductive. It lands just under the abort band, so identification
-   simply failed. Both that and the R regulator's gain are now derived from
-   physical quantities (a target ripple current, and volts per amp per second)
-   and converted through the actual bus and tick rate.
+9. **`led.c`** — **done, by removal.** `BOARD_HAS_LEDS` is 0. It had been
+   writing BSRR at pins that stopped being outputs when `gpio.c` was
+   retargeted. What is lost is worth knowing: the stage lamp asked the
+   *hardware* whether the gates were live rather than the state machine, so a
+   bench tool arming outside `Drive_Arm` could not produce a lamp that lied.
 
-   Still open: characterising Lq against current and lambda_m against
-   temperature. `foc.h` names that as the deliverable that decides whether the
-   HV current loop works, and it is a motor-test-rig task rather than a
-   firmware one.
+10. **`tools/`** — **not revisited.** They resolve symbols from the ELF at run
+    time, so they should survive, but `isr_budget.sh` still names a 33.3 µs
+    deadline and it is 50 µs here.
 
-8. **`led.c`, `docs/LED_CODES.md`** — **done, by removal.**
-   `BOARD_HAS_LEDS` is 0 and `led.c` compiles to nothing. It had been writing
-   BSRR at pins that stopped being outputs when `gpio.c` was retargeted, so it
-   was already doing nothing - just not saying so. The diagnostic that is lost
-   is worth reading in `board.h`: the stage lamp asked the hardware whether
-   the gates were live rather than asking the state machine, which on a 588 V
-   bridge is the one indicator worth having without a debugger.
+## 4. Where this port was wrong
 
-   ~~Superseded:~~ — no LED appears in the new pinout, and
-   `led.c` drives GPIOB pins that this board configures as inputs. Either the
-   LEDs move to whichever of the unexplained pins turn out to be LEDs, or the
-   two-LED front panel and its documentation go away on this branch.
+Recorded because each has the same shape — trusting inherited code, or
+reasoning about a part number, where a primary source was available.
 
-9. **`tools/`** — the SWD dashboards resolve symbols from the ELF at run time,
-   so they survive the port. They do assume `PWM_FREQ_HZ` and encoder counts;
-   both come from headers, so they should follow automatically. `isr_budget.sh`
-   needs re-running from scratch: the deadline moves from 33.3 us to 50 us at
-   20 kHz, and the core is 25% faster, so the existing 21.1 us figure means
-   nothing here.
+**The high and low gates were swapped.** The schematic has `HG_U` on PA11 and
+`LG_U` on PA10, and likewise for V and W. HRTIM output 1 carries the
+programmed waveform and output 2 is its dead-time complement, so output 1 *is*
+the reference — and here it is the **low** gate. Every commanded duty landed
+on the low side, inverting the phase. All three inverted negates the applied
+voltage vector, which turns the current loop into positive feedback. Worse,
+the zero-duty case cleared the set source, leaving output 1 permanently low
+and therefore the **high** gate permanently on: a commanded zero would have
+clamped every phase to the positive rail.
 
-## 4. What the schematic answered, and what is still open
+Fixed by swapping the set and reset sources. Polarity inversion would *not*
+have worked — dead time drives both outputs inactive during the dead band, so
+inverting makes "inactive" high and drives both gates at once.
 
-`docs/powerunit.pdf` arrived after most of this port was written. It resolved
-five of the open questions, corrected two firmware bugs, and left three
-things open that no schematic can settle.
+**A phase current sensor that does not exist.** PC3 is `UC_ISNS_U`, PA0 is
+`UC_ISNS_W`, PA1 is `UC_ISNS_DC`, and **PA2 is not connected**.
+`gr_motherfocer` reads a "V current" from PA0 and a DC current from PA2, and
+this port copied it. So U and W were transposed, the V channel was the W
+sensor read twice, and the DC link came from a floating pin — which a
+three-phase common-mode correction then averaged into the two real
+measurements. An "improvement" that was actively corrupting good data.
 
-### Answered — and two of them were bugs
+**The current sensor is not undersized.** The "200" in TL200-A2PV is IPN, the
+effective range, not a ceiling; the measurement range is **±500 A** against a
+339 A motor peak. A recommendation to fit a ±350 A part is withdrawn.
 
-**The twelve "unexplained" pins are all gate-driver status lines.** Six
-`DRV_RDY_*` and six `DRV_FLT_*`, one pair per switch:
+**And its sensitivity was wrong by 3.2x.** 10 mV/A was inferred from the 0.82
+conditioning gain, on the assumption that a design fills its converter at full
+scale. It does not — the gain exists to fit ±500 A into the ADC. The datasheet
+says 3.125 mV/A, so 2.5625 mV/A at the pin and 314 mA per ADC count.
 
-| | ready | fault | | ready | fault |
-|---|---|---|---|---|---|
-| U high | PB4 | PD2 | V high | PC9 | PA8 |
-| U low | PA9 | PA12 | V low | PB14 | PB15 |
-| W high | PB0 | PB11 | W low | PB10 | PB2 |
+## 5. Still open
 
-**None of them are read.** That is now the largest protection gap on the
-board — see `board.h` section 9 for why they are also the *fastest*
-protection available, and what implementing them needs.
+Firmware cannot close any of these.
 
-**The high and low gates were swapped in `motor_pwm.c`.** The schematic has
-`HG_U` on PA11 and `LG_U` on PA10, and similarly for V and W — the opposite
-of what this port assumed. HRTIM output 1 carries the programmed waveform and
-output 2 is its dead-time complement, so the commanded duty was landing on the
-*low* gate: every phase inverted, which negates the applied voltage vector and
-turns the current loop into positive feedback. Fixed by swapping the set and
-reset sources so output 1 is low across the middle of the period; compare
-values, centring and ADC trigger position are all unchanged.
+1. **Two known bus voltages and their ADC codes.** The bus chain is a 400:1
+   divider into an AMC0311 isolated amplifier into an MCP6496 difference
+   amplifier. Firmware models the divider alone and assumes zero offset. Two
+   points give gain and offset directly.
 
-**There are two phase current sensors, not three.** PC3 is `UC_ISNS_U`, PA0 is
-`UC_ISNS_W`, PA1 is `UC_ISNS_DC` — and **PA2 is not connected**.
-`gr_motherfocer`'s bring-up code reads a "V current" from PA0 and a DC current
-from PA2, and this port copied that mapping. So U and W were transposed, the
-"V" channel was the W sensor read twice, and the DC link was being read from a
-floating pin — which the three-phase common-mode correction then averaged into
-the two real measurements. Reverted to measuring U and W and inferring
-`iv = -(iu+iw)`, which is exact in a three-wire machine.
+2. **Phase sense polarity, per phase.** The conditioning is known not to
+   invert, so any flip is the sensor's convention plus conductor orientation.
+   A reversed sensor corrupts the Clarke transform into a *rotating* error.
 
-**COMP2 is an OVERVOLTAGE trip.** Its input PA3 is `TS_VSENSE`, the tractive
-system bus. That is the right thing for this machine to have — regen into a
-full or disconnected pack climbs faster than a 20 kHz loop will catch — but
-the DAC threshold is still unset and `COMP1_2_3_IRQHandler` is an empty stub.
+3. **`FOC_LAMBDA_M_WB`**, by spinning the motor with the feedforward disabled
+   and reading back the voltage the loop demands. See §3.8.
 
-**PA15 is `XDIR`, a transceiver direction pin, not a chip select.** The
-encoder link is differential, through SN65176B RS485 transceivers and an
-NXU0304BQ level shifter: clock pair, bidirectional data pair, direction
-control. That is an SSI/BiSS/EnDat-class interface. The current code drives
-PA15 low for the frame and calls it a chip select, which happens to hold the
-transceiver in receive and so may work — for the wrong reason, and it can
-never transmit.
+4. **Dead time**, from the new FETs. See `docs/HARDWARE-CHANGES.md` §4.
 
-### Still open
+5. **The gate driver part number**, for the polarity and latching behaviour of
+   the twelve status lines. See `docs/HARDWARE-CHANGES.md` §1b.
 
-1. ~~**The current sense chain.**~~ **Closed, from the datasheet.**
+6. **The encoder part and its protocol**, and the idle sense of XDIR.
 
-   Conditioning, from sheet 6: a difference amplifier per channel across the
-   sensor's own `VOUT`/`VREF` pair, 10k in and 8k2 feedback, referenced to
-   `VREFHALF`:
+7. **The ISR budget.** `CLAUDE.md` requires before/after numbers from
+   `tools/isr_budget.sh` whenever the control ISR changes, and this port
+   rewrote most of what it calls. The deadline moved from 33.3 µs to 50 µs and
+   the core is 25% faster, so the old 21.1 µs figure means nothing here.
+   **Owed, and needs the target.**
 
-   ```
-   V_pin = 0.82 * (ISNS - IREF) + VREFHALF
-   ```
+Hardware recommendations that came out of the port are in
+**[`HARDWARE-CHANGES.md`](HARDWARE-CHANGES.md)** — chiefly fifteen fast
+protection signals that nothing currently reads.
 
-   The sensor's zero cancels in *hardware*, `VREFHALF` is `VREF/2` so zero
-   current lands on ADC code 2048 by construction, and the stage does not
-   invert.
+## 6. Bring-up order
 
-   Sensor, from `docs/TLxxx-A2(T)PV.pdf`: **G = 3.125 mV/A**, `Vref` 2.5 V,
-   `Vout = Vref + G*Ip`. So **2.5625 mV/A at the pin, 314 mA per ADC count**,
-   and the converter clips at ±644 A.
-
-   **Two earlier conclusions on this branch were wrong and are withdrawn.**
-   The "200" in TL200-A2PV is the *effective* range IPN, not a ceiling — every
-   part in the family gives ±0.625 V at its own IPN — and the **measurement
-   range is ±500 A**. So the sensor is not undersized; the ±350 A part
-   recommended earlier is unnecessary. And inferring 10 mV/A from the 0.82
-   gain, on the assumption the design fills the ADC at full scale, was wrong
-   by 3.2x: the gain exists to fit ±500 A into the converter, not IPN.
-
-   Both mistakes came from reasoning about a part number instead of reading
-   the part.
-
-   Left over: the **OCD pin trips at ±400 A** and is not connected — above the
-   motor's 339 A peak so it cannot nuisance trip, below the sensor's range so
-   the reading is still good when it fires, and a comparator inside the sensor
-   so it responds in 0.3 µs. Three of them, unconnected.
-
-2. **The bus sense gain AND offset.** Sheet 5 shows the divider is only the
-   first third: 400:1, then an AMC0311 reinforced isolated amplifier on an
-   isolated supply, then an MCP6496 difference amplifier biased from 3V3A. The
-   firmware models the divider alone with zero offset. Two known bus voltages
-   and two ADC codes give both terms directly, and measure what the board does
-   rather than what three datasheets say it should.
-
-3. **The dead time, from the new FETs.** See §3 item 6.
-
-4. **Gate driver part number**, for the polarity and latching behaviour of the
-   twelve lines above.
-
-5. **The encoder part and its protocol**, and the idle sense of XDIR.
-
-6. **Phase sense polarity**, still. The conditioning is now known not to
-   invert, so any sign flip is the sensor's own convention plus which way the
-   conductor passes through it — which a schematic cannot show.
-
-7. **`lambda_m`**, which is a measurement on the machine and not a document.
-
-## 5. Suggested bring-up order
-
-Roughly the order Mako Longfin was brought up in, which worked:
-
-1. Build and flash. Confirm the core runs at 160 MHz and LPUART1 prints.
-2. Encoder only — no bus voltage. Turn the shaft by hand and watch the angle
-   wrap cleanly across 8192 counts.
-3. CAN loopback, then CAN against a host at 1 Mbit.
-4. ADC with the bridge disabled: confirm the zero-current offsets settle and
-   that bus voltage reads something plausible against a meter. This is where
-   question 4 gets answered.
-5. HRTIM outputs on a scope, gate drivers still disabled. Confirm the
-   complementary pairs and measure the actual dead time. Question 6.
-6. Open-loop vector drive at low bus voltage (`openloop.c`) — the first step
-   with current in the motor, and the one that answers question 3, since a
-   pole-count error shows up immediately as the wrong number of electrical
-   revolutions per mechanical one.
-7. `ident.c` for R and L. Question 7.
-8. Closed-loop current, then the outer loops.
-
-Steps 1-5 need no bus voltage beyond logic power and are worth completing
+Steps 1–5 need no bus voltage beyond logic power and are worth completing
 before the DC link is ever connected.
+
+1. **Build and flash.** Confirm 160 MHz and that LPUART1 prints.
+2. **Encoder only.** Turn the shaft by hand; the angle should sweep cleanly
+   through a full turn. Settles §5.6.
+3. **CAN**, loopback then against a host at 1 Mbit.
+4. **ADC with the bridge disabled.** Confirm the zero-current offsets settle
+   near mid-scale — the hardware intends *exactly* mid-scale, so a captured
+   zero away from it means the conditioning is not what `board.h` says. Then
+   two bus points against a meter: §5.1.
+5. **HRTIM on a scope, gate drivers still disabled.** Confirm the
+   complementary pairs, that the *high* gate carries the commanded duty, and
+   measure the actual dead time: §5.4.
+6. **Open-loop vector drive at low bus voltage** (`openloop.c`). First current
+   in the motor. Confirms the pole count — a factor-of-two error shows as the
+   wrong number of electrical revolutions per mechanical one — and phase
+   polarity, §5.2.
+7. **`ident.c`** for R and L, then `lambda_m` by measurement: §5.3.
+8. **Closed-loop current**, then the outer loops. Not before §5.1, §5.2 and
+   §5.3 are answered.

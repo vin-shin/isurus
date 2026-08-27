@@ -10,8 +10,8 @@
 #include "main.h"
 
 /* Chip select: manual GPIO, SPI3 is configured for software NSS. */
-#define ENC_CS_PORT             BOARD_ENC_CS_PORT
-#define ENC_CS_PIN              BOARD_ENC_CS_PIN
+#define ENC_CS_PORT             BOARD_ENC_XDIR_PORT
+#define ENC_CS_PIN              BOARD_ENC_XDIR_PIN
 
 /* The part answers whatever it is clocked with, so the transmitted word only
  * has to be something harmless. The board's own bring-up code sends zeros. */

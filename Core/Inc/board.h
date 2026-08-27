@@ -193,18 +193,15 @@ extern "C" {
  * Retargeting ADC1 to the HRTIM trigger is part of the port, not a later
  * refinement - see docs/PORT-POWER-UNIT.md.
  */
-#define BOARD_ADC1_RANKS        5U
-#define BOARD_ADC2_RANKS        4U
-#define BOARD_ADC3_RANKS        1U
-
-/* Indices into the concatenated DMA buffer the board's code fills. */
-#define BOARD_ADC_IDX_IW        0U
-#define BOARD_ADC_IDX_IV        1U
-#define BOARD_ADC_IDX_IU        2U
-#define BOARD_ADC_IDX_IDC       3U
-#define BOARD_ADC_IDX_VBUS      4U
-#define BOARD_ADC_IDX_TEMP0     5U
-#define BOARD_ADC_IDX_AUDIO     9U
+/* The ADC1 sequence and its buffer layout live in csense.h (CS_IDX_*,
+ * CS_SEQ_LEN), and ADC2's in thermal.h (TH_IDX_*) - they are properties of how
+ * those modules drive the converter, not of the board.
+ *
+ * A BOARD_ADC_IDX_* set copied from gr_motherfocer's bring-up buffer used to
+ * sit here and is deleted rather than corrected. It had a phase V current
+ * where the schematic has phase W, a DC link current on the unconnected PA2,
+ * and an "audio" channel on ADC3/PB1 that this board does not populate. Two
+ * sets of indices for one converter is how the wrong one gets used. */
 
 /* ---- DC bus sense: an ISOLATED chain, not a bare divider ------------------
  *
@@ -470,24 +467,6 @@ extern "C" {
  * thing to spend it on. */
 #define BOARD_HAS_LEDS          0
 
-/* No front-panel LEDs on this board.
- *
- * Mako Longfin had two, on PB1 and PB2. Here PB1 is an ADC3 input and PB2 is
- * one of the unexplained inputs in section 9, so neither is available and
- * nothing in the pinout replaces them.
- *
- * led.c compiles to nothing under this flag rather than being left writing
- * BSRR at pins that are not outputs - which is what it was doing, silently,
- * once gpio.c stopped configuring them.
- *
- * What is LOST is worth stating, because it is not cosmetic. The stage lamp
- * asked the HARDWARE whether the gates were live rather than asking the state
- * machine, specifically so that a bench tool bringing the bridge up outside
- * Drive_Arm could not produce a lamp that lied. On a 588 V traction inverter
- * "is the bridge live" is exactly the question a person standing next to it
- * wants answered without a debugger. If a spare pin can be found, this is the
- * thing to spend it on. */
-#define BOARD_HAS_LEDS          0
 
 /* ==========================================================================
  * 5. Overcurrent comparator - COMP2 + DAC1_CH2
@@ -538,8 +517,10 @@ extern "C" {
  * encoder.c cannot be ported faithfully without that.
  */
 #define BOARD_ENC_COUNTS        8192U
-#define BOARD_ENC_CS_PORT       GPIOA
-#define BOARD_ENC_CS_PIN        GPIO_PIN_15
+/* PA15 is XDIR - the RS485 transceiver direction line - not a chip select.
+ * Named for what it is; encoder.h explains what that means for the driver. */
+#define BOARD_ENC_XDIR_PORT     GPIOA
+#define BOARD_ENC_XDIR_PIN      GPIO_PIN_15
 
 /* ==========================================================================
  * 7. Motor - EMRAX 228 HV

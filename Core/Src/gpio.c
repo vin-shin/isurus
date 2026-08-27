@@ -79,14 +79,14 @@ void MX_GPIO_Init(void)
    */
 
   /*Configure GPIO pin Output Level : encoder CS idle high */
-  HAL_GPIO_WritePin(BOARD_ENC_CS_PORT, BOARD_ENC_CS_PIN, GPIO_PIN_SET);
+  HAL_GPIO_WritePin(BOARD_ENC_XDIR_PORT, BOARD_ENC_XDIR_PIN, GPIO_PIN_SET);
 
   /*Configure GPIO pin : PA15 - encoder chip select */
-  GPIO_InitStruct.Pin = BOARD_ENC_CS_PIN;
+  GPIO_InitStruct.Pin = BOARD_ENC_XDIR_PIN;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(BOARD_ENC_CS_PORT, &GPIO_InitStruct);
+  HAL_GPIO_Init(BOARD_ENC_XDIR_PORT, &GPIO_InitStruct);
 
 
 }
