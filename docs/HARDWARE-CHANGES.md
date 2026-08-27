@@ -1,8 +1,13 @@
 # GR MotherFOCer — hardware changes worth making
 
 Findings from the firmware port that are hardware questions, not firmware
-ones. Everything here came out of reading `powerunit.pdf`, the TL200 datasheet
-and the CubeMX project against what the EMRAX 228 HV actually needs.
+ones. Everything here came out of reading the board schematic and the TL200,
+UCC21756-Q1 and IMCQ120R004M2H datasheets against what the EMRAX 228 HV
+actually needs.
+
+Those documents are deliberately **not** in this repository — see the note at
+the top of `PORT-POWER-UNIT.md`. Every figure quoted below carries enough
+provenance to check without them.
 
 Ordered by what they buy, not by effort.
 

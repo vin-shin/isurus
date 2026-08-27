@@ -51,3 +51,16 @@ reports/
 # Python bytecode from tools/
 __pycache__/
 *.pyc
+
+# Datasheets and the board schematic.
+#
+# Kept OUT of the repository deliberately. This remote is public, and
+# docs/powerunit.pdf is Gaucho Racing's own schematic - engineer named on
+# every sheet. The vendor datasheets are third-party documents and 6.9 MB
+# that would land in every clone forever.
+#
+# Nothing is lost by excluding them: every number taken from them is written
+# into board.h, limits.h, docs/LATER.md and docs/HARDWARE-CHANGES.md with its
+# provenance, which is more useful than the PDF anyway. Drop the files into
+# docs/ locally if you want to check the working against the source.
+docs/*.pdf

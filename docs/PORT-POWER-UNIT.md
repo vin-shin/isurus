@@ -11,11 +11,23 @@ than measured, and those are listed in §5.
 
 ## Sources, and how far each can be trusted
 
-| | |
-|---|---|
-| `docs/powerunit.pdf` | The schematic. Authoritative, and the only source for what a pin is *wired to*. |
-| `docs/TLxxx-A2(T)PV.pdf` | Current sensor datasheet. Authoritative. |
-| `gr_motherfocer` tree | The board's CubeMX project and bring-up code. **Trust the pinout, peripheral mapping and interrupt layout; do not trust its analogue scaling.** |
+**The source documents are not in this repository.** `.gitignore` excludes
+`docs/*.pdf`: this remote is public and the schematic is Gaucho Racing's own
+design, and the vendor datasheets are third-party documents that would sit in
+every clone forever. Drop them into `docs/` locally if you want to check the
+working against the source.
+
+| document | | |
+|---|---|---|
+| `powerunit.pdf` | board schematic, 9 sheets | Authoritative, and the only source for what a pin is *wired to*. |
+| `TLxxx-A2(T)PV.pdf` | Mornsun current transducer | Authoritative. |
+| `ucc21756-q1.pdf` | TI isolated gate driver | Authoritative. |
+| `IMCQ120R004M2HXUMA1.pdf` | Infineon CoolSiC MOSFET | Authoritative. |
+| `gr_motherfocer` tree | the board's CubeMX project | **Trust the pinout, peripheral mapping and interrupt layout; do not trust its analogue scaling.** |
+
+Everything taken from those documents is written into `board.h`, `limits.h`,
+`LATER.md` and `HARDWARE-CHANGES.md` **with its provenance**, so the reasoning
+survives without the files.
 
 That last split cost real time and is worth keeping. The CubeMX output
 describes real silicon — its `HRTIM1_TIMB_IRQHandler` independently confirms
