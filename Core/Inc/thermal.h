@@ -11,12 +11,16 @@
   *          it is caught here. Without this module the drive has no thermal
   *          protection at all.
   *
-  *          ADC2, DMA2 channel 1, four channels at 92.5 cycle sampling:
+  *          ADC2, DMA2 channel 1, ONE channel at 92.5 cycle sampling:
   *
   *            rank 1  PC4  ADC2_IN5    motor winding, KTY
-  *            rank 2  PA5  ADC2_IN13   power stage
-  *            rank 3  PA6  ADC2_IN3    power stage
-  *            rank 4  PA7  ADC2_IN4    power stage
+  *
+  *          PA5, PA6 and PA7 - TEMP_U/V/W - used to be ranks 2 to 4 and are
+  *          NOT ANALOGUE. They are APWM outputs from the gate drivers: 400 kHz
+  *          square waves whose DUTY carries the measurement. Converting them
+  *          produced numbers, which is the problem - see the note further
+  *          down. They are out of the sequence until something can read them
+  *          properly.
   *
   *          The long sampling time is right and should stay: these are slow,
   *          high-impedance sources and there is no deadline anywhere near
@@ -79,29 +83,51 @@ extern "C" {
 #include "main.h"
 #include "board.h"
 
-#define TH_SEQ_LEN          4U
-
+#define TH_SEQ_LEN          1U
 #define TH_IDX_MOTOR        0U      /* PC4  KTY, motor winding */
-#define TH_IDX_STAGE_U      1U      /* PA5  TEMP_U             */
-#define TH_IDX_STAGE_V      2U      /* PA6  TEMP_V             */
-#define TH_IDX_STAGE_W      3U      /* PA7  TEMP_W             */
 
-/* !! THE THREE STAGE CHANNELS MAY NOT BE ANALOGUE AT ALL. !!
+/* ---------------------------------------------------------------------------
+ * TEMP_U/V/W are APWM, and an ADC cannot read them. CONFIRMED.
+ * ---------------------------------------------------------------------------
+ * They are the isolated analogue sense outputs of three UCC21756-Q1 gate
+ * drivers, and the driver reports its measurement as a DUTY CYCLE on a
+ * 400 kHz carrier. From the datasheet:
  *
- * The UCC21756-Q1 carries an isolated analogue sense channel whose output,
- * APWM, is a PWM whose DUTY encodes the measurement - the datasheet offers it
- * for exactly this job, "temperature sensing with NTC, PTC, or thermal
- * diode". Each driver on schematic sheet 1 brings APWM off-sheet alongside
- * RDY and FLT, and there are three TEMP_ nets for six drivers.
+ *      I_AIN     203 uA constant current source into the sensing node
+ *      V_AIN     0.6 .. 4.5 V usable, so a 3.0 .. 22.2 kOhm sensor window
+ *      f_APWM    400 kHz  (380..420)
+ *      D_APWM    88% at 0.6 V, 50% at 2.5 V, 10% at 4.5 V
  *
- * If TEMP_U/V/W are those APWM outputs, converting them with an ADC samples a
- * square wave at an arbitrary phase, and averaging many conversions recovers
- * the duty only crudely. The right reader is a timer input capture.
+ * Those three points are exactly linear at -20% per volt, so
  *
- * Nothing here reads the stage channels yet, so nothing is currently wrong -
- * but they must not be plumbed in as voltages until this is settled. The
- * motor KTY on PC4 is unaffected: sheet 9 shows it as a genuine analogue
- * front end. */
+ *      V_AIN = 2.5 + (50 - D) / 20        volts, D in percent
+ *      R_sensor = V_AIN / 203 uA
+ *
+ * and the driver biases the thermistor itself, which is why there is no
+ * external divider to find on the schematic.
+ *
+ * Sampling that with the ADC is not merely crude, it is degenerate: a 400 kHz
+ * carrier against a 20 kHz conversion trigger is exactly twenty carrier
+ * periods per sample, so the samples are not even randomised across the duty
+ * cycle - they land wherever the fixed phase relationship puts them and
+ * average to a number that is stable, plausible, and unrelated to
+ * temperature. That is worse than noise.
+ *
+ * So the three ranks are OUT of the sequence rather than converted and
+ * ignored. Leaving meaningless values in a buffer named for temperature is
+ * how they end up being read as temperature.
+ *
+ * TWO WAYS TO GET THEM BACK, in docs/LATER.md section 2:
+ *   - one RC per channel and they become ordinary ADC inputs again. 10k and
+ *     100 nF puts the corner at 159 Hz, 68 dB below the carrier, and
+ *     temperature does not need bandwidth. Cheapest by far, but it is a board
+ *     change.
+ *   - timer input capture with DMA. PA5, PA6 and PA7 all have capture
+ *     alternate functions on this package (TIM2_CH1, TIM3_CH1, TIM3_CH2 -
+ *     confirm against the AF table). At 160 MHz a 2.5 us period is 400 timer
+ *     counts, so the 10..88% duty span is 312 counts of range: plenty.
+ *     Firmware only, but 800k edges per second across three channels means
+ *     DMA, not interrupts. */
 
 /* KTY81-210, from the part's own characteristic. */
 #define TH_KTY_R25_OHM      2000
@@ -128,7 +154,7 @@ extern "C" {
 #define TH_RAW_MAX          3995U
 
 typedef struct {
-  uint32_t raw[TH_SEQ_LEN];  /* last conversions, all four channels      */
+  uint32_t raw[TH_SEQ_LEN];  /* last conversion, the KTY                 */
   int32_t  motor_c_x10;      /* motor winding, tenths of a degree C      */
   uint32_t motor_ohm;        /* KTY resistance, ohms                     */
   uint32_t valid;            /* 1 if the motor channel is in range       */

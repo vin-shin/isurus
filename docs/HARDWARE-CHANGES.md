@@ -198,7 +198,37 @@ If the distortion matters before someone gets a scope on it, **dead-time
 compensation in the modulator** buys most of it back without touching the dead
 band, and fails safe.
 
-## 5. Open questions that need a person, not a document
+## 5. One RC per APWM line — cheap, and it unlocks power-stage temperature
+
+`TEMP_U/V/W` on PA5/PA6/PA7 are **APWM outputs** from three UCC21756-Q1
+drivers: the isolated analogue sense channel, reporting its measurement as a
+**duty cycle on a 400 kHz carrier** rather than as a voltage. They run
+straight to MCU pins with nothing between.
+
+An ADC cannot read that, and the reason is worse than it first looks: a
+400 kHz carrier against a 20 kHz conversion trigger is exactly twenty carrier
+periods per sample, so the samples are not even randomised across the duty
+cycle. They average to a number that is stable, plausible, and unrelated to
+temperature.
+
+**Two passives per channel fix it.** 10 kΩ and 100 nF puts the corner at
+159 Hz — 68 dB below the carrier — and temperature needs no bandwidth at all.
+The three ranks go back into the ADC2 sequence and the path that already
+exists starts working.
+
+The alternative is timer input capture with DMA: firmware only, no board
+change, but 800k edges per second across three channels and meaningfully more
+work than six passives. `LATER.md` §2 has both.
+
+**Why it is worth doing.** Right now the only thing this firmware protects
+thermally is the motor winding. The SiC devices are 1200 V / 3.7 mΩ parts
+against a machine that peaks at 339 A, so they are nowhere near their limits —
+but a failing cooling loop or a blocked duct is currently invisible, and the
+drivers are already measuring it and shouting into a pin nobody can hear.
+
+---
+
+## 6. Open questions that need a person, not a document
 
 Neither of these is answerable from any schematic, and both gate closed-loop
 operation:

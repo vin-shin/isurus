@@ -44,7 +44,7 @@ available.** They are recorded in §4 rather than quietly corrected.
 | Phase current | 2 phases via internal OPAMPs | 2 phases (U, W) + DC link, external op-amps |
 | Current sensor | CT4022, ±40 A | Mornsun TL200-A2PV, ±500 A |
 | Bus sense | PF0, 190k/10k divider | PA3, 400:1 into an **isolated** amp chain |
-| Temperature | none | motor KTY + 3 power-stage channels |
+| Temperature | none | motor KTY, analogue; 3 stage channels are APWM |
 | Comparator | — | COMP2 on the bus = **overvoltage** trip, unarmed |
 | Encoder | A1333, 15-bit, SPI1, chip select | differential SSI-class, SPI3 + RS485, **XDIR** |
 | CAN | FDCAN1 (PA12/PB8) | FDCAN2 (PB6/PB5), TCAN1044A |
@@ -133,7 +133,11 @@ Ordered so each step can be checked before the next can hurt anything.
    reads that often.
 
 5. **`thermal.c` / `.h`** — **done, and new.** ADC2 over DMA, free-running:
-   the motor KTY on PC4 plus three power-stage channels on PA5/PA6/PA7.
+   the motor KTY on PC4. **Only** the KTY — `TEMP_U/V/W` on PA5/PA6/PA7 are
+   APWM outputs from the gate drivers, a duty cycle on a 400 kHz carrier, and
+   an ADC sampling that at 20 kHz reads exactly twenty carrier periods per
+   sample and averages to something stable, plausible and meaningless. They
+   are out of the sequence rather than converted and ignored. `LATER.md` §2.
 
    Load-bearing rather than a nicety. `LIM_IQ_MAX_MA` is the motor's *peak*
    rating, deliberately above its continuous one so bursts are available — so

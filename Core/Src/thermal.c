@@ -42,15 +42,12 @@ int Thermal_Init(ThermalTelem_t *t)
   ADC_ChannelConfTypeDef sConfig = {0};
   uint32_t i;
 
+  /* The KTY only. PA5/PA6/PA7 are APWM, not analogue - see thermal.h. */
   static const uint32_t chan[TH_SEQ_LEN] = {
-    ADC_CHANNEL_5,      /* PC4  motor KTY   */
-    ADC_CHANNEL_13,     /* PA5  TEMP_U */
-    ADC_CHANNEL_3,      /* PA6  TEMP_V */
-    ADC_CHANNEL_4       /* PA7  TEMP_W */
+    ADC_CHANNEL_5       /* PC4  motor KTY */
   };
   static const uint32_t rank[TH_SEQ_LEN] = {
-    ADC_REGULAR_RANK_1, ADC_REGULAR_RANK_2,
-    ADC_REGULAR_RANK_3, ADC_REGULAR_RANK_4
+    ADC_REGULAR_RANK_1
   };
 
   MX_ADC2_Init();
