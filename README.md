@@ -5,9 +5,11 @@ loops, the CAN interface, the SWD tooling and the host harness. It is meant to
 move between boards, so each hardware target gets its own branch named for the
 board rather than its own repository.
 
-The board on this branch is the **GR MotherFOCer** — an STM32G474RET6 driving
-an **EMRAX 228 HV** axial-flux traction motor through six isolated SiC
-half-bridge drivers, from a 140s2p pack.
+The board on this branch is **Mako Desori** — an STM32G474RET6 driving an
+**EMRAX 228 HV** axial-flux traction motor through six isolated SiC
+half-bridge drivers, from a 140s2p pack. Its designers know it as the GR
+MotherFOCer; the codename follows this repo's convention of naming targets
+after mako sharks, after the genus the stack itself is named for.
 
 > ### This firmware has never been run on hardware.
 >
@@ -22,7 +24,7 @@ half-bridge drivers, from a 140s2p pack.
 > **Do not arm anything above open-loop** until `FOC_LAMBDA_M_WB` has been
 > measured. Three derivations of it span 35%, and the too-high direction puts
 > the feedforward alone above the modulation ceiling. See
-> [`docs/PORT-POWER-UNIT.md`](docs/PORT-POWER-UNIT.md) §5.
+> [`docs/PORT-MAKO-DESORI.md`](docs/PORT-MAKO-DESORI.md) §5.
 
 Torque, velocity, position and haptic control all run off one 20 kHz current
 loop.
@@ -199,7 +201,7 @@ test/host            the simulator harness and its mutants
 
 Read in this order if the board is new to you:
 
-- [docs/PORT-POWER-UNIT.md](docs/PORT-POWER-UNIT.md) — **what this branch did
+- [docs/PORT-MAKO-DESORI.md](docs/PORT-MAKO-DESORI.md) — **what this branch did
   and what is still unverified.** Includes §4, where this port was wrong and
   why, and §6, the bring-up order
 - [docs/HARDWARE-CHANGES.md](docs/HARDWARE-CHANGES.md) — hardware findings: the

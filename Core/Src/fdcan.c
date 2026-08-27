@@ -92,7 +92,7 @@ void HAL_FDCAN_MspInit(FDCAN_HandleTypeDef* fdcanHandle)
     __HAL_RCC_FDCAN_CLK_ENABLE();
 
     __HAL_RCC_GPIOB_CLK_ENABLE();
-    /**FDCAN2 GPIO Configuration - GR MotherFOCer
+    /**FDCAN2 GPIO Configuration - Mako Desori
     PB5     ------> FDCAN2_RX
     PB6     ------> FDCAN2_TX
 

@@ -52,7 +52,7 @@ void MX_GPIO_Init(void)
   __HAL_RCC_GPIOB_CLK_ENABLE();
   __HAL_RCC_GPIOD_CLK_ENABLE();
 
-  /* Retargeted to the GR MotherFOCer.
+  /* Retargeted to the Mako Desori.
    *
    * The generated version drove PC13/14/15, PC0/1/2, PA2, PA4, PB1/2/9 and
    * PD2 as push-pull OUTPUTS, because that is what they were on Mako Longfin.

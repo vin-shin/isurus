@@ -772,7 +772,7 @@ int main(void)
      * There is no EEPROM variant any more, and no write-cycle budget to
      * spend. The flip side is that the offset does not survive a power cycle
      * - it has to be applied at every boot, which is an open item in
-     * docs/PORT-POWER-UNIT.md rather than something this block can fix.
+     * docs/PORT-MAKO-DESORI.md rather than something this block can fix.
      */
     if (g_cmd.enc_cmd != 0U)
     {

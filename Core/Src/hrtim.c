@@ -228,7 +228,7 @@ void HAL_HRTIM_MspPostInit(HRTIM_HandleTypeDef* hrtimHandle)
     __HAL_RCC_GPIOB_CLK_ENABLE();
     __HAL_RCC_GPIOC_CLK_ENABLE();
     __HAL_RCC_GPIOA_CLK_ENABLE();
-    /**HRTIM1 GPIO Configuration - GR MotherFOCer
+    /**HRTIM1 GPIO Configuration - Mako Desori
     PA10     ------> HRTIM1_CHB1   U high
     PA11     ------> HRTIM1_CHB2   U low
     PC6      ------> HRTIM1_CHF1   V high

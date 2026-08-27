@@ -1,7 +1,7 @@
-# Deferred work — GR MotherFOCer
+# Deferred work — Mako Desori
 
 Things that are understood well enough to write down and deliberately not done
-yet. Distinct from `PORT-POWER-UNIT.md` §5, which is what nobody can answer
+yet. Distinct from `PORT-MAKO-DESORI.md` §5, which is what nobody can answer
 from a desk, and from `HARDWARE-CHANGES.md`, which is what a board revision
 should change.
 
@@ -41,7 +41,7 @@ legibly enough to commit to, and the topology decides which linear form
 applies. The honest route is not to derive it at all: substitute two known
 resistors for the KTY, read the ADC, and fit the line. That calibrates the
 whole chain including the second stage's gain and offset, and it is the same
-bench session as the current and bus calibrations in `PORT-POWER-UNIT.md` §5.
+bench session as the current and bus calibrations in `PORT-MAKO-DESORI.md` §5.
 
 ## 2. Temperature: `TEMP_U/V/W` are APWM — confirmed
 

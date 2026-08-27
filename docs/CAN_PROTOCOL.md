@@ -57,7 +57,7 @@ later would change the frame format only, not the protocol.
 > **The BOOT0 conflict does not apply to this board.** On Mako Longfin the CAN
 > RX line was PB8, which is also BOOT0, so a chip with factory option bytes
 > booted the ST system bootloader instead of the application - the transceiver
-> idles RX high. The GR MotherFOCer does not use PB8 at all. The story is still
+> idles RX high. The Mako Desori does not use PB8 at all. The story is still
 > worth knowing, because the symptom was a board that looked like broken
 > firmware in every respect:
 > [HARDWARE_NOTES.md section 1](../HARDWARE_NOTES.md#1-boot0--fdcan1_rx-pin-conflict-critical).

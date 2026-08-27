@@ -1,7 +1,7 @@
 /**
   ******************************************************************************
   * @file    board.h
-  * @brief   GR MotherFOCer - the hardware map, in one place.
+  * @brief   Mako Desori - the hardware map, in one place.
   *
   *          Isurus moves between boards on a branch per board. This file is
   *          the seam: everything that is true of THIS board and not of the
@@ -47,7 +47,15 @@
 extern "C" {
 #endif
 
-#define BOARD_NAME              "GR MotherFOCer"
+/* Board codename. The repo names its targets after mako sharks, after the
+ * genus the stack is named for: Isurus oxyrinchus is the shortfin, Isurus
+ * paucus the longfin, and Isurus desori a fossil species. Predecessors on this
+ * repo were Mako Shortfin and Mako Longfin.
+ *
+ * The board's own designers know it as the GR MotherFOCer, and its CubeMX
+ * project still lives under `gr_motherfocer` - references to that path in this
+ * file mean the SOURCE PROJECT, not the board. */
+#define BOARD_NAME              "Mako Desori"
 
 /* ==========================================================================
  * 1. Core and clock
@@ -212,7 +220,7 @@ extern "C" {
  * was written for, and it is not good enough for a current loop, which needs
  * all three phases sampled at the same known point in the switching period.
  * Retargeting ADC1 to the HRTIM trigger is part of the port, not a later
- * refinement - see docs/PORT-POWER-UNIT.md.
+ * refinement - see docs/PORT-MAKO-DESORI.md.
  */
 /* The ADC1 sequence and its buffer layout live in csense.h (CS_IDX_*,
  * CS_SEQ_LEN), and ADC2's in thermal.h (TH_IDX_*) - they are properties of how

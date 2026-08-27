@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# First-power-on check for the GR MotherFOCer. Ten minutes, ST-Link only.
+# First-power-on check for the Mako Desori. Ten minutes, ST-Link only.
 #
 # Nothing needs to be connected but the debug probe: no DC link, no motor, no
 # CAN. The board is powered from its logic supply and this reads the telemetry
@@ -138,8 +138,8 @@ proc faultname {f} {
 }
 
 echo ""
-echo "GR MotherFOCer bring-up check - logic power only, nothing else connected"
-echo "======================================================================="
+echo "Mako Desori bring-up check - logic power only, nothing else connected"
+echo "====================================================================="
 echo ""
 echo "core and peripherals"
 
@@ -213,7 +213,7 @@ if {\$fails == 0} {
     echo "chain, the driver polarities and the clock held on real hardware."
 } else {
     echo [format "%d check(s) failed. Each names the assumption to go and look at;" \$fails]
-    echo "docs/PORT-POWER-UNIT.md section 4 lists what was inferred and why."
+    echo "docs/PORT-MAKO-DESORI.md section 4 lists what was inferred and why."
 }
 echo ""
 shutdown

@@ -1,7 +1,7 @@
-# Porting Isurus to the GR MotherFOCer
+# Porting Isurus to the Mako Desori
 
 This branch (`power-unit`) retargets the Isurus stack from **Mako Longfin** —
-a 15 V bench servo — to the **GR MotherFOCer**, an EMRAX 228 HV traction
+a 15 V bench servo — to the **Mako Desori**, an EMRAX 228 HV traction
 inverter on a 140s2p pack. It follows the repo's convention that a hardware
 target is a branch, not a repository.
 
@@ -44,7 +44,7 @@ available.** They are recorded in §4 rather than quietly corrected.
 
 ## 1. What the two boards do not share
 
-| | Mako Longfin | GR MotherFOCer |
+| | Mako Longfin | Mako Desori |
 |---|---|---|
 | Core clock | 128 MHz | 160 MHz |
 | Switching | 30 kHz | 20 kHz |
