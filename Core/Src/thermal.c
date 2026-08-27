@@ -44,9 +44,9 @@ int Thermal_Init(ThermalTelem_t *t)
 
   static const uint32_t chan[TH_SEQ_LEN] = {
     ADC_CHANNEL_5,      /* PC4  motor KTY   */
-    ADC_CHANNEL_13,     /* PA5  power stage */
-    ADC_CHANNEL_3,      /* PA6  power stage */
-    ADC_CHANNEL_4       /* PA7  power stage */
+    ADC_CHANNEL_13,     /* PA5  TEMP_U */
+    ADC_CHANNEL_3,      /* PA6  TEMP_V */
+    ADC_CHANNEL_4       /* PA7  TEMP_W */
   };
   static const uint32_t rank[TH_SEQ_LEN] = {
     ADC_REGULAR_RANK_1, ADC_REGULAR_RANK_2,
@@ -104,7 +104,18 @@ int Thermal_Init(ThermalTelem_t *t)
 
 uint32_t Thermal_RawToOhm(uint32_t raw)
 {
-  /* Assumed conditioning: KTY from the pin to ground, pull-up to the
+  /* !! THIS MODEL IS KNOWN TO BE THE WRONG SHAPE FOR THIS BOARD. !!
+   *
+   * Schematic sheet 9 is a two-stage TLV9302 circuit driving the KTY node,
+   * not a passive pull-up, so the relationship is linear rather than the
+   * ratiometric divider below. Replace this function - do not retune
+   * THERM_PULLUP_OHM. See the header comment in thermal.h.
+   *
+   * Left in place so the module compiles and reports something monotonic in
+   * temperature while the front end is worked out. The band check in
+   * Thermal_Read is what stops it being trusted meanwhile.
+   *
+   * Assumed conditioning: KTY from the pin to ground, pull-up to the
    * reference. Then
    *
    *     raw / FULL = R / (R + Rpull)   ->   R = Rpull * raw / (FULL - raw)

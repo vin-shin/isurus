@@ -100,35 +100,50 @@ extern "C" {
  * the register holds period - 1. */
 #define BOARD_PWM_PERIOD        (BOARD_HRTIM_TICK_HZ / BOARD_PWM_FREQ_HZ)
 
-/* Dead time, from the .ioc: rising 160, falling 160, DT prescaler DIV1, both
- * signs positive.
+/* Dead time. 160 counts at DT prescaler DIV1, and fDTG = fHRTIM = 160 MHz, so
+ * 6.25 ns per count and 1.0 us total.
  *
- * At DIV1 the LL header states fDTG = fHRTIM, which is the 160 MHz kernel
- * clock and NOT the x8 multiplied counter clock, so one dead-time count is
- * 6.25 ns and 160 of them is 1.0 us.
+ * ---- what the parts actually need ----------------------------------------
  *
- * !! THIS IS THE ONE INHERITED CONSTANT THAT A FET CHANGE FALSIFIES. !!
+ * Bridge: Infineon IMCQ120R004M2H, CoolSiC 1200 V / 3.7 mOhm G2.
+ * Drivers: TI UCC21756-Q1, 30 ns max part-to-part skew.
  *
- * The rest of this board is reported to match the gr_motherfocer hardware
- * exactly EXCEPT for the FETs - which makes almost everything in that project
- * authoritative here, and makes this number the exception rather than the
- * rule. Dead time exists to cover the turn-off delay of the device plus the
- * propagation mismatch between the two gate driver channels. Turn-off delay
- * is a property of the FET: its gate charge, the gate resistor, the driver's
- * sink current. Change the FET and the required dead time changes with it.
+ * The floor is the outgoing device turning fully off before the incoming one
+ * starts, worst case, plus the skew between the two driver channels. Taking
+ * the datasheet's hot figures, which are the bad ones for turn-off:
  *
- * 1.0 us is also long for a MOSFET bridge - typical silicon parts want
- * 100-500 ns - which cuts both ways. Too long is not dangerous, it is lost
- * modulation range and distortion near the zero crossing. Too SHORT is a
- * shoot-through, and it is not a fault the firmware can detect or fault on:
- * both devices in a leg conduct for a few tens of nanoseconds and the damage
- * is thermal and cumulative.
+ *      td(off) 94.5 ns + tf 41.8 ns   outgoing device fully off
+ *      - td(on) 30.6 ns               incoming device starts
+ *      + 30 ns                        driver part-to-part skew
+ *      ------------------------------------------------
+ *      136 ns floor, so about 270 ns with the usual 2x margin - 48 counts.
  *
- * So this stays at the inherited 160 counts, because erring long is the safe
- * direction, and it must be re-derived from the new FETs' datasheet and then
- * confirmed on a scope at a switch node before the bridge runs at any real
- * bus voltage. Do not shorten it to recover modulation range on the strength
- * of a datasheet alone.
+ * The configured 1.0 us is therefore roughly 7x what the silicon needs, and
+ * that is not free. Dead-time voltage error is Vdc * t_dead * f_sw, so at
+ * 588 V and 20 kHz:
+ *
+ *      1000 ns  ->  11.8 V of distortion, 2.0% of the bus
+ *       300 ns  ->   3.5 V,               0.6%
+ *
+ * It shows up worst at low output voltage, which is low speed and low torque
+ * - exactly where a traction drive is asked to be smooth.
+ *
+ * !! IT IS STILL LEFT AT 160. !! Three reasons, and they should all be
+ * cleared before it moves:
+ *
+ *   1. Those switching figures are TYPICALS. The datasheet quotes no maximum
+ *      for td(off), and a worst-case dead time cannot honestly be built out
+ *      of typical values.
+ *   2. They are specified at Rg = 2.3 Ohm. This board's gate resistors were
+ *      not legible on the schematic, and Rg moves these times directly.
+ *   3. Too long costs distortion; too SHORT is a shoot-through the firmware
+ *      cannot detect, cannot fault on, and which damages the bridge
+ *      cumulatively. The error directions are not symmetric, so the
+ *      conservative value stays until it is measured rather than computed.
+ *
+ * Measure it on a scope at a switch node, then set it. If the distortion
+ * matters before that happens, dead-time COMPENSATION in the modulator is the
+ * safe way to buy most of it back without touching the dead band.
  */
 #define BOARD_DT_RISING         160U
 #define BOARD_DT_FALLING        160U
@@ -152,10 +167,16 @@ extern "C" {
 #define BOARD_GATE_EN_PIN       GPIO_PIN_8
 #define BOARD_GATE_EN_ACTIVE_HIGH 1
 
-/* The board's bring-up code holds the driver in reset for ~1 ms before
- * releasing it. Named rather than left as a literal so the requirement is
- * visible - but the gate driver part number is not in the .ioc, so the true
- * minimum has not been checked against any datasheet. */
+/* The drivers are TI UCC21756-Q1, and PC8 is their shared RST/EN.
+ *
+ * The overbar in the datasheet's RST/EN says asserting it LOW resets and
+ * disables; high runs. That confirms BOARD_GATE_EN_ACTIVE_HIGH above from the
+ * part rather than from inference off the board's bring-up code, which is
+ * where it came from originally.
+ *
+ * The datasheet's minimum pulse width that resets the fault latch is 1000 ns.
+ * The board's bring-up code holds it for 1 ms - a thousand times the minimum,
+ * which costs nothing at boot and is kept. */
 #define BOARD_GATE_RESET_US     1000U
 
 /* ==========================================================================
@@ -647,13 +668,24 @@ extern "C" {
  * catches shoot-through and short-circuit events that no ADC-based limit
  * will ever see in time.
  *
- * What implementing them needs, and none of it is derivable from a pinout:
+ * ANSWERED by the UCC21756-Q1 datasheet:
  *
- *   - the driver part number, for the polarity of each line and whether
- *     READY asserts on healthy or on not-ready
- *   - whether FAULT latches in the driver until DRV_RST is pulsed, which
- *     decides whether firmware may clear it or must reset the driver
- *   - whether they are open-drain, which decides whether they need pulls
+ *   - FLT carries an overbar: ACTIVE LOW. It is the overcurrent/DESAT alarm.
+ *   - RDY has none: ACTIVE HIGH, and it is a power-good - it asserts when the
+ *     isolated 12 V supply is above UVLO. So a driver that is healthy reads
+ *     RDY high and FLT high, and either going low is bad news.
+ *   - Both are OPEN DRAIN. The absolute-maximum table specifies them by
+ *     INPUT current (20 mA into FLT and RDY), which is how a pin that sinks
+ *     rather than sources is specified. **They need pull-ups**, and this
+ *     firmware currently leaves all twelve pins in their reset state with no
+ *     pull configured, so they float.
+ *   - FLT LATCHES and is cleared by pulsing RST/EN - which is PC8, and which
+ *     is shared by all six drivers. So clearing one driver's fault resets the
+ *     whole bridge. That is worth knowing before writing a recovery path:
+ *     there is no per-switch clear.
+ *   - DESAT response is 200 ns, against a 50 us control period.
+ *
+ * So all that is left is firmware. See docs/HARDWARE-CHANGES.md section 1b.
  *
  * The natural firmware shape once that is known: all twelve as EXTI inputs
  * feeding MotorPwm_EmergencyStop directly, plus a periodic READY check in

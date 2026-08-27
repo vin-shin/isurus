@@ -57,13 +57,27 @@ and thermal shutdown, per switch, and the pins sit in their reset state with
 nobody listening. A fault line read as a floating input is not a fault handled
 badly; it is a fault that never happened as far as the firmware is concerned.
 
-**What is needed before it can be written** is a hardware answer, which is why
-it is in this document: the **gate driver part number**, for
+**All of it is answered now** by the UCC21756-Q1 datasheet, so this is purely
+firmware work:
 
-- the polarity of each line, and whether READY asserts on healthy or not-ready
-- whether FAULT latches in the driver until `DRV_RST` (PC8) is pulsed, which
-  decides whether firmware may clear it or must reset the driver
-- whether they are open-drain, which decides whether they need pulls
+- `FLT` is **active low** — the overcurrent/DESAT alarm.
+- `RDY` is **active high** — a power-good, asserting when the isolated 12 V
+  supply is above UVLO. A healthy driver reads both high.
+- Both are **open drain** (the absolute-maximum table specifies them by *input*
+  current, 20 mA), so **they need pull-ups**. The firmware currently leaves all
+  twelve pins in their reset state with no pull configured, so they float —
+  which is why nothing has been noticed.
+- `FLT` **latches**, and is cleared by pulsing `RST/EN` — which is PC8, and
+  which all six drivers share. **There is no per-switch clear:** recovering one
+  driver resets the whole bridge. Worth knowing before designing a recovery
+  path.
+- DESAT response is **200 ns**, against a 50 µs control period.
+
+The natural shape: all twelve as EXTI inputs with pull-ups, feeding
+`MotorPwm_EmergencyStop()` — already written to run from a broken context
+using single-store register writes. Plus a `RDY` check in `Drive_SelfTest` so
+the drive refuses to arm into a driver that is already unhappy, and a
+`DRIVE_FAULT_GATEDRV` carrying which switch complained.
 
 ---
 
@@ -137,29 +151,46 @@ whenever you want it — there is no hardware to buy.
 
 ---
 
-## 4. Dead time — re-derive it, do not assume it carried over
+## 4. Dead time — computable now, and about 7x longer than it needs to be
 
-Not a change to make, a number to confirm, and it is here because the answer
-comes from a datasheet rather than from the firmware.
+Not a hardware change; a number to set once someone has a scope on it.
 
-The HRTIM dead time is **160 counts at DT prescaler DIV1**, which at
-fDTG = fHRTIM = 160 MHz is **1.0 µs**. That was inherited from
-`gr_motherfocer`, whose hardware is reported identical **except for the
-FETs** — and dead time is precisely a FET property: it covers the device's
-turn-off delay plus the mismatch between the two gate-driver channels.
+The bridge is an **Infineon IMCQ120R004M2H** (CoolSiC 1200 V / 3.7 mΩ G2) and
+the drivers are **UCC21756-Q1** (30 ns max part-to-part skew). That makes the
+floor computable:
 
-1.0 µs is also long for a MOSFET bridge, where 100–500 ns is typical.
+| | |
+|---|---|
+| outgoing device fully off | `td(off)` 94.5 ns + `tf` 41.8 ns (hot) |
+| minus incoming turn-on | −30.6 ns |
+| plus driver part-to-part skew | +30 ns |
+| **floor** | **136 ns**, so ~270 ns at the usual 2× margin |
 
-It is being left long on purpose, because the error directions are not
-symmetric. Too long costs modulation range and adds distortion near the zero
-crossing. **Too short is a shoot-through** — one the firmware cannot detect,
-cannot fault on, and which damages the bridge cumulatively.
+The configured value is **1.0 µs** — roughly 7× what the silicon needs. That
+is not free: dead-time voltage error is `Vdc · t_dead · f_sw`, so at 588 V and
+20 kHz,
 
-**What to do:** re-derive from the new FETs' turn-off characteristics, then
-confirm on a scope at a switch node before the bridge sees any real bus
-voltage. Do not shorten it on a datasheet alone.
+| dead time | distortion | of the bus |
+|---|---|---|
+| 1000 ns (as configured) | 11.8 V | 2.0% |
+| ~300 ns | 3.5 V | 0.6% |
 
----
+and it shows up worst at low output voltage — low speed, low torque, exactly
+where a traction drive is asked to be smooth.
+
+**It is still left at 160 counts**, and should stay there until measured:
+
+1. Those switching figures are **typicals**. The datasheet quotes no maximum
+   for `td(off)`, and a worst-case dead time cannot honestly be built from
+   typical values.
+2. They are specified at **Rg = 2.3 Ω**. This board's gate resistors were not
+   legible on the schematic, and Rg moves these times directly.
+3. Too long costs distortion. **Too short is a shoot-through** the firmware
+   cannot detect, cannot fault on, and which damages the bridge cumulatively.
+
+If the distortion matters before someone gets a scope on it, **dead-time
+compensation in the modulator** buys most of it back without touching the dead
+band, and fails safe.
 
 ## 5. Open questions that need a person, not a document
 
@@ -176,6 +207,19 @@ operation:
    invert, so any sign flip is the sensor's own convention plus which way the
    conductor passes through it. A reversed phase sensor does not fail loudly —
    it corrupts the Clarke transform into a rotating error.
+
+3. **The KTY front end.** Sheet 9 is a two-stage TLV9302 circuit, not the
+   pull-up divider `thermal.c` models — so that conversion has the wrong
+   *shape*, not just the wrong constant. The resistor values did not render
+   legibly enough to commit to. Substituting two known resistors for the KTY
+   and reading the ADC calibrates the whole chain regardless of topology.
+
+4. **Are `TEMP_U/V/W` analogue or PWM?** The UCC21756 offers an isolated
+   analogue sense channel whose output `APWM` encodes the measurement as a
+   *duty cycle*, and each driver brings APWM off-sheet. If those are the three
+   TEMP nets, they want a timer input capture rather than an ADC. Nothing
+   reads them yet, so nothing is currently wrong — but they must not be
+   plumbed in as voltages until this is settled.
 
 Both are one bench session, and the same session that answers §5.1 can answer
 §5.2.
