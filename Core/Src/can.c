@@ -358,6 +358,20 @@ void Can_Poll(void)
  * re-arming, and the motor makes no torque in the meantime. Shared by the
  * command watchdog and by bus-off, which are the same event - the control
  * link is gone - discovered two different ways. */
+/* Wire-unit conversions. Rounding is symmetric about zero so a signed
+ * quantity is not biased in either direction, and the divisors are the ones
+ * documented in can_proto.h - 10 mA per count, 10 mV per count. */
+static int32_t can_round_div(int32_t v, int32_t d)
+{
+  return (v >= 0) ? ((v + d / 2) / d) : -(((-v) + d / 2) / d);
+}
+
+static int32_t can_ma_to_ca(int32_t ma)   { return can_round_div(ma, 10); }
+static int32_t can_mv_to_cv(int32_t mv)   { return can_round_div(mv, 10); }
+
+/* Degrees per second -> rpm. 360 dps is 60 rpm, so the factor is 6. */
+static int32_t can_dps_to_rpm(int32_t dps) { return can_round_div(dps, 6); }
+
 static void Can_StandDown(void)
 {
   s_timed_out  = 1U;
@@ -469,9 +483,15 @@ void Can_PublishTelem(void)
 
   uint8_t d[8];
 
+  /* Units are NOT the internal ones - see the note in can_proto.h. Internally
+   * everything stays in mA and dps; the conversion happens here, at the wire,
+   * so nothing upstream has to know the protocol exists.
+   *
+   * Rounded rather than truncated. Truncation biases every reading toward
+   * zero, which on a current telemetry is a systematic under-report. */
   wr_i32(d,     g_pos.pos_deg_x10);
-  wr_i16(d + 4, g_pos.vel_dps);
-  wr_i16(d + 6, g_pos.iq_out_ma);
+  wr_i16(d + 4, (int32_t)can_dps_to_rpm(g_pos.vel_dps));
+  wr_i16(d + 6, (int32_t)can_ma_to_ca(g_pos.iq_out_ma));
   (void)Can_Send(CAN_ID(CAN_NODE_ID, CAN_MSG_TELEM_MOTION), d, 8);
 
   uint8_t flags = 0U;
@@ -485,9 +505,9 @@ void Can_PublishTelem(void)
 
   d[0] = (uint8_t)g_pos.mode;
   d[1] = flags;
-  wr_u16(d + 2, g_cs.vbus_mv);
+  wr_u16(d + 2, (uint32_t)can_mv_to_cv(g_cs.vbus_mv));
   wr_i16(d + 4, g_pos.err_deg_x10);
-  wr_u16(d + 6, (uint32_t)g_pos.iq_max_ma);
+  wr_u16(d + 6, (uint32_t)can_ma_to_ca(g_pos.iq_max_ma));
   (void)Can_Send(CAN_ID(CAN_NODE_ID, CAN_MSG_TELEM_STATE), d, 8);
 
   /* Drive state and the latched cause. See CAN_MSG_TELEM_DRIVE. */

@@ -62,6 +62,41 @@ later would change the frame format only, not the protocol.
 > firmware in every respect:
 > [HARDWARE_NOTES.md section 1](../HARDWARE_NOTES.md#1-boot0--fdcan1_rx-pin-conflict-critical).
 
+## Telemetry units, and why they are not the internal ones
+
+Commands are in millivolts, milliamps and degrees per second, matching the
+firmware's own units. **Telemetry is not.** The bus is reported in centivolts
+and currents in centiamps, and velocity in RPM.
+
+That asymmetry is deliberate and it is the fix for a real defect. Four
+telemetry fields were sized for Mako Longfin, a 50 V / 12 A bench drive, and
+all four overflow on this board:
+
+| field | type | caps at | this board needs |
+|---|---|---|---|
+| bus | `u16` mV | 65.5 V | 588 V |
+| `iq_max` | `u16` mA | 65.5 A | 160 A |
+| `iq` | `i16` mA | ±32.8 A | ±160 A |
+| velocity | `i16` dps | 32767 | 33600 |
+
+The velocity field is the one worth dwelling on. It overflows by 2.5%, so it
+reads correctly across the whole useful speed range and then wraps to a large
+negative number near maximum rpm — a channel that lies only at full speed.
+
+Centi- units buy 655 V and ±327 A, four to six times the headroom this machine
+needs, and cost resolution that the sensors do not have anyway: the current
+chain resolves about 80 mA per ADC count and the bus about 320 mV, both far
+coarser than the 10 mA and 10 mV the wire now carries. Velocity is in RPM
+because a traction motor's datasheet, limits and every conversation about it
+already are.
+
+Commands were left alone because they are 32-bit fields and never overflowed.
+
+**This breaks wire compatibility with Mako Longfin hosts**, deliberately. A
+host targets one board — that is what the branch-per-board convention means —
+and the alternative, keeping a broken field alongside a working one, leaves
+two ways to read the same quantity of which one is wrong.
+
 ## Frame format
 
 Every frame is a standard data frame. No remote frames — they are rejected in
@@ -182,14 +217,19 @@ happens to do.
 
 Every quantity on the wire is a **scaled integer, never a float.**
 
-| Quantity | Unit on the wire | Notes |
-|---|---|---|
-| Position | tenths of a mechanical degree | signed, **multi-turn** — 3600 is one full turn, no wrap to reason about |
-| Velocity | whole mechanical degrees per second | signed |
-| Current | milliamps of q-axis current | signed; for this motor iq is torque-producing current |
-| Acceleration | deg/s² | |
-| Jerk | deg/s³ | 0 selects a trapezoid profile instead of S-curve |
-| Bus voltage | millivolts | unsigned |
+**Commands and telemetry do not use the same units**, and the reason is in
+"Telemetry units" above: command fields are 32-bit and never overflowed, so
+they kept the firmware's own units, while four telemetry fields overflowed on
+588 V / 160 A hardware and had to be rescaled.
+
+| Quantity | In commands | In telemetry | Notes |
+|---|---|---|---|
+| Position | tenths of a mechanical degree | same | signed, **multi-turn** — 3600 is one full turn, no wrap to reason about |
+| Velocity | degrees per second | **RPM** | signed |
+| Current | milliamps of iq | **centiamps** | signed; for this motor iq is torque-producing current |
+| Acceleration | deg/s² | — | |
+| Jerk | deg/s³ | — | 0 selects a trapezoid profile instead of S-curve |
+| Bus voltage | — | **centivolts** | unsigned |
 
 ## Host to drive: commands
 
@@ -259,7 +299,7 @@ boot. There is no polling command.
  byte   0        1        2        3        4        5        6        7
       +----------------------------------+-----------------+-----------------+
       | i32  position, tenths of a degree| i16 velocity    | i16 iq          |
-      |      multi-turn, signed          |     deg/s       |     milliamps   |
+      |      multi-turn, signed          |     RPM         |     centiamps   |
       +----------------------------------+-----------------+-----------------+
 ```
 
@@ -269,12 +309,13 @@ boot. There is no polling command.
  byte   0        1        2        3        4        5        6        7
       +--------+--------+-----------------+-----------------+-----------------+
       | u8     | u8     | u16 bus         | i16 following   | u16 iq_max      |
-      | mode   | flags  |     millivolts  |     err, deg*10 |     milliamps   |
+      | mode   | flags  |     centivolts  |     err, deg*10 |     centiamps   |
       +--------+--------+-----------------+-----------------+-----------------+
 ```
 
-Velocity and current are 16-bit because ±32767 covers everything this drive can
-reach — 32767 deg/s is 91 rev/s and 32 A is far beyond the bridge — and it keeps
+Velocity and current are 16-bit because, IN THESE UNITS, ±32767 covers
+everything this drive can reach — ±32767 rpm against a 5600 rpm machine and
+±327 A against a 160 A limit — and it keeps
 each message to a single frame. Both are **saturated, not wrapped**, on the way
 out: a velocity that overflowed would otherwise be reported with the opposite
 sign, which is worse than being clipped.

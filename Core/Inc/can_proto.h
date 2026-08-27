@@ -217,13 +217,13 @@ extern "C" {
  *  cmd   name             len  payload
  *  ----  ---------------  ---  ------------------------------------------
  *  0x10  TELEM_MOTION       8  i32 position, tenths of a degree, multi-turn
- *                              i16 velocity, degrees per second
- *                              i16 iq, milliamps
+ *                              i16 velocity, RPM
+ *                              i16 iq, CENTIAMPS
  *  0x11  TELEM_STATE        8  u8  mode
  *                              u8  flags, CAN_FLAG_*
- *                              u16 bus millivolts
+ *                              u16 bus CENTIVOLTS
  *                              i16 following error, tenths of a degree
- *                              u16 iq_max milliamps
+ *                              u16 iq_max CENTIAMPS
  *  0x12  TELEM_DRIVE        8  u8  drive state, DriveState_t
  *                              u8  latched fault cause, DriveFault_t
  *                              u8  self-test failure cause, DriveFault_t
@@ -236,6 +236,36 @@ extern "C" {
  *  cause are one byte each rather than packed into the flags byte, which is
  *  full, and because an enum that grows is easier to extend than a bitfield
  *  that has to be re-cut.
+ *
+ *  ---- why these units, and what changed ----------------------------------
+ *
+ *  Four of these fields were sized for Mako Longfin - a 50 V, 12 A bench
+ *  drive - and every one of them OVERFLOWS on this board:
+ *
+ *      bus       u16 millivolts   caps at  65.5 V   pack reaches 588 V
+ *      iq_max    u16 milliamps    caps at  65.5 A   limit is 160 A
+ *      iq        i16 milliamps    caps at  32.8 A   command reaches 160 A
+ *      velocity  i16 dps          caps at  32767    LIM_VEL_MAX_DPS is 33600
+ *
+ *  The velocity one is the reason this is worth being blunt about. It
+ *  overflows by 2.5%, so it reads perfectly across the entire useful speed
+ *  range and then wraps to a large NEGATIVE number near maximum rpm - a
+ *  telemetry channel that lies only at full speed, which is the worst place
+ *  for it to start lying.
+ *
+ *  So: bus and currents move to centi- units and velocity to RPM. That buys
+ *  655 V, +/-327 A and +/-32767 rpm, which is 4x to 6x headroom on this
+ *  machine rather than the 0.4x it had. Resolution goes to 10 mV and 10 mA,
+ *  which is far finer than the sensors resolve anyway - the current chain is
+ *  about 80 mA per ADC count and the bus about 320 mV.
+ *
+ *  RPM rather than dps for velocity because this is a traction motor and
+ *  every datasheet, limit and conversation about it is already in rpm.
+ *
+ *  This BREAKS wire compatibility with Mako Longfin hosts, deliberately. The
+ *  branch-per-board convention already means a host targets one board, and
+ *  the alternative - carrying both a broken field and a working one - leaves
+ *  two ways to read the same quantity, one of which is wrong.
  *
  *  All three are published at CAN_TELEM_HZ. Velocity and current are 16-bit
  *  because +/-32767 covers every value this drive can reach - 32767 deg/s is
