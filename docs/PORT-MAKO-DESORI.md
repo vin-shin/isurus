@@ -19,28 +19,50 @@ working against the source.
 
 | document | | |
 |---|---|---|
-| `powerunit.pdf` | board schematic, 9 sheets | Authoritative, and the only source for what a pin is *wired to*. |
+| `powerunit.pdf` | **this board's** schematic, 9 sheets | Authoritative, and the only source for what a pin is *wired to*. |
 | `TLxxx-A2(T)PV.pdf` | Mornsun current transducer | Authoritative. |
 | `ucc21756-q1.pdf` | TI isolated gate driver | Authoritative. |
 | `IMCQ120R004M2HXUMA1.pdf` | Infineon CoolSiC MOSFET | Authoritative. |
-| `gr_motherfocer` tree | the board's CubeMX project | **Trust the pinout, peripheral mapping and interrupt layout; do not trust its analogue scaling.** |
+| `gr_motherfocer` tree | **a different board's** CubeMX project | Corroboration only. See below. |
 
 Everything taken from those documents is written into `board.h`, `limits.h`,
 `LATER.md` and `HARDWARE-CHANGES.md` **with its provenance**, so the reasoning
 survives without the files.
 
-That last split cost real time and is worth keeping. The CubeMX output
-describes real silicon — its `HRTIM1_TIMB_IRQHandler` independently confirms
-Timer B as the intended control ISR, which this port had chosen on other
-grounds. But its `0.04` A/count is a rounded copy of MiniFOCer's
-`0.040584415584415584`, and its `0.05` V/count matches neither MiniFOCer's
-divider nor this board's. Neither was derived for this hardware. Four commits
-ending at "encoder works" is consistent with a project that never got as far
-as calibrating current.
+### The gr_motherfocer trap
 
-**Three of this port's own wrong turns came from trusting that code, or from
-reasoning about part numbers, where the schematic or a datasheet was
-available.** They are recorded in §4 rather than quietly corrected.
+Most of this port was written before the schematic was available, against the
+`gr_motherfocer` CubeMX project. **That is a different board** — similar
+schematic, but its own layout and setup.
+
+Its code was never wrong. It described *its* hardware correctly, and this port
+assumed it described *this* hardware. Everything that followed from that
+assumption and was not later checked against the schematic was a guess wearing
+a fact's clothing, and two of them were real bugs: the high and low gates
+transposed on all three phases, and a phase current sensor read that does not
+exist here. Both are in §4.
+
+So it is worth being precise about what that tree is still good for:
+
+- **Design intent, yes.** Its `HRTIM1_TIMB_IRQHandler` independently confirms
+  Timer B as the intended control ISR, which this port had chosen on other
+  grounds. Two designers reaching the same answer is real evidence.
+- **Pinout, as corroboration only.** It came close, and where it disagreed
+  with the schematic it was right about its own board and wrong about this
+  one. Close is not the same as authoritative.
+- **Analogue scaling, no.** Its `0.04` A/count is a rounded copy of
+  MiniFOCer's `0.040584415584415584` and its `0.05` V/count matches neither
+  MiniFOCer's divider nor this board's. Neither was ever derived for any of
+  this hardware.
+
+**Different layout also means the switching behaviour is this board's own.**
+Dead time, DESAT blanking and how much noise the sense chains pick up all
+depend on parasitics that no schematic captures. None of that transfers, and
+§5 says so where it matters.
+
+**Three of this port's wrong turns came from trusting that tree, or from
+reasoning about part numbers, where a primary source was available.** They are
+recorded in §4 rather than quietly corrected.
 
 ## 1. What the two boards do not share
 

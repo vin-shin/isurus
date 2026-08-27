@@ -8,13 +8,26 @@
   *          stack lives here, so a port is a diff against one header rather
   *          than an archaeology dig through twenty files.
   *
-  *          Every value here was derived from the CubeMX project that came
-  *          with the board (Inverter.ioc and the LL code it generated in the
-  *          gr_motherfocer tree), not from a schematic. That distinction
-  *          matters: the .ioc records which peripheral is on which pin, and
-  *          it does NOT record what the net on the other side of the pin is
-  *          connected to. Where those are different questions, the text below
-  *          says which one it is answering.
+  *          The authority for everything here is THIS BOARD'S SCHEMATIC.
+  *
+  *          Much of it was first derived from the `gr_motherfocer` CubeMX
+  *          project, before the schematic was available, and that turned out
+  *          to be a mistake worth understanding rather than just correcting.
+  *          !! gr_motherfocer IS A DIFFERENT BOARD. !! Similar schematic,
+  *          different layout and setup. Its code was never wrong - it
+  *          described its own hardware correctly, and this file assumed it
+  *          described this one.
+  *
+  *          Two things followed from that assumption and both were real bugs:
+  *          the high and low gates were transposed on all three phases, and a
+  *          phase current sensor was read that does not exist here. Both are
+  *          in docs/PORT-MAKO-DESORI.md section 4.
+  *
+  *          So gr_motherfocer is useful for DESIGN INTENT - it independently
+  *          chose Timer B for the control ISR, for instance - and is
+  *          authoritative for nothing. Where it and the schematic disagree,
+  *          the schematic is describing this board and gr_motherfocer is
+  *          describing a different one.
   *
   *          Anything marked BOARD_UNKNOWN is something the .ioc configured but
   *          did not explain. Those are listed rather than omitted, because a
@@ -52,9 +65,10 @@ extern "C" {
  * paucus the longfin, and Isurus desori a fossil species. Predecessors on this
  * repo were Mako Shortfin and Mako Longfin.
  *
- * The board's own designers know it as the GR MotherFOCer, and its CubeMX
- * project still lives under `gr_motherfocer` - references to that path in this
- * file mean the SOURCE PROJECT, not the board. */
+ * NOT to be confused with the GR MotherFOCer, which is a DIFFERENT BOARD -
+ * similar schematic, different layout and setup. Every `gr_motherfocer`
+ * reference in this file means that other board's CubeMX project, which this
+ * port leaned on before the schematic arrived. See the header. */
 #define BOARD_NAME              "Mako Desori"
 
 /* ==========================================================================
@@ -144,6 +158,11 @@ extern "C" {
  *      of typical values.
  *   2. They are specified at Rg = 2.3 Ohm. This board's gate resistors were
  *      not legible on the schematic, and Rg moves these times directly.
+ *   2b. LAYOUT moves them too, and this board has its own. Gate loop
+ *      inductance changes the effective turn-off, and no datasheet or
+ *      schematic captures it - which is one more reason the number has to be
+ *      measured here rather than inherited from a board that merely looks
+ *      like this one.
  *   3. Too long costs distortion; too SHORT is a shoot-through the firmware
  *      cannot detect, cannot fault on, and which damages the bridge
  *      cumulatively. The error directions are not symmetric, so the
@@ -310,9 +329,11 @@ extern "C" {
  *
  * So neither figure was ever derived for this hardware. That is consistent
  * with the state of the project - four commits ending at "encoder works" - and
- * it means the analogue scaling is the part of gr_motherfocer NOT to inherit,
- * while its pinout, peripheral mapping and interrupt layout are exactly the
- * parts that are trustworthy.
+ * it means the analogue scaling is the part of gr_motherfocer least worth
+ * inheriting. Its pinout and peripheral mapping are the parts that came
+ * closest - but they are a DIFFERENT BOARD's pinout, and the two places they
+ * disagreed with this schematic were both real bugs here. Corroboration, not
+ * authority.
  *
  * One more thing worth carrying across from MiniFOCer: it negates the W phase
  * current (`* -0.040584...`) and not U. Phase sense POLARITY is per-board

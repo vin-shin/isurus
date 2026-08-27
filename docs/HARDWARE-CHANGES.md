@@ -196,7 +196,12 @@ where a traction drive is asked to be smooth.
    typical values.
 2. They are specified at **Rg = 2.3 Ω**. This board's gate resistors were not
    legible on the schematic, and Rg moves these times directly.
-3. Too long costs distortion. **Too short is a shoot-through** the firmware
+3. **Layout moves them too, and this board has its own.** Gate loop
+   inductance changes the effective turn-off, and no datasheet or schematic
+   captures it. The value currently in the firmware was inherited from
+   `gr_motherfocer` — a *different board* with a similar schematic and its own
+   layout — which is the strongest single reason not to trust it here.
+4. Too long costs distortion. **Too short is a shoot-through** the firmware
    cannot detect, cannot fault on, and which damages the bridge cumulatively.
 
 If the distortion matters before someone gets a scope on it, **dead-time

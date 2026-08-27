@@ -7,9 +7,7 @@ board rather than its own repository.
 
 The board on this branch is **Mako Desori** — an STM32G474RET6 driving an
 **EMRAX 228 HV** axial-flux traction motor through six isolated SiC
-half-bridge drivers, from a 140s2p pack. Its designers know it as the GR
-MotherFOCer; the codename follows this repo's convention of naming targets
-after mako sharks, after the genus the stack itself is named for.
+half-bridge drivers, from a 140s2p pack. 
 
 > ### This firmware has never been run on hardware.
 >
