@@ -83,20 +83,36 @@ erode it; raising `vmax` does.
 | vmax | `vmax * sqrt(3)` | |
 |---|---|---|
 | 0.25 (`FOC_VMAX_DEFAULT`) | 0.43 | freewheel safe, 2.3x margin, at any bus |
-| 0.577 | 1.00 | the crossover |
-| 0.60 (used in the section 7 speed test) | 1.04 | back-charge region, at any bus |
+| 0.577 | 1.00 | the crossover — and also the modulator's own ceiling |
+
+**And that ceiling is the same number.** With the min/max third-harmonic
+injection in `FOC_Apply`, the largest fundamental the modulator can produce is
+`Vbus / sqrt(3)`, i.e. `vmax = 0.577`. So `vmax * sqrt(3) <= 1` always: the
+drive **cannot** accelerate this machine to the back-charge crossover, at any
+bus voltage and at any `vmax` setting. Setting `vmax = 0.60` does not get past
+it either — the modulator simply clips at 0.577.
+
+That is an exact structural result and it does not depend on `lambda_m`, on
+`Vbus`, or on tuning. It also has margin on top of it, because reaching the
+crossover assumes the ideal ceiling `w_e = vmax*Vbus/lambda_m` and ignores the
+`R*i` and `w*L*i` drops, which only reduce the speed actually reachable.
 
 Two consequences:
 
-- **Keep `vmax` at 0.25 for 12S bring-up.** At 0.25 freewheel remains correct
-  at 44.4 V and at 50.4 V alike, with the same margin it had at 15.55 V.
-- **The section 7 speed table was already marginally in the back-charge
-  region.** At 15.3 V and `vmax = 0.60` the crossover is 3296 rad/s and the
-  measured 1600 rpm is 3351 rad/s electrical — 1.7% over, which is inside the
-  uncertainty on `lambda_m` and so is "at the crossover", not "proven past
-  it". It did not matter at 15.3 V into a bench supply. At 44 V into a charged
-  pack the same test is a different event, because what freewheel back-charges
-  into is then a pack that can already be near its ceiling.
+- **Freewheel stays the correct safe state at 12S, structurally, not by luck.**
+  `HARDWARE_NOTES` section 11 reaches the right answer for the wrong reason —
+  it is not that the bench supply is small, it is that a self-driven PMSM
+  cannot outrun its own modulator by the `sqrt(3)` needed.
+- **The exception is overspeed from outside.** Everything above assumes the
+  drive is what is spinning the rotor. A dyno, a descending load, or anything
+  back-driving the shaft faster than the drive would has no such limit, and in
+  that case freewheel *can* back-charge. Worth remembering precisely because
+  the dyno in `OPEN-ITEMS` section 1 is the thing most wanted next.
+- **The section 7 speed table sat right at the crossover, not past it.** At
+  15.3 V with `vmax = 0.60` requested, the crossover is 3296 rad/s and the
+  measured 1600 rpm is 3351 rad/s electrical. The 1.7% is inside the
+  uncertainty on `lambda_m`, and the clip at 0.577 explains why it landed
+  there rather than above.
 
 `Drive_ChooseSafeState()` computes the crossover from the live bus and does not
 need changing — it will pick correctly. The point is that its answer changes
@@ -214,7 +230,64 @@ implausible VREFINT sample is rejected rather than latched.
   bound is explicitly unverified against temperature rise. 12S is not the run
   to enable it on.
 
-## 6. Proposed order
+## 6. Power available at 12S
+
+### The conventions, first, because they set the factors of sqrt(2) and 3/2
+
+- **`iq` is a peak phase-current amplitude, not RMS.** `FOC_Clarke` uses
+  `ialpha = iu`, the amplitude-invariant (2/3) convention, so `|i_dq|` is the
+  peak of the phase sinusoid. Confirmed by `limits.h`'s own reasoning:
+  `LIM_IQ_MAX_MA = 12000` against `OC_TRIP_MA = 15000` is described as "20%
+  margin to the trip", and the trip compares instantaneous `|i_u|` / `|i_w|`.
+  That only works if 12 A of `iq` peaks the phase at 12 A.
+- **`v` is a fraction of Vbus, peak line-to-neutral.** `duty = v + 0.5`, so
+  `vmax = 0.25` means a 0.25*Vbus peak — matching `HARDWARE_NOTES` section 8's
+  "3.9 V of a ~44 V design point" at a 15.55 V bus.
+- Hence `P = 1.5 * (vmax * Vbus) * i_peak` with `id = 0`.
+
+### The ceilings, cheapest first
+
+Electrical input power at the motor terminals, `id = 0`, at the modulator's
+0.577 ceiling except where noted:
+
+| bound | phase current | at 44.4 V | at 50.4 V |
+|---|---|---|---|
+| **firmware today** (`vmax` 0.25, `LIM_IQ_MAX_MA`) | 12 A pk / 8.5 A rms | **200 W** | **227 W** |
+| `LIM_IQ_MAX_MA`, `vmax` at the 0.577 ceiling | 12 A pk / 8.5 A rms | 461 W | 524 W |
+| `OC_TRIP_MA` | 15 A pk / 10.6 A rms | 576 W | 654 W |
+| **motor, 22 A continuous** (read as RMS) | 31.1 A pk / 22 A rms | **1.20 kW** | **1.36 kW** |
+| current sensors, +/-40 A | 40 A pk / 28.3 A rms | 1.54 kW | 1.75 kW |
+| FETs, 220 A | — | irrelevant | irrelevant |
+
+The binding limit today is `vmax = 0.25`, not any current bound: the drive as
+configured tops out near **200 W** at 12S, which is 17% of what the motor is
+rated to absorb.
+
+### Two caveats that matter more than the arithmetic
+
+**"22 A continuous" is almost certainly RMS, but it is not written down as
+either.** `HARDWARE_NOTES` section 8 records it bare. The sensor sizing is the
+evidence for RMS: 22 A RMS peaks at 31.1 A, and a +/-40 A sensor gives that 29%
+margin, which is a sensible choice — whereas if 22 A were a peak the same
+sensor would be 82% oversized for no reason, and `limits.h` says the sensors
+"are sized around the motor for exactly that reason". If it turns out to be a
+peak rating instead, the motor row above becomes 845 W / 960 W. Worth
+confirming against the motor's datasheet before anyone sizes a supply from it.
+
+**There is no recorded PEAK rating for this motor at all.** 22 A is the
+*continuous* number, so 1.2-1.36 kW is a continuous ceiling and the question
+"what is the peak" has no answer in this repo. A PMSM will normally take
+several times its continuous current for seconds at a time, bounded by
+demagnetisation and by winding thermal mass — neither of which is recorded
+here. What *is* bounded is the controller: above 40 A peak the current cannot
+be measured, so it cannot be controlled, which puts a hard **1.75 kW** ceiling
+on anything this board can do in closed loop regardless of the motor.
+
+Also note this is electrical power **into the terminals**, not shaft power.
+Copper loss alone is `3 * i_rms^2 * 0.085` — 18 W at the 12 A row, 123 W at the
+22 A row, 204 W at the sensor ceiling.
+
+## 7. Proposed order
 
 Nothing here is executable until section 1 is answered.
 
