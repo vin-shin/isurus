@@ -143,4 +143,5 @@ cmake                toolchain files
   measurement refuted
 - [docs/OPEN-ITEMS.md](docs/OPEN-ITEMS.md) - what is still open, and the
   limits of the bench and the simulator that shape it
-- [CLAUDE.md](CLAUDE.md) - working conventions for this repo
+- [docs/HV-12S-BRINGUP.md](docs/HV-12S-BRINGUP.md) - prep for running at the
+  motor's rated 12S bus: what scales, what does not, and what is still unknown
