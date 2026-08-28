@@ -36,12 +36,25 @@ purchase on this list by some distance.
 
 Roughly in the order I would fix them.
 
-**`CSense_MeasureVdda` latches one startup sample.** It runs once at boot. One
-boot in seven read VREFINT 1728 against a stable 1522, putting VDDA at 2890 mV
-instead of 3280 and every derived voltage 13% low for the whole session. With
-`vbus_track = 1` that mis-scales the current-loop gains too. It is silent, it
-is rare, and it cost a wrong diagnosis on 2026-08-25. Re-measure periodically,
-or at least sanity-check the result against the nominal rail.
+**`CSense_MeasureVdda` still measures only at boot.** *Partly fixed
+2026-08-28.* It ran once at boot and latched whatever came back. One boot in
+seven read VREFINT 1728 against a stable 1522, putting VDDA at 2890 mV instead
+of 3280 and every derived voltage 13% low for the whole session. With
+`vbus_track = 1` that mis-scales the current-loop gains too, and at 12S it
+moves the overvoltage trip to an actual 58 V — see
+`docs/HV-12S-BRINGUP.md` section 4.3.
+
+The sanity check is now in: the burst is retried up to `CS_VDDA_ATTEMPTS`
+times and a result outside ±8% of nominal is rejected rather than latched,
+falling back to the nominal rail (0.6% out) instead of a known-bad reading
+(13% out). Rejections are counted in `vdda_rejects`.
+
+**Still open:** it is not re-measured periodically, so drift with temperature
+or load is not tracked. Doing so means retargeting ADC1 from `PF0` back to
+VREFINT and returning it, while the drive may be armed — more invasive than
+the startup guard, and not yet done. The retry's 1 ms settling delay is also a
+hypothesis about the root cause, not a confirmed one; nobody has caught the
+bad burst on a scope.
 
 **Field weakening is starved by the anti-windup, structurally.** The loop
 differences `vmax` against the demanded `|v|`; the back-calculation anti-windup
