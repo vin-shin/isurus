@@ -226,27 +226,65 @@ int CSense_Read(CSenseTelem_t *t)
 
 int CSense_MeasureVdda(CSenseTelem_t *t)
 {
-  uint32_t acc = 0;
-  uint32_t n   = 0;
-
-  for (uint32_t i = 0; i < 64U; i++)
+  /* Averaging 64 samples does not help against the failure this guards: the
+   * bad reading is a whole burst wrong the same way, not a noisy one. So the
+   * burst is repeated instead, and the answer is checked before it is kept -
+   * see the band in csense.h for why, and what it costs when it is wrong. */
+  for (uint32_t attempt = 0U; attempt < CS_VDDA_ATTEMPTS; attempt++)
   {
-    uint32_t v = 0;
-    if (CSense_SampleOnce(&hadc1, &v) != 0) { t->errors++; continue; }
-    acc += v;
-    n++;
+    uint32_t acc = 0;
+    uint32_t n   = 0;
+    uint32_t raw;
+    uint32_t mv;
+
+    for (uint32_t i = 0; i < 64U; i++)
+    {
+      uint32_t v = 0;
+      if (CSense_SampleOnce(&hadc1, &v) != 0) { t->errors++; continue; }
+      acc += v;
+      n++;
+    }
+
+    if (n == 0U) { continue; }
+
+    raw = acc / n;
+    mv  = __HAL_ADC_CALC_VREFANALOG_VOLTAGE(raw, ADC_RESOLUTION_12B);
+
+    /* Recorded even when rejected: the raw code is the diagnostic, and a
+     * reading thrown away silently is the thing this is replacing. */
+    t->vrefint_raw = raw;
+
+    if ((mv >= CS_VDDA_MIN_MV) && (mv <= CS_VDDA_MAX_MV))
+    {
+      t->vdda_mv = mv;
+      s_vdda_mv  = mv;
+      return 0;
+    }
+
+    t->vdda_rejects++;
+
+    /* The suspected cause is the VREFINT buffer being sampled before it has
+     * settled - the datasheet allows ~12 us for it. A millisecond is three
+     * orders of magnitude past that, and this runs once at boot, so it is
+     * free. If a retry still comes back implausible the cause is elsewhere
+     * and the fallback below is the right answer anyway. */
+    HAL_Delay(1);
   }
 
-  if (n == 0U)
-  {
-    return -1;
-  }
+  /* Nothing plausible in CS_VDDA_ATTEMPTS tries. Keep the NOMINAL rail rather
+   * than latching a reading known to be wrong: 3300 mV against a true 3280 is
+   * 0.6% out, where the rejected 2890 was 12%. Every derived voltage - phase
+   * currents, and the bus that the overvoltage trip compares - then stays
+   * very nearly right instead of very wrong.
+   *
+   * Reported as a failure, but deliberately not fatal. CSense_Init's return
+   * is recorded in g_cs_init_rc and does not block the drive, which is
+   * correct here: a 0.6% scaling error is not a reason to refuse to run, and
+   * refusing would turn a rare glitch into a board that will not start. */
+  t->vdda_mv = CS_VREF_MV;
+  s_vdda_mv  = CS_VREF_MV;
 
-  t->vrefint_raw = acc / n;
-  t->vdda_mv = __HAL_ADC_CALC_VREFANALOG_VOLTAGE(t->vrefint_raw, ADC_RESOLUTION_12B);
-  s_vdda_mv  = t->vdda_mv;
-
-  return 0;
+  return -1;
 }
 
 /* Re-init one ADC onto the HRTIM trigger and leave it armed. */

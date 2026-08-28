@@ -39,6 +39,28 @@ extern ADC_HandleTypeDef hadc5;
 /* Number of samples averaged when capturing the zero-current offset. */
 #define CS_ZERO_SAMPLES     256U
 
+/* Plausibility band on the measured rail, and how many times to retry.
+ *
+ * VDDA is a regulator output, so a reading far from nominal is a bad
+ * MEASUREMENT, not a supply that has moved. One boot in seven read VREFINT as
+ * 1728 against a stable 1522, putting VDDA at 2890 mV instead of 3280 - and
+ * that is a whole 64-sample burst wrong in the same direction, so it is a
+ * settling artefact rather than noise and averaging harder cannot fix it.
+ * VREFINT reading HIGH makes the derived VDDA come out LOW, which is the
+ * direction observed.
+ *
+ * Everything scaled from this rail inherits the error: phase currents, and
+ * the DC bus - which means the overvoltage trip. A 13% low bus reading moves
+ * a 50.4 V trip to an actual 58 V, so this band is the only thing standing
+ * between a rare startup glitch and an overvoltage trip that does not fire.
+ * See docs/HV-12S-BRINGUP.md section 4.3.
+ *
+ * +/-8% admits any regulator this board would ship with (a 3V3 part is
+ * typically +/-2-3%) and rejects the observed 2890 mV with 146 mV to spare. */
+#define CS_VDDA_MIN_MV      3036U
+#define CS_VDDA_MAX_MV      3564U
+#define CS_VDDA_ATTEMPTS    4U
+
 typedef struct {
   uint32_t u_raw;      /* last raw ADC code, U phase            */
   uint32_t w_raw;      /* last raw ADC code, W phase            */
@@ -51,7 +73,8 @@ typedef struct {
   uint32_t samples;    /* successful sample pairs               */
   uint32_t errors;     /* conversion timeouts                   */
   uint32_t vrefint_raw;/* raw VREFINT code, ADC1                */
-  uint32_t vdda_mv;    /* measured VDDA / VREF+ in mV           */
+  uint32_t vdda_mv;    /* VDDA in mV, as actually in use        */
+  uint32_t vdda_rejects;/* VDDA bursts rejected as implausible  */
   uint32_t vbus_raw;   /* raw ADC1 code, PF0                    */
   uint32_t vbus_mv;    /* DC bus voltage in mV                  */
 } CSenseTelem_t;
@@ -86,7 +109,14 @@ int CSense_StartVbus(void);
 int CSense_ReadVbus(CSenseTelem_t *t);
 
 /* Measure VDDA via the internal reference and its factory calibration.
- * Result also lands in t->vdda_mv / t->vrefint_raw. */
+ * Result also lands in t->vdda_mv / t->vrefint_raw.
+ *
+ * Retries up to CS_VDDA_ATTEMPTS times and accepts only a result inside
+ * [CS_VDDA_MIN_MV, CS_VDDA_MAX_MV]. Returns -1 if nothing plausible came
+ * back, having left the nominal rail in use rather than latching a reading
+ * known to be wrong - so a failure here degrades the scaling by ~0.6%, not
+ * by 13%. Rejections are counted in t->vdda_rejects; a non-zero count on a
+ * board that then behaves normally is still worth reading. */
 int CSense_MeasureVdda(CSenseTelem_t *t);
 
 /* Raw code and zero reference -> signed current in mA. */
